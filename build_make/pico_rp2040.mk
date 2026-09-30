@@ -55,6 +55,18 @@ ifneq ($(filter $(WIFI_NETIF),0 1),$(WIFI_NETIF))
 $(error Unknown WIFI_NETIF '$(WIFI_NETIF)'; use 0 or 1)
 endif
 
+# Optional raw-TCP web server.  This enables lwIP TCP without enabling the
+# separate TCP echo-client qualification profile.
+WEB_SERVER ?= 0
+ifneq ($(filter $(WEB_SERVER),0 1),$(WEB_SERVER))
+$(error Unknown WEB_SERVER '$(WEB_SERVER)'; use 0 or 1)
+endif
+ifeq ($(WEB_SERVER),1)
+ifneq ($(WIFI_NETIF),1)
+$(error WEB_SERVER=1 requires WIFI_NETIF=1)
+endif
+endif
+
 # Phase-3 gate: static IPv4, next-hop ARP resolution and an ICMP echo.  Network
 # values are local configuration because choosing an address without knowing
 # the user's LAN can create a duplicate-IP conflict.
@@ -268,7 +280,7 @@ endif
 # before any recipe executes.
 ################################################################################
 
-PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)
+PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-web$(WEB_SERVER)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)
 PROFILE_FILE := .build_profile
 
 ifneq ($(strip $(shell cat $(PROFILE_FILE) 2>/dev/null)),$(PROFILE_ID))
@@ -409,12 +421,14 @@ endif
 endif
 
 WIFI_INCLUDES := -I"$(WIFIDIR)" \
+                 -I"../app_program/Network" \
                  -I"../lib/libtm/sysdepend/pico_rp2040/usb" \
                  -I"$(CYW43_DRIVER_PATH)/src" \
                  -I"$(CYW43_DRIVER_PATH)/firmware" \
                  -I"$(CYW43_PICO_PATH)/include" \
                  -I"$(PICO_SDK_PATH)/src/boards/include" \
                  -I"$(PICO_SDK_PATH)/src/common/pico_base_headers/include" \
+                 -I"$(PICO_SDK_PATH)/src/common/pico_util/include" \
                  -I"$(PICO_SDK_PATH)/src/common/hardware_claim/include" \
                  -I"$(PICO_SDK_PATH)/src/common/pico_binary_info/include" \
                  -I"$(PICO_SDK_PATH)/src/rp2040/pico_platform/include" \
@@ -443,6 +457,7 @@ endif
 
 CFLAGS += -DTM_WIFI_CYW43=1 -DTM_WIFI_JOIN=$(WIFI_JOIN) \
           -DTM_WIFI_NETIF=$(WIFI_NETIF) -DCYW43_LWIP=$(WIFI_NETIF) \
+          -DTM_WEB_SERVER=$(WEB_SERVER) \
           -DTM_WIFI_STATIC=$(WIFI_STATIC) -DTM_WIFI_DHCP=$(WIFI_DHCP) \
           -DTM_WIFI_DNS=$(WIFI_DNS) -DTM_WIFI_UDP=$(WIFI_UDP) \
           -DTM_WIFI_TCP=$(WIFI_TCP) -DTM_WIFI_TCPBULK=$(WIFI_TCPBULK) \

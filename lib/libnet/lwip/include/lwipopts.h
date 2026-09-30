@@ -22,7 +22,7 @@
 #define LWIP_ICMP                       (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_RAW                        (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_UDP                        TM_WIFI_DHCP
-#define LWIP_TCP                        TM_WIFI_TCP
+#define LWIP_TCP                        (TM_WIFI_TCP || TM_WEB_SERVER)
 /* The altcp shim is only needed by application protocols written against it
  * Nothing in this tree uses it; turn it on here if you add something that
  * does. */

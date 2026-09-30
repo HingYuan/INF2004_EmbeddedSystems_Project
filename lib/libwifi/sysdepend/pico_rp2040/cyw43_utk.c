@@ -15,6 +15,9 @@
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
 #endif
+#if TM_WIFI_NETIF && TM_WEB_SERVER
+#include "web_server.h"
+#endif
 #if TM_WIFI_DHCP
 #include "lwip/dhcp.h"
 #include "lwip/dns.h"
@@ -514,6 +517,9 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #endif
 #if TM_WIFI_DHCP
         update_dhcp_status();
+#endif
+#if TM_WIFI_NETIF && TM_WEB_SERVER
+    web_server_poll(&cyw43_state.netif[CYW43_ITF_STA]);
 #endif
 #if TM_WIFI_DNS
         update_dns_status();

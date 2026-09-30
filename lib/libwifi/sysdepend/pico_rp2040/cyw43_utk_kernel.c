@@ -23,8 +23,8 @@ EXPORT ER cyw43_utk_start(void)
     ID task;
 
 #if TK_SUPPORT_SMP
-    /* Pin to processor 1 (RP2040 core 0): the radio owns PIO, DMA and the
-       USBCTRL IRQ on that core, and must not migrate. */
+        /* Pin to processor 1 (RP2040 core 0): the radio owns PIO, DMA and the
+             peripheral ownership path on that core, and must not migrate. */
     ctsk.tskatr = TA_HLNG | TA_RNG1 | TA_ASSPRC;
 #else
     ctsk.tskatr = TA_HLNG | TA_RNG1;

@@ -312,8 +312,9 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
 				fmt_ipv4(ip, st.dhcp_address);
 				fmt_ipv4(gw, st.dhcp_gateway);
 				fmt_ipv4(dns, st.dhcp_dns);
-				tm_printf((UB *)"[wifi] ip=%s  gw=%s  dns=%s\n",
-					  ip, gw, dns);
+				tm_printf((UB *)"[wifi] ip=%s  gw=%s  dns=%s  netif=%u/%u owner=prc%u\n",
+					  ip, gw, dns, st.netif_up, st.netif_link_up,
+					  st.owner_prc);
 			}
 		}
 
@@ -411,7 +412,13 @@ LOCAL T_CTSK ctsk_wifi = {
 	.itskpri	= 8,
 	.stksz		= STACK_SZ,
 	.task		= wifi_status_task,
-	.tskatr		= TA_HLNG | TA_RNG3,
+	.tskatr		= TA_HLNG | TA_RNG3
+#if TK_SUPPORT_SMP
+				| TA_ASSPRC,
+	.assprc		= TP_PRC2,
+#else
+				,
+#endif
 };
 #endif	/* TM_WIFI_CYW43 */
 
