@@ -242,7 +242,7 @@ LOCAL void monitor_task(INT stacd, void *exinf)
  *  WiFi status -- only built when WIFI=cyw43
  *
  *  The radio is not driven from here.  A dedicated service task owns the
- *  CYW43439, lwIP and the echo session -- pinned to processor 1 under SMP,
+ *  CYW43439, lwIP and the echo session -- pinned to processor 2 under SMP,
  *  and simply the only processor there is on a single-core build.  This task
  *  only reads the snapshot that service publishes and prints what changed.
  *  Reading is safe from any task: cyw43_utk_get_status() takes a seqlock

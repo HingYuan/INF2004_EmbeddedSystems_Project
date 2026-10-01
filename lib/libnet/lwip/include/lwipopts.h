@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-/* Phase 2 has one execution context: the processor-1 radio-owner task. */
+/* The radio-owner task is the single lwIP execution context. */
 #define NO_SYS                          1
 #define SYS_LIGHTWEIGHT_PROT            0
 #define LWIP_NETCONN                    0
@@ -22,11 +22,11 @@
 #define LWIP_ICMP                       (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_RAW                        (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_UDP                        TM_WIFI_DHCP
-#define LWIP_TCP                        (TM_WIFI_TCP || TM_WEB_SERVER)
+#define LWIP_TCP                        (TM_WIFI_TCP || TM_WEB_SERVER || TM_MQTT)
 /* The altcp shim is only needed by application protocols written against it
  * Nothing in this tree uses it; turn it on here if you add something that
  * does. */
-#define LWIP_ALTCP                      0
+#define LWIP_ALTCP                      TM_MQTT
 #define LWIP_ALTCP_TLS                  0
 #define LWIP_DHCP                       TM_WIFI_DHCP
 #define LWIP_AUTOIP                     0

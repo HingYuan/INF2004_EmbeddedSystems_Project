@@ -14,14 +14,17 @@
 #include "lwip/tcp.h"
 
 #include "templates/index_html.h"
+#include "mqtt_client.h"
 
 #define WEB_SERVER_PORT 8080U
 #define WEB_REQUEST_MAX 512U
+#define WEB_RESPONSE_MAX 1024U
 
 static struct tcp_pcb *web_listener;
 static struct tcp_pcb *web_client;
 static size_t web_request_length;
 static char web_request[WEB_REQUEST_MAX];
+static char web_api_response[WEB_RESPONSE_MAX];
 static int web_response_sent;
 
 static void web_reset_request(void)
@@ -51,17 +54,37 @@ static void web_error(void *arg, err_t err)
 
 static err_t web_send_response(struct tcp_pcb *pcb)
 {
-    static const char response_start[] =
+    static const char html_response_start[] =
         "HTTP/1.0 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n"
         "\r\n";
+    static const char api_response_start[] =
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    const char *response_start;
+    const char *body;
+    size_t body_length;
     err_t result;
 
-    result = tcp_write(pcb, response_start, sizeof(response_start) - 1U,
+    if(strncmp(web_request, "GET /api/mqtt ", 15U) == 0) {
+        body_length = mqtt_dashboard_json(web_api_response,
+                                          sizeof(web_api_response));
+        response_start = api_response_start;
+        body = web_api_response;
+    } else {
+        response_start = html_response_start;
+        body = web_index_html;
+        body_length = WEB_INDEX_HTML_LEN;
+    }
+
+    result = tcp_write(pcb, response_start, strlen(response_start),
                        TCP_WRITE_FLAG_COPY);
     if(result != ERR_OK) return result;
-    result = tcp_write(pcb, web_index_html, WEB_INDEX_HTML_LEN,
+    result = tcp_write(pcb, body, (u16_t)body_length,
                        TCP_WRITE_FLAG_COPY);
     if(result != ERR_OK) return result;
 

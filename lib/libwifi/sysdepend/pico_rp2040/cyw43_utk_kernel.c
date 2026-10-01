@@ -11,9 +11,9 @@
 
 IMPORT void cyw43_utk_task(INT stacd, void *exinf);
 
-/* USB CDC drains at priority 3 on the same physical core.  Keep radio polling
- * below it so firmware download and the 2 ms poll cadence cannot overflow the
- * console ring, while remaining well above the qualification task. */
+/* Keep radio polling on physical RP2040 core 1.  USB CDC owns physical core 0
+ * at priority 3; the network service is independent and remains above the
+ * qualification task on its assigned core. */
 #define CYW43_TASK_PRIORITY  4
 #define CYW43_TASK_STACK     (6 * 1024)
 
@@ -23,8 +23,8 @@ EXPORT ER cyw43_utk_start(void)
     ID task;
 
 #if TK_SUPPORT_SMP
-        /* Pin to processor 1 (RP2040 core 0): the radio owns PIO, DMA and the
-             peripheral ownership path on that core, and must not migrate. */
+    /* Pin to processor 2 (physical RP2040 core 1): the radio owns PIO, DMA
+         and its peripheral ownership path on that core. */
     ctsk.tskatr = TA_HLNG | TA_RNG1 | TA_ASSPRC;
 #else
     ctsk.tskatr = TA_HLNG | TA_RNG1;
@@ -33,7 +33,7 @@ EXPORT ER cyw43_utk_start(void)
     ctsk.itskpri = CYW43_TASK_PRIORITY;
     ctsk.stksz = CYW43_TASK_STACK;
 #if TK_SUPPORT_SMP
-    ctsk.assprc = TP_PRC1;
+    ctsk.assprc = TP_PRC2;
 #endif
 #if USE_OBJECT_NAME
     ctsk.dsname = (UB*)"cyw43";

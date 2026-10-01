@@ -12,8 +12,9 @@ From a clean machine to a Pico W running both cores. Roughly 15 minutes.
 | `arm-none-eabi-gcc` | Cross-compiler. Baseline used for qualification: **13.2.1**. |
 | A host C++ compiler (`g++`) | Builds `elf2uf2`, the UF2 packaging tool, from source. |
 | GNU `make` | The build system. This port does not use CMake or the Pico SDK build. |
-| USB-serial adapter | For the UART console - GP0 TX, GP1 RX, 115200 8N1. |
-| Pico SDK (**only** for `CONSOLE=usb_cdc`) | The USB console links TinyUSB from the Pico SDK. Not needed for the default UART build. |
+| USB data cable | Provides the default USB CDC console. |
+| USB-serial adapter | Only needed for the optional UART console - GP0 TX, GP1 RX, 115200 8N1. |
+| Pico SDK | The default USB console links TinyUSB from the Pico SDK. |
 | External LED + resistor on **GP16** | Liveness indicator. The Pico W's on-board LED is on the CYW43439 radio, not an RP2040 pin, so it is unavailable while the radio is powered down. |
 
 On Debian/Ubuntu:
@@ -27,8 +28,8 @@ arm-none-eabi-gcc --version
 
 ## 1b. Pico SDK - only if you want USB-CDC or Wi-Fi
 
-**Skip this entirely for the default build.** The qualified UART profiles need
-nothing but `arm-none-eabi-gcc` and a host `g++`. The SDK is required only for:
+The default build uses USB CDC, so install the Pico SDK's TinyUSB submodule.
+The SDK is required for:
 
 | Profile | Needs from the SDK |
 |---|---|
@@ -65,6 +66,12 @@ git submodule update --init lib/lwip           # for WIFI=cyw43
 
 ```sh
 export PICO_SDK_PATH=$HOME/pico/pico-sdk
+```
+
+In Windows Git Bash, use the Windows checkout path in MSYS form, for example:
+
+```sh
+export PICO_SDK_PATH=/c/Users/<you>/pico/pico-sdk
 ```
 
 Add that to your shell profile to make it permanent, or pass it per build:
@@ -141,7 +148,8 @@ if your host compiler is not `g++`.
 
 ## 4. Build - one core or two
 
-**The build is single core by default.** `SMP` is the only switch that decides
+**The build is single core by default.** USB CDC is the default console, and
+`SMP` is the only switch that decides
 how many RP2040 cores the kernel uses.
 
 ### Single core (default)
@@ -151,7 +159,7 @@ cd build_make
 make -j8
 ```
 
-Produces `mtk3pico_smp0_uart.uf2`. Core 1 is never started and the SMP
+Produces `mtk3pico_smp0_usb_cdc.uf2`. Core 1 is never started and the SMP
 scheduler is compiled out, so the kernel behaves as the stock single-core
 µT-Kernel 3.0 Pico BSP. Start here if you are unsure - it is the conservative
 configuration, and it has its own 11/11 hardware regression gate.
@@ -163,19 +171,18 @@ cd build_make
 make SMP=1 -j8
 ```
 
-Produces `mtk3pico_smp1_uart.uf2`. This starts the second core and enables the
+Produces `mtk3pico_smp1_usb_cdc.uf2`. This starts the second core and enables the
 global ready queue, the recursive big kernel lock, the IPI transport and task
 affinity. Qualified at 58/58.
 
 ### Console choice, independent of core count
 
 ```sh
-make SMP=1 -j8                  # UART0 console (default): GP0 TX, GP1 RX, 115200 8N1
-make SMP=1 CONSOLE=usb_cdc -j8  # console over the Pico's own USB port
+make SMP=1 -j8                  # USB CDC console over the Pico's USB data cable
+make SMP=1 CONSOLE=uart -j8     # optional UART0 console: GP0 TX, GP1 RX, 115200 8N1
 ```
 
-The UART console has no external dependencies. **`CONSOLE=usb_cdc` links
-TinyUSB from the Pico SDK** - see [step 1b](#1b-pico-sdk---only-if-you-want-usb-cdc-or-wi-fi)
+**`CONSOLE=usb_cdc` links TinyUSB from the Pico SDK** - see [step 1b](#1b-pico-sdk---only-if-you-want-usb-cdc-or-wi-fi)
 for installing it and setting `PICO_SDK_PATH`.
 
 ### Radio (development profile, not in the qualified release)
@@ -190,7 +197,7 @@ make SMP=1 WIFI=cyw43 -j8
 ### Artifact naming
 
 `mtk3pico_smp<SMP>_<CONSOLE>[<wifi>].uf2` - so `make` gives you
-`mtk3pico_smp0_uart.uf2`, and `make SMP=1 CONSOLE=usb_cdc` gives you
+`mtk3pico_smp0_usb_cdc.uf2`, and `make SMP=1` gives you
 `mtk3pico_smp1_usb_cdc.uf2`.
 
 Switching profiles needs no manual cleanup. The build stamps a profile id
@@ -210,9 +217,9 @@ Build profile is now smp1-uart-wifinone-...; discarding objects built for anothe
 3. Copy the `.uf2` onto that drive:
 
 ```sh
-cp build_make/mtk3pico_smp0_uart.uf2 /media/$USER/RPI-RP2/   # single core
+cp build_make/mtk3pico_smp0_usb_cdc.uf2 /media/$USER/RPI-RP2/   # single core
 # or, for the dual-core build:
-cp build_make/mtk3pico_smp1_uart.uf2 /media/$USER/RPI-RP2/
+cp build_make/mtk3pico_smp1_usb_cdc.uf2 /media/$USER/RPI-RP2/
 ```
 
 The board reboots into the new firmware as soon as the copy completes. There
@@ -222,16 +229,19 @@ is no separate flash tool and no debug probe required.
 
 ## 6. Watch the console
 
-Wire the USB-serial adapter to **GP0 (TX)** and **GP1 (RX)**, ground to
-ground, then:
+For the default USB CDC build, keep the Pico W connected with the USB data
+cable. After it reboots, Windows creates a USB serial (CDC) COM port. Open
+that port with PuTTY, Tera Term, or another serial terminal at `115200 8N1`.
+No UART adapter is required.
+
+For the optional UART build, wire the USB-serial adapter to **GP0 (TX)** and
+**GP1 (RX)**, ground to ground, then:
 
 ```sh
 screen /dev/ttyUSB0 115200      # or: minicom -D /dev/ttyUSB0 -b 115200
 ```
 
-If you built the USB-CDC profile instead, the console arrives over the Pico's
-own USB connector - no adapter needed - and enumerates as a CDC ACM device
-(`/dev/ttyACM0` on Linux).
+On Linux, the USB CDC port normally appears as `/dev/ttyACM0`.
 
 ---
 
@@ -514,6 +524,7 @@ who owns what.
 
 **The application does not drive the radio.** A service task owns the
 CYW43439, lwIP and the echo session, and publishes a status snapshot;
+under SMP it is pinned to processor 2 (physical RP2040 core 1).
 `wifi_status_task` only reads that snapshot and prints. It reads through
 `cyw43_utk_get_status()`, which takes a **seqlock** copy - `lwip_utk_udp_get_status()`
 is a plain struct copy that is only safe inside the service itself.
@@ -591,11 +602,30 @@ first.
 `tools/windows_udp_echo.ps1` and `tools/windows_tcp_echo.ps1` are the
 equivalent for a Windows host.
 
-### No application protocol ships - that part is yours
+### MQTT dashboard subscriber
 
-The transports stop at UDP, TCP and bulk TCP. There is deliberately **no MQTT,
-HTTP or CoAP layer** in this tree: building one on top of the working
-transports is left as an exercise.
+The optional MQTT profile subscribes to a broker and exposes the latest message
+through the web dashboard. Copy the configuration template and set the broker
+address and topic:
+
+```sh
+cp config/mqtt_config.example.h config/mqtt_config.h
+# edit config/mqtt_config.h and set UTK_MQTT_CONFIG_SET to 1
+```
+
+Build it with the existing Wi-Fi, DHCP, web-server, and USB-console profile:
+
+```sh
+make SMP=1 CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 \
+   WIFI_DHCP=1 WEB_SERVER=1 MQTT=1 PICO_SDK_PATH=... -j8
+```
+
+After flashing, open `http://<pico-ip-address>:8080/`. The page polls
+`/api/mqtt` once per second and shows the connection state, message count,
+latest topic, and latest payload. The MQTT client is driven by the core-1
+CYW43/lwIP owner task, so it does not create a second lwIP context.
+
+The transports also include UDP, TCP and bulk TCP profiles for diagnostics.
 
 What you have to build against:
 
