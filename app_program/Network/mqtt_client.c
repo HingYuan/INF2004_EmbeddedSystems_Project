@@ -57,6 +57,8 @@ static void mqtt_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
     if((flags & MQTT_DATA_FLAG_LAST) != 0U) {
         mqtt_payload[mqtt_payload_length] = '\0';
         mqtt_message_count++;
+        tm_printf((UB *)"[mqtt] #%u %s: %s\n",
+                  mqtt_message_count, mqtt_topic, mqtt_payload);
     }
 }
 
@@ -84,6 +86,7 @@ static void mqtt_connection(mqtt_client_t *client, void *arg,
     if(status == MQTT_CONNECT_ACCEPTED) {
         mqtt_connected = 1U;
         mqtt_last_error = 0;
+        tm_printf((UB *)"[mqtt] connected to " MQTT_BROKER_IP "\n");
         if(mqtt_subscribe(mqtt_client, MQTT_SUBSCRIBE_TOPIC, MQTT_QOS,
                           mqtt_request_done, NULL) != ERR_OK) {
             mqtt_last_error = ERR_CONN;
@@ -92,6 +95,7 @@ static void mqtt_connection(mqtt_client_t *client, void *arg,
         mqtt_connected = 0U;
         mqtt_next_retry_ms = mqtt_now_ms() + MQTT_RETRY_MS;
         mqtt_last_error = (int)status;
+        tm_printf((UB *)"[mqtt] disconnected, status=%d\n", (int)status);
     }
 }
 

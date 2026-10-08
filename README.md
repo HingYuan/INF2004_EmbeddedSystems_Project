@@ -142,6 +142,24 @@ cp config/network_config.example.h   config/network_config.h
 make SMP=1 WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 -j8
 ```
 
+### Web Server & MQTT Sensor Dashboard
+
+The project includes an integrated HTTP web dashboard and MQTT subscriber for real-time sensor monitoring (IMU, servos, environment):
+
+```sh
+# copy credentials & broker templates if not already created
+cp config/wifi_credentials.example.h config/wifi_credentials.h
+cp config/mqtt_config.example.h      config/mqtt_config.h
+
+# build the dashboard profile
+cd build_make
+make WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 SMP=1 CONSOLE=usb_cdc
+```
+
+- **Dashboard:** Served over HTTP port `8080` (`http://<pico-ip>:8080`) displaying live IMU readings, servo metrics, telemetry, and payload event logs.
+- **MQTT Client:** Subscribes to configured topic (default `sensors/#`), prints received data to USB serial monitor, and exposes data to the web UI via `/api/mqtt`.
+- **Test Server:** See [`app_program/Network/mqtt_test_server/README.md`](app_program/Network/mqtt_test_server/README.md) to launch a local Python broker and test publisher.
+
 Each template guards itself: an unedited copy fails at compile time with a
 message naming the file and the flag, rather than building and then failing
 to associate at runtime.

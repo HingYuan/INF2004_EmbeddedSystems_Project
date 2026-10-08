@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -43,9 +44,19 @@ def main() -> int:
     print(f"Publishing to {arguments.host}:{arguments.port}/{arguments.topic}")
     try:
         while True:
+            t = sequence * 0.3
             payload = {
                 "sequence": sequence,
+                "accel_x": round(math.sin(t) * 0.98, 3),
+                "accel_y": round(math.cos(t) * 0.12, 3),
+                "accel_z": round(9.81 + math.sin(t * 0.5) * 0.05, 3),
+                "gyro_x": round(math.sin(t * 2) * 1.5, 2),
+                "gyro_y": round(math.cos(t * 1.7) * 0.8, 2),
+                "gyro_z": round(math.sin(t * 0.9) * 2.1, 2),
+                "servo_angle": round(90 + 45 * math.sin(t * 0.4)),
+                "servo_pwm": round(1500 + 500 * math.sin(t * 0.4)),
                 "temperature_c": round(22.5 + (sequence % 10) * 0.2, 1),
+                "humidity": round(55.0 + math.sin(t * 0.2) * 10, 1),
                 "source": "python-test-server",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }

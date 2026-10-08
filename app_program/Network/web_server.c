@@ -36,6 +36,7 @@ static void web_reset_request(void)
 
 static void web_close_client(struct tcp_pcb *pcb)
 {
+    if(pcb == NULL) return;
     if(pcb == web_client) web_client = NULL;
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
@@ -65,12 +66,21 @@ static err_t web_send_response(struct tcp_pcb *pcb)
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "\r\n";
+    static const char not_found_response[] =
+        "HTTP/1.0 404 Not Found\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n"
+        "\r\n";
     const char *response_start;
     const char *body;
     size_t body_length;
     err_t result;
 
-    if(strncmp(web_request, "GET /api/mqtt ", 15U) == 0) {
+    if(strncmp(web_request, "GET /favicon.ico", 16U) == 0) {
+        response_start = not_found_response;
+        body = "";
+        body_length = 0;
+    } else if(strncmp(web_request, "GET /api/mqtt", 13U) == 0) {
         body_length = mqtt_dashboard_json(web_api_response,
                                           sizeof(web_api_response));
         response_start = api_response_start;
@@ -89,11 +99,9 @@ static err_t web_send_response(struct tcp_pcb *pcb)
     if(result != ERR_OK) return result;
 
     web_response_sent = 1;
-    result = tcp_output(pcb);
-    if(result != ERR_OK) return result;
-    result = tcp_close(pcb);
-    if(result == ERR_OK && pcb == web_client) web_client = NULL;
-    return result;
+    (void)tcp_output(pcb);
+    web_close_client(pcb);
+    return ERR_OK;
 }
 
 static err_t web_receive(void *arg, struct tcp_pcb *pcb, struct pbuf *packet,
@@ -104,12 +112,12 @@ static err_t web_receive(void *arg, struct tcp_pcb *pcb, struct pbuf *packet,
     (void)arg;
     if(err != ERR_OK) {
         if(packet != NULL) pbuf_free(packet);
-        web_client = NULL;
+        web_close_client(pcb);
         return err;
     }
     if(packet == NULL) {
-        web_client = NULL;
-        return tcp_close(pcb);
+        web_close_client(pcb);
+        return ERR_OK;
     }
 
     if(web_response_sent) {
@@ -147,8 +155,8 @@ static err_t web_accept(void *arg, struct tcp_pcb *new_client, err_t err)
     if(err != ERR_OK || new_client == NULL) return ERR_VAL;
 
     if(web_client != NULL) {
-        tcp_abort(web_client);
-        web_client = NULL;
+        tcp_abort(new_client);
+        return ERR_ABRT;
     }
 
     web_client = new_client;
@@ -192,7 +200,8 @@ void web_server_init(struct netif *netif)
 
 void web_server_poll(struct netif *netif)
 {
-    if(web_listener == NULL && netif != NULL) {
+    if(web_listener == NULL && netif != NULL
+       && netif_is_up(netif) && netif_is_link_up(netif)) {
         web_server_init(netif);
     }
 }

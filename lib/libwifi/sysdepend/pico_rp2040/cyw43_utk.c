@@ -609,6 +609,29 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
             }
         }
 #endif
+#if TM_WIFI_JOIN
+        /* Auto-reconnect on link drop after successful join */
+        if(radio_status.join_complete && radio_status.join_result == 0
+           && !radio_status.link_up) {
+            static uint64_t reconnect_backoff_us;
+            uint64_t now_rc = time_us_64();
+            if(now_rc - reconnect_backoff_us >= 5000000ULL) {
+                reconnect_backoff_us = now_rc;
+                join_started_us = now_rc;
+                radio_status.join_complete = 0;
+#if TM_WIFI_DHCP
+                radio_status.dhcp_complete = 0;
+                dhcp_started_us = 0;
+                dhcp_ipv4_adopted = 0;
+#endif
+                (void)cyw43_wifi_join(&cyw43_state,
+                                      sizeof(wifi_ssid) - 1, wifi_ssid,
+                                      sizeof(wifi_password) - 1, wifi_password,
+                                      UTK_WIFI_AUTH, NULL,
+                                      CYW43_CHANNEL_NONE);
+            }
+        }
+#endif
         status_publish_end();
         cyw43_utk_poll_requested = 0;
         cyw43_thread_exit();

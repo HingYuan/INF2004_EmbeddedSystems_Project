@@ -22,3 +22,5 @@ config/mqtt_config.h
 # Python
 __pycache__/
 *.pyc
+*.md
+.cursor/rules/caveman.mdc
