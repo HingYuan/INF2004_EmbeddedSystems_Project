@@ -21,3 +21,5 @@ config/tcp_test_config.h
 # Python
 __pycache__/
 *.pyc
+
+AGENTS.md
