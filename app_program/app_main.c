@@ -46,7 +46,8 @@
 #endif
 
 #include "usb_console_compat.h"
-#include "demo_tasks.h"
+// #include "demo_tasks.h"
+#include "robot_tasks.h"
 
 #if TM_WIFI_CYW43
 /* Plain C types on purpose - see the note in cyw43_utk.h. */
@@ -443,19 +444,19 @@ LOCAL T_CTSK ctsk_consumer = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_monitor = {
-	.itskpri	= 7,
-	.stksz		= STACK_SZ,
-	.task		= monitor_task,
-	.tskatr		= TA_HLNG | TA_RNG3,
-};
+// LOCAL T_CTSK ctsk_monitor = {
+// 	.itskpri	= 7,
+// 	.stksz		= STACK_SZ,
+// 	.task		= monitor_task,
+// 	.tskatr		= TA_HLNG | TA_RNG3,
+// };
 
-LOCAL T_CTSK ctsk_blink = {
-	.itskpri	= 10,
-	.stksz		= STACK_SZ,
-	.task		= blink_task,
-	.tskatr		= TA_HLNG | TA_RNG3,
-};
+// LOCAL T_CTSK ctsk_blink = {
+// 	.itskpri	= 10,
+// 	.stksz		= STACK_SZ,
+// 	.task		= blink_task,
+// 	.tskatr		= TA_HLNG | TA_RNG3,
+// };
 
 LOCAL T_CMPF cmpf = {
 	.mpfatr		= TA_TFIFO | TA_RNG3,
@@ -511,13 +512,14 @@ EXPORT INT usermain(void)
 	semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
 	flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
 
-	tid = tk_cre_tsk(&ctsk_blink);    if(made("tsk(blink)",    tid)) tk_sta_tsk(tid, 0);
-	tid = tk_cre_tsk(&ctsk_monitor);  if(made("tsk(monitor)",  tid)) tk_sta_tsk(tid, 0);
+	// tid = tk_cre_tsk(&ctsk_blink);    if(made("tsk(blink)",    tid)) tk_sta_tsk(tid, 0);
+	// tid = tk_cre_tsk(&ctsk_monitor);  if(made("tsk(monitor)",  tid)) tk_sta_tsk(tid, 0);
 	tid = tk_cre_tsk(&ctsk_consumer); if(made("tsk(consumer)", tid)) tk_sta_tsk(tid, 0);
 	tid = tk_cre_tsk(&ctsk_producer); if(made("tsk(producer)", tid)) tk_sta_tsk(tid, 0);
 #if TM_WIFI_CYW43
 	tid = tk_cre_tsk(&ctsk_wifi);     if(made("tsk(wifi)",     tid)) tk_sta_tsk(tid, 0);
 #endif
+	if(robot_tasks_start() < E_OK) return 1;
 
 	/* The initial task has nothing left to do.  It must not return: on
 	   return the kernel shuts the system down. */
