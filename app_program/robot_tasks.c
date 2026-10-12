@@ -353,17 +353,25 @@ LOCAL void ir_sensor_task(INT pin_left, INT pin_right, INT side, void *exinf)
         right_state_change = right_curr_state != right_prev_state;
         
         if (left_state_change || right_state_change) {
-            if (left_state_change == right_state_change && right_state_change == 1) {
+			// Construct and send message to navigator
+			NAVIGATOR_MESSAGE nm;
+			nm.type = MSG_IR_UPDATE;
 
-            } else if (left_state_change == right_state_change && right_state_change == 0) {
-
+			// If state change is for both sensors
+            if (left_state_change == right_state_change && right_state_change == 1) {			// change to Black-Black
+				nm.data.ir_state = STATE_B_B;
+            } else if (left_state_change == right_state_change && right_state_change == 0) {	// change to White-White
+				nm.data.ir_state = STATE_W_W;
             }
 
-            if (left_state_change > right_state_change) {
-
-            } else if (left_state_change < right_state_change) {
-
+			// If state change for only one sensor
+            if (left_state_change > right_state_change) {										// change to Black-White
+				nm.data.ir_state = STATE_B_W;
+            } else if (left_state_change < right_state_change) {								// change to White-Black
+				nm.data.ir_state = STATE_W_B;
             }
+
+			tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
         }
 
 		tk_dly_tsk(10);
