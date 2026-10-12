@@ -32,7 +32,7 @@ See [docs/PORT_RP2040.md](docs/PORT_RP2040.md) for exactly what is validated on 
 
 - Raspberry Pi **Pico W** (RP2040, dual Cortex-M0+, 2 MB flash)
 - USB cable (data, not charge-only)
-- A USB-serial adapter for the UART console - GP0 TX, GP1 RX, 115200 8N1
+- A USB data cable for the default USB CDC console; a USB-serial adapter is only needed for the optional UART console
 - An **external LED on GP16** for the liveness indicator. The Pico W's on-board LED is wired to the CYW43439 radio rather than to an RP2040 pin, so it is unavailable in the radio-down qualified profiles. GP23, GP24, GP25 and GP29 are reserved by the radio.
 
 ---
@@ -49,12 +49,13 @@ make -j8
 ```
 
 Hold **BOOTSEL** while connecting the Pico, then copy
-`build_make/mtk3pico_smp0_uart.uf2` to the `RPI-RP2` drive that appears.
+`build_make/mtk3pico_smp0_usb_cdc.uf2` to the `RPI-RP2` drive that appears.
 
 To build the dual-core SMP kernel instead, add `SMP=1` -- see
 [Building for one core or two](#building-for-one-core-or-two).
 
-Requires `arm-none-eabi-gcc` (baseline: 13.2.1) and a host `g++`. The build
+Requires `arm-none-eabi-gcc` (baseline: 13.2.1), a host `g++`, and the Pico
+SDK 2.2.0 for TinyUSB. The build
 compiles the ELF-to-UF2 converter itself on first run - the RP2040 bootloader
 accepts UF2, not ELF, and unlike a Pico SDK/CMake project nothing else
 provides that helper here. See
@@ -79,8 +80,8 @@ only thing that decides how many RP2040 cores the kernel uses:
 
 | You want | Command | Produces |
 |---|---|---|
-| **One core** (default) | `make -j8` | `mtk3pico_smp0_uart.uf2` |
-| **Two cores** (SMP) | `make SMP=1 -j8` | `mtk3pico_smp1_uart.uf2` |
+| **One core** (default) | `make -j8` | `mtk3pico_smp0_usb_cdc.uf2` |
+| **Two cores** (SMP) | `make SMP=1 -j8` | `mtk3pico_smp1_usb_cdc.uf2` |
 
 `make` with no arguments is exactly `make SMP=0`. Core 1 is never started, the
 SMP scheduler is compiled out, and the kernel behaves as the stock
@@ -104,8 +105,8 @@ different one automatically, reporting
 
 | Console | Command | Notes |
 |---|---|---|
-| UART0 (default) | `make SMP=1 -j8` | GP0 TX / GP1 RX, 115200 8N1. Needs a USB-serial adapter. No external dependencies. |
-| USB-CDC | `make SMP=1 CONSOLE=usb_cdc PICO_SDK_PATH=... -j8` | Console over the Pico's own USB port. Qualified for SMP at 71/71. **Requires the Pico SDK** - it links TinyUSB from it. |
+| USB-CDC (default) | `make SMP=1 -j8` | Console over the Pico's own USB data cable. Requires the Pico SDK for TinyUSB. |
+| UART0 | `make SMP=1 CONSOLE=uart -j8` | GP0 TX / GP1 RX, 115200 8N1. Requires a USB-serial adapter. |
 
 The USB console is the only part of this tree that needs the Pico SDK, and it
 uses just the TinyUSB library, not the SDK's CMake build. Point
@@ -117,9 +118,9 @@ CONSOLE=uart`.
 
 | Profile | Command | Status |
 |---|---|---|
-| Single core, UART | `make -j8` | **Qualified** — the default, 11/11 regression gate |
-| Dual core, UART | `make SMP=1 -j8` | **Qualified** — the SMP baseline, 58/58 |
-| Dual core, USB-CDC | `make SMP=1 CONSOLE=usb_cdc -j8` | **Qualified** — optional, 71/71 |
+| Single core, USB-CDC | `make -j8` | Single-core USB console build |
+| Dual core, USB-CDC | `make SMP=1 -j8` | **Qualified** — USB profile, 71/71 |
+| Single or dual core, UART | `make CONSOLE=uart -j8` | UART fallback |
 | Radio boot + active scan | `make SMP=1 WIFI=cyw43 -j8` | Development — 72/72 hardware gate, not in the release |
 
 The artifact name always follows the profile:
@@ -140,6 +141,24 @@ cp config/network_config.example.h   config/network_config.h
 # fill in the values, and set each file's *_SET flag from 0 to 1
 make SMP=1 WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 -j8
 ```
+
+### Web Server & MQTT Sensor Dashboard
+
+The project includes an integrated HTTP web dashboard and MQTT subscriber for real-time sensor monitoring (IMU, servos, environment):
+
+```sh
+# copy credentials & broker templates if not already created
+cp config/wifi_credentials.example.h config/wifi_credentials.h
+cp config/mqtt_config.example.h      config/mqtt_config.h
+
+# build the dashboard profile
+cd build_make
+make WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 SMP=1 CONSOLE=usb_cdc
+```
+
+- **Dashboard:** Served over HTTP port `8080` (`http://<pico-ip>:8080`) displaying live IMU readings, servo metrics, telemetry, and payload event logs.
+- **MQTT Client:** Subscribes to configured topic (default `sensors/#`), prints received data to USB serial monitor, and exposes data to the web UI via `/api/mqtt`.
+- **Test Server:** See [`app_program/Network/mqtt_test_server/README.md`](app_program/Network/mqtt_test_server/README.md) to launch a local Python broker and test publisher.
 
 Each template guards itself: an unedited copy fails at compile time with a
 message naming the file and the flag, rather than building and then failing

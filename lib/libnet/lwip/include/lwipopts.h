@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-/* Phase 2 has one execution context: the processor-1 radio-owner task. */
+/* The radio-owner task is the single lwIP execution context. */
 #define NO_SYS                          1
 #define SYS_LIGHTWEIGHT_PROT            0
 #define LWIP_NETCONN                    0
@@ -22,11 +22,11 @@
 #define LWIP_ICMP                       (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_RAW                        (TM_WIFI_STATIC || TM_WIFI_DHCP)
 #define LWIP_UDP                        TM_WIFI_DHCP
-#define LWIP_TCP                        TM_WIFI_TCP
+#define LWIP_TCP                        (TM_WIFI_TCP || TM_WEB_SERVER || TM_MQTT)
 /* The altcp shim is only needed by application protocols written against it
  * Nothing in this tree uses it; turn it on here if you add something that
  * does. */
-#define LWIP_ALTCP                      0
+#define LWIP_ALTCP                      TM_MQTT
 #define LWIP_ALTCP_TLS                  0
 #define LWIP_DHCP                       TM_WIFI_DHCP
 #define LWIP_AUTOIP                     0
@@ -41,20 +41,20 @@
 #define LWIP_NETIF_EXT_STATUS_CALLBACK  0
 
 #define MEM_ALIGNMENT                   4
-#if TM_WIFI_TCP
+#if LWIP_TCP
 #define MEM_SIZE                        (12 * 1024)
 #else
 #define MEM_SIZE                        (8 * 1024)
 #endif
 #define MEMP_NUM_PBUF                   16
-#define MEMP_NUM_SYS_TIMEOUT            8
+#define MEMP_NUM_SYS_TIMEOUT            12
 #define PBUF_POOL_SIZE                  8
 #define PBUF_POOL_BUFSIZE               1600
 
 /* Phase 7 opens exactly one outbound connection and never listens.  The
  * send window stays small on purpose: the gate is stop-and-wait, so a large
  * window would only cost RAM the kernel qualification also needs. */
-#if TM_WIFI_TCP
+#if LWIP_TCP
 /* Each finished connection lingers in TIME_WAIT for 2MSL while still holding
  * a pool entry, and the cumulative image now opens two connections in
  * sequence (Phase 7, then Phase 8).  Two entries would force lwIP to

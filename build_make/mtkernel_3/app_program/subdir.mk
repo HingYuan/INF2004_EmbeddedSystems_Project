@@ -11,6 +11,7 @@ OBJS += $(subst ../, ./mtkernel_3/, $(TEMP_OBJS))
 C_DEPS += $(subst ../, ./mtkernel_3/, $(TEMP_DEPS))
 
 mtkernel_3/app_program/%.o: ../app_program/%.c
+	@mkdir -p "$(@D)"
 	@echo 'Building file: $<'
 	$(GCC) $(CFLAGS) -D$(TARGET) $(INCPATH) -MF"$(@:%.o=%.d)" -MT"$(@)" -c -o "$@" "$<"
 	@echo 'Finished building: $<'

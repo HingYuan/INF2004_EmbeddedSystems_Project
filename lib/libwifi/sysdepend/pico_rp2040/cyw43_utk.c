@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* Core-0-owned CYW43439 polling service for micro T-Kernel. */
+/* Core-1-owned CYW43439 polling service for micro T-Kernel. */
 
 #include "cyw43.h"
 #include "cyw43_country.h"
@@ -14,6 +14,12 @@
 #include "lwip/init.h"
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
+#endif
+#if TM_WIFI_NETIF && TM_WEB_SERVER
+#include "web_server.h"
+#endif
+#if TM_MQTT
+#include "mqtt_client.h"
 #endif
 #if TM_WIFI_DHCP
 #include "lwip/dhcp.h"
@@ -64,7 +70,7 @@ extern void mp_memory_barrir(void);
 extern uint64_t time_us_64(void);
 
 /* Seqlock guarding radio_status.  The radio-owner task publishes field by
- * field on processor 1 while the qualification harness reads the whole
+ * field on processor 2 while the qualification harness reads the whole
  * structure from the other processor, so an unguarded copy can mix fields
  * from two different updates.  Odd means a publication is in progress. */
 static volatile uint32_t status_version;
@@ -515,6 +521,12 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #if TM_WIFI_DHCP
         update_dhcp_status();
 #endif
+#if TM_WIFI_NETIF && TM_WEB_SERVER
+    web_server_poll(&cyw43_state.netif[CYW43_ITF_STA]);
+#endif
+#if TM_MQTT
+        mqtt_dashboard_poll(&cyw43_state.netif[CYW43_ITF_STA]);
+#endif
 #if TM_WIFI_DNS
         update_dns_status();
 #endif
@@ -594,6 +606,29 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
                 radio_status.join_result = -CYW43_ETIMEDOUT;
                 mp_memory_barrir();
                 radio_status.join_complete = 1;
+            }
+        }
+#endif
+#if TM_WIFI_JOIN
+        /* Auto-reconnect on link drop after successful join */
+        if(radio_status.join_complete && radio_status.join_result == 0
+           && !radio_status.link_up) {
+            static uint64_t reconnect_backoff_us;
+            uint64_t now_rc = time_us_64();
+            if(now_rc - reconnect_backoff_us >= 5000000ULL) {
+                reconnect_backoff_us = now_rc;
+                join_started_us = now_rc;
+                radio_status.join_complete = 0;
+#if TM_WIFI_DHCP
+                radio_status.dhcp_complete = 0;
+                dhcp_started_us = 0;
+                dhcp_ipv4_adopted = 0;
+#endif
+                (void)cyw43_wifi_join(&cyw43_state,
+                                      sizeof(wifi_ssid) - 1, wifi_ssid,
+                                      sizeof(wifi_password) - 1, wifi_password,
+                                      UTK_WIFI_AUTH, NULL,
+                                      CYW43_CHANNEL_NONE);
             }
         }
 #endif

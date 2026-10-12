@@ -164,7 +164,7 @@ is physical RP2040 core 0.
 | USB transmit ring | Consumed by the USB service; produced from either processor | Whole `tm_printf` call lock, then the interrupt-preserving ring lock |
 | UART0 T-Monitor mirror | Processor 1 owns configuration and direct access | The same whole-call lock serializes the UART mirror |
 | Sample UART / I2C / ADC driver IRQs | Processor 1 | Atomic mSDI lock serializes requests; per-unit interrupt-preserving spinlock protects task/IRQ handoff |
-| CYW43439 PIO-SPI, DMA, pins and state | Processor 1 | Service task pinned `TP_PRC1`; other tasks may only read its published status |
+| CYW43439 PIO-SPI, DMA, pins and state | Processor 2 | Service task pinned `TP_PRC2` (physical RP2040 core 1); other tasks may only read its published status |
 | SysTick / timekeeper | Processor 1 | Core 1 SysTick remains disabled |
 | SIO FIFO IRQs | The corresponding processor | Core 0 owns `SIO_IRQ_PROC0`; core 1 owns `SIO_IRQ_PROC1` |
 | Flash / XIP control | System-wide | Other core must complete an acknowledged SRAM-safe park protocol first |
