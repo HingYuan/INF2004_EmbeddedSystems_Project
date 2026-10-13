@@ -435,14 +435,13 @@ LOCAL T_CTSK ctsk_producer = {
 #endif
 };
 
-
 LOCAL T_CTSK ctsk_consumer = {
 	.itskpri	= 6,
 	.stksz		= STACK_SZ,
 	.task		= consumer_task,
 #if TK_SUPPORT_SMP
 	.tskatr		= TA_HLNG | TA_RNG3 | TA_ASSPRC,
-	.assprc		= TP_PRC2,
+	.assprc		= TP_PRC1,
 #else
 	.tskatr		= TA_HLNG | TA_RNG3,
 #endif
@@ -497,8 +496,6 @@ LOCAL T_CFLG cflg = {
 	.flgatr		= TA_TFIFO | TA_WMUL,
 	.iflgptn	= 0,
 };
-
-
 
 /* ------------------------------------------------------------------ *
  *  Entry point
