@@ -31,6 +31,7 @@
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
+#include "Motor/Motor_task.h"
 
 #if TK_SUPPORT_SMP
 #include <tk/smp.h>
@@ -88,6 +89,7 @@ LOCAL ID	mtxid;			/* guards next_seq                   */
 LOCAL ID	mbfid;			/* producer -> consumer              */
 LOCAL ID	semid;			/* consumer -> producer (credits)    */
 LOCAL ID	flgid;			/* both -> monitor                   */
+ID motion_mbf_id;           /* Navigation -> Motor Controller    */
 
 /* Shared state.  next_seq is guarded by the mutex; the counters below are
    written by one task each and only read by the monitor, so they need no
@@ -101,6 +103,7 @@ LOCAL INT	last_made_on, last_seen_on;
 LOCAL UW	mpf_buf[(N_RECORDS * sizeof(RECORD) + sizeof(UW) - 1) / sizeof(UW)
 			+ N_RECORDS];
 LOCAL UW	mbf_buf[(CREDITS * sizeof(RECORD)) / sizeof(UW) + CREDITS * 4];
+LOCAL UW motion_mbf_buf[(5 * sizeof(MotionCommand)) / sizeof(UW) + 5 * 4];
 
 /* ------------------------------------------------------------------ *
  *  Producer -- pinned to processor 1 under SMP
@@ -432,6 +435,7 @@ LOCAL T_CTSK ctsk_producer = {
 #endif
 };
 
+
 LOCAL T_CTSK ctsk_consumer = {
 	.itskpri	= 6,
 	.stksz		= STACK_SZ,
@@ -476,6 +480,13 @@ LOCAL T_CMBF cmbf = {
 	.bufptr		= mbf_buf,
 };
 
+LOCAL T_CMBF cmbf_motion = {
+	.mbfatr		= TA_TFIFO,
+	.bufsz		= sizeof(MotionCommand) * 5,
+	.maxmsz		= sizeof(MotionCommand),
+	.bufptr     = motion_mbf_buf,
+};
+
 LOCAL T_CSEM csem = {
 	.sematr		= TA_TFIFO,
 	.isemcnt	= CREDITS,
@@ -486,6 +497,8 @@ LOCAL T_CFLG cflg = {
 	.flgatr		= TA_TFIFO | TA_WMUL,
 	.iflgptn	= 0,
 };
+
+
 
 /* ------------------------------------------------------------------ *
  *  Entry point
@@ -509,6 +522,8 @@ EXPORT INT usermain(void)
 	mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
 	mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
 	mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
+	motion_mbf_id = tk_cre_mbf(&cmbf_motion); 
+	if(!made("mbf_motion", motion_mbf_id)) return 1;
 	semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
 	flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
 
