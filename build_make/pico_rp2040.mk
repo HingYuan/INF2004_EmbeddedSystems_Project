@@ -26,11 +26,10 @@ endif
 
 # Console default is needed here because the image name includes it.
 #
-# Defaults to uart because it remains the early/panic and core qualification
-# profile.  The optional Phase 11 SMP USB-CDC profile is also qualified; it
-# retains UART as a mirror and adds a core-0-owned service task plus an SMP-safe
-# producer ring.
-CONSOLE ?= uart
+# Defaults to USB CDC so the Pico's USB data cable provides the monitor
+# console.  UART remains available with CONSOLE=uart for early/panic output
+# and hardware qualification.
+CONSOLE ?= usb_cdc
 
 # Optional Pico W radio profile.  The default remains byte-compatible with
 # the qualified release; WIFI=cyw43 adds the core-0-owned polling service and
@@ -53,6 +52,36 @@ endif
 WIFI_NETIF ?= 0
 ifneq ($(filter $(WIFI_NETIF),0 1),$(WIFI_NETIF))
 $(error Unknown WIFI_NETIF '$(WIFI_NETIF)'; use 0 or 1)
+endif
+
+# Optional raw-TCP web server.  This enables lwIP TCP without enabling the
+# separate TCP echo-client qualification profile.
+WEB_SERVER ?= 0
+ifneq ($(filter $(WEB_SERVER),0 1),$(WEB_SERVER))
+$(error Unknown WEB_SERVER '$(WEB_SERVER)'; use 0 or 1)
+endif
+ifeq ($(WEB_SERVER),1)
+ifneq ($(WIFI_NETIF),1)
+$(error WEB_SERVER=1 requires WIFI_NETIF=1)
+endif
+endif
+
+# Optional MQTT subscriber for the dashboard. MQTT is driven from the
+# existing core-1 lwIP poll service; it does not create a second lwIP task.
+MQTT ?= 0
+ifneq ($(filter $(MQTT),0 1),$(MQTT))
+$(error Unknown MQTT '$(MQTT)'; use 0 or 1)
+endif
+ifeq ($(MQTT),1)
+ifneq ($(WIFI_NETIF),1)
+$(error MQTT=1 requires WIFI_NETIF=1)
+endif
+ifneq ($(WIFI_JOIN),1)
+$(error MQTT=1 requires WIFI_JOIN=1)
+endif
+ifeq ($(wildcard ../config/mqtt_config.h),)
+$(error MQTT=1 needs config/mqtt_config.h; copy it from config/mqtt_config.example.h and set the broker values)
+endif
 endif
 
 # Phase-3 gate: static IPv4, next-hop ARP resolution and an ICMP echo.  Network
@@ -219,17 +248,20 @@ $(E2U): $(E2U_SRC) $(E2U_DIR)/elf.h $(E2U_DIR)/boot/uf2.h
 CFLAGS := -mcpu=cortex-m0plus -mthumb -ffreestanding\
     -std=gnu11 \
     -O2 -g3 \
+    -pipe \
     -MMD -MP \
     -mfloat-abi=soft \
 
 ASFLAGS := -mcpu=cortex-m0plus -mthumb -ffreestanding\
     -x assembler-with-cpp \
     -O2 -g3 \
+    -pipe \
     -MMD -MP \
 
 LFLAGS := -mcpu=cortex-m0plus -mthumb -ffreestanding \
     -nostartfiles \
     -O2 -g3 \
+    -pipe \
     -mfloat-abi=soft \
 
 LNKFILE := "../etc/linker/pico_rp2040/tkernel_map.ld"
@@ -268,7 +300,7 @@ endif
 # before any recipe executes.
 ################################################################################
 
-PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)
+PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-web$(WEB_SERVER)-mqtt$(MQTT)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)
 PROFILE_FILE := .build_profile
 
 ifneq ($(strip $(shell cat $(PROFILE_FILE) 2>/dev/null)),$(PROFILE_ID))
@@ -281,7 +313,7 @@ endif
 
 ifeq ($(CONSOLE),usb_cdc)
 
-PICO_SDK_PATH ?= ../../sdk/pico-sdk
+PICO_SDK_PATH ?= ../pico-sdk
 TINYUSB_PATH := $(PICO_SDK_PATH)/lib/tinyusb
 
 ifeq ($(wildcard $(TINYUSB_PATH)/src/tusb.c),)
@@ -392,6 +424,9 @@ LWIP_SRCS := core/init.c core/def.c core/dns.c core/inet_chksum.c \
              core/ipv4/icmp.c core/ipv4/igmp.c core/ipv4/ip4_frag.c \
              core/ipv4/ip4.c core/ipv4/ip4_addr.c core/ipv4/acd.c \
              netif/ethernet.c
+ifeq ($(MQTT),1)
+LWIP_SRCS += apps/mqtt/mqtt.c
+endif
 LWIP_OBJS := $(addprefix ./mtkernel_3/lwip/,$(LWIP_SRCS:.c=.o))
 LWIP_PORT_OBJS := ./mtkernel_3/lib/libnet/lwip/lwip_utk.o
 ifneq ($(filter 1,$(WIFI_STATIC) $(WIFI_DHCP)),)
@@ -409,12 +444,14 @@ endif
 endif
 
 WIFI_INCLUDES := -I"$(WIFIDIR)" \
+                 -I"../app_program/Network" \
                  -I"../lib/libtm/sysdepend/pico_rp2040/usb" \
                  -I"$(CYW43_DRIVER_PATH)/src" \
                  -I"$(CYW43_DRIVER_PATH)/firmware" \
                  -I"$(CYW43_PICO_PATH)/include" \
                  -I"$(PICO_SDK_PATH)/src/boards/include" \
                  -I"$(PICO_SDK_PATH)/src/common/pico_base_headers/include" \
+                 -I"$(PICO_SDK_PATH)/src/common/pico_util/include" \
                  -I"$(PICO_SDK_PATH)/src/common/hardware_claim/include" \
                  -I"$(PICO_SDK_PATH)/src/common/pico_binary_info/include" \
                  -I"$(PICO_SDK_PATH)/src/rp2040/pico_platform/include" \
@@ -443,6 +480,8 @@ endif
 
 CFLAGS += -DTM_WIFI_CYW43=1 -DTM_WIFI_JOIN=$(WIFI_JOIN) \
           -DTM_WIFI_NETIF=$(WIFI_NETIF) -DCYW43_LWIP=$(WIFI_NETIF) \
+          -DTM_WEB_SERVER=$(WEB_SERVER) \
+          -DTM_MQTT=$(MQTT) \
           -DTM_WIFI_STATIC=$(WIFI_STATIC) -DTM_WIFI_DHCP=$(WIFI_DHCP) \
           -DTM_WIFI_DNS=$(WIFI_DNS) -DTM_WIFI_UDP=$(WIFI_UDP) \
           -DTM_WIFI_TCP=$(WIFI_TCP) -DTM_WIFI_TCPBULK=$(WIFI_TCPBULK) \

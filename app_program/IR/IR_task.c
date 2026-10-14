@@ -9,7 +9,7 @@
 
 typedef struct {
     UH pattern;
-    char character;
+    B character;
 } CODE_39_ENTRY;
 
 static const CODE_39_ENTRY code39_dict[] = {
@@ -67,17 +67,18 @@ static const CODE_39_ENTRY code39_dict[] = {
   
 #define BARS_PER_CHAR      10
 #define BAR_THRESHOLD    2500
+#define DEBOUNCE_TICKS      5
 
 EXPORT void ir_sensor_task(INT pin_left, INT pin_right, INT side, void *exinf)
 {
 	INT left_prev_state;
-    INT left_curr_state;
-
 	INT right_prev_state;
-    INT right_curr_state;
 
     INT left_state_change;
     INT right_state_change;
+
+    INT left_debounce_count = 0;
+    INT right_debounce_count = 0;
 
     // Set up left IR
 	(void)exinf;
@@ -97,36 +98,63 @@ EXPORT void ir_sensor_task(INT pin_left, INT pin_right, INT side, void *exinf)
     right_prev_state = (INT)gpio_get_val((UINT)pin_right);
     
 	while(1) {
-		left_curr_state = (INT)gpio_get_val((UINT)pin_left);
-        right_curr_state = (INT)gpio_get_val((UINT)pin_right);
+		INT left_curr_state = (INT)gpio_get_val((UINT)pin_left);
+        INT right_curr_state = (INT)gpio_get_val((UINT)pin_right);
 
-        left_state_change = left_curr_state != left_prev_state;
-        right_state_change = right_curr_state != right_prev_state;
-        
-        if (left_state_change || right_state_change) {
-			// Construct and send message to navigator
-			NAVIGATOR_MESSAGE nm;
-			nm.type = MSG_IR_UPDATE;
+        INT state_changed = 0;
 
-			// If state change is for both sensors
-            if (left_state_change == right_state_change && right_state_change == 1) {			// change to Black-Black
-				nm.data.ir_state = STATE_B_B;
-            } else if (left_state_change == right_state_change && right_state_change == 0) {	// change to White-White
-				nm.data.ir_state = STATE_W_W;
+        // Do debouncing to make sure that car is committing to state change, do this to reduce spam to navigator mbf
+
+        // Debounce left sensor
+        if (left_curr_state != left_prev_state) {
+            left_debounce_count++;
+
+            if (left_debounce_count >= DEBOUNCE_TICKS) {
+                left_prev_state = left_curr_state;
+                left_debounce_count = 0;
+                state_changed = 1;
             }
-
-			// If state change for only one sensor
-            if (left_state_change > right_state_change) {										// change to Black-White
-				nm.data.ir_state = STATE_B_W;
-            } else if (left_state_change < right_state_change) {								// change to White-Black
-				nm.data.ir_state = STATE_W_B;
-            }
-
-			tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+        } else {
+            left_debounce_count = 0;
         }
 
-		tk_dly_tsk(10);
-	}
+        // Debounce right sensor
+        if (right_curr_state != right_prev_state) {
+            right_debounce_count++;
+
+            if (right_debounce_count >= DEBOUNCE_TICKS) {
+                right_prev_state = right_curr_state;
+                right_debounce_count = 0;
+                state_changed = 1;
+            }
+        } else {
+            right_debounce_count = 0;
+        }
+        
+        if (state_changed) {
+            // Construct and send message to navigator
+            NAVIGATOR_MESSAGE nm;
+            nm.type = MSG_IR_UPDATE;
+
+            // If state change is for both sensors
+            if (left_state_change == 1 && right_state_change == 1) {			    // change to Black-Black
+                nm.data.ir_state = STATE_B_B;
+            } else if (left_state_change == 0 && right_state_change == 0) {         // change to White-White
+                nm.data.ir_state = STATE_W_W;
+            }
+
+            // If state change for only one sensor
+            if (left_state_change > right_state_change) {	    			        // change to Black-White	
+                nm.data.ir_state = STATE_B_W;
+            } else if (left_state_change < right_state_change) {				    // change to White-Black
+                nm.data.ir_state = STATE_W_B;
+            }
+
+            tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+        }
+
+        tk_dly_tsk(10);
+    }
 }
 
 EXPORT void ir_barcode_task(INT pin, void *exinf)
@@ -207,7 +235,7 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
                 }
 
                 // default unknown characters to '?'
-                char decoded_char = '?';
+                B decoded_char = '?';
 
                 // Search code39_dict for pattern
                 for (INT i = 0; i < CODE39_DICT_SIZE; i++) {
@@ -219,13 +247,15 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
 
                 tm_printf((UB *)"[decoder] Matched pattern 0x%03X to character: %c\n", current_pattern, decoded_char);
 
-                // Construct and send message to navigator
-                NAVIGATOR_MESSAGE nm = {
-                    .type = MSG_BARCODE_DECODED,
-                    .data.decoded_char = decoded_char,
-                };
+                if (decoded_char != '*') {  //ignore asterisk
+                    // Construct and send message to navigator
+                    NAVIGATOR_MESSAGE nm = {
+                        .type = MSG_BARCODE_DECODED,
+                        .data.decoded_char = decoded_char,
+                    };
 
-                tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+                    tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+                }
 
                 // Decrease bar_count to remove the decoded character's bars
                 bar_count -= BARS_PER_CHAR;
