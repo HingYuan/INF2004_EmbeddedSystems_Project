@@ -67,8 +67,14 @@ LOCAL ID imu_dd = 0;    // "iica" device descriptor
  * instead. GP8/GP9 are only detached if they still carry I2C (the motor task
  * may already have claimed them for PWM) - RP2040 ORs a peripheral input that
  * is selected on several pins, so an idle GP8/GP9 would corrupt SDA reads. */
+#define RP2040_UART0_BASE   (0x40034000UL)
+
 LOCAL void imu_route_pins(void)
 {
+#if IMU_SDA_PIN == 0
+    /* If GP0/GP1 were claimed by UART0, disable the UART hardware so it releases the pins */
+    out_w(RP2040_UART0_BASE + 0x030, 0); // UART0_CR = 0 (disable UART0)
+#endif
 #if IMU_SDA_PIN != 8
     if((in_w(GPIO_CTRL(8)) & 0x1F) == GPIO_CTRL_FUNCSEL_I2C) out_w(GPIO_CTRL(8), GPIO_CTRL_FUNCSEL_NULL);
     if((in_w(GPIO_CTRL(9)) & 0x1F) == GPIO_CTRL_FUNCSEL_I2C) out_w(GPIO_CTRL(9), GPIO_CTRL_FUNCSEL_NULL);
@@ -79,31 +85,26 @@ LOCAL void imu_route_pins(void)
     out_w(GPIO_CTRL(IMU_SCL_PIN), GPIO_CTRL_FUNCSEL_I2C);
 }
 
-LOCAL bool imu_write_reg(uint8_t addr, uint8_t reg, uint8_t val)
+LOCAL ER imu_write_reg(uint8_t addr, uint8_t reg, uint8_t val)
 {
-    return i2c_write_reg(imu_dd, addr, reg, val) >= E_OK;
+    return i2c_write_reg(imu_dd, addr, reg, val);
 }
+
+LOCAL UW active_accel_addr = LSM303_ACCEL_ADDR;
 
 LOCAL bool imu_read_accel_raw(int16_t *x, int16_t *y, int16_t *z)
 {
-    UB reg = OUT_X_L_A | 0x80; // Set MSB for auto-increment
-    UB raw[6];
-    T_I2C_EXEC exec;
-    SZ asz;
+    UB data[6];
+    INT i;
 
-    // Register-pointer write + 6-byte read in one repeated-start transaction
-    exec.sadr     = LSM303_ACCEL_ADDR;
-    exec.snd_size = 1;
-    exec.snd_data = &reg;
-    exec.rcv_size = sizeof(raw);
-    exec.rcv_data = raw;
-    if (tk_swri_dev(imu_dd, TDN_I2C_EXEC, &exec, sizeof(exec), &asz) < E_OK) return false;
-
-    // 12-bit accelerometer data is left-justified in 16-bit registers (shift right by 4)
-    *x = (int16_t)((raw[1] << 8) | raw[0]) >> 4;
-    *y = (int16_t)((raw[3] << 8) | raw[2]) >> 4;
-    *z = (int16_t)((raw[5] << 8) | raw[4]) >> 4;
-
+    // Use byte-by-byte register reads (0xA8 = OUT_X_L_A with auto-increment bit)
+    for(i = 0; i < 6; i++) {
+        ER er = i2c_read_reg(imu_dd, active_accel_addr, (UW)(0xA8 + i), &data[i]);
+        if(er < E_OK) return false;
+    }
+    *x = (int16_t)(((UINT)data[1] << 8) | data[0]) >> 4;
+    *y = (int16_t)(((UINT)data[3] << 8) | data[2]) >> 4;
+    *z = (int16_t)(((UINT)data[5] << 8) | data[4]) >> 4;
     return true;
 }
 
@@ -121,6 +122,25 @@ static void imu_read_accel_g(float *gx, float *gy, float *gz)
     }
 }
 
+LOCAL void imu_scan_bus(void)
+{
+    tm_printf((UB *)"[IMU] Scanning I2C bus (%s) on GP%d(SDA), GP%d(SCL)...\n",
+              (UB *)IMU_I2C_DEVNAME, IMU_SDA_PIN, IMU_SCL_PIN);
+    INT found = 0;
+    for(UW addr = 0x08; addr <= 0x77; addr++) {
+        UB dummy = 0;
+        // Try reading 1 byte from reg 0x00 or 0x0F
+        ER er = i2c_read_reg(imu_dd, addr, 0x0F, &dummy);
+        if(er >= E_OK) {
+            tm_printf((UB *)"[IMU SCAN] Found device responding at 0x%02x (reg 0x0F = 0x%02x)\n", (UINT)addr, (UINT)dummy);
+            found++;
+        }
+    }
+    if(found == 0) {
+        tm_printf((UB *)"[IMU SCAN] No devices responded on I2C bus.\n");
+    }
+}
+
 EXPORT void imu_task(INT stacd, void *exinf)
 {
     (void)stacd;
@@ -132,6 +152,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
     // Integration variables for hump height
     float vertical_velocity = 0.0f; // m/s
     float hump_peak_height = 0.0f;  // cm
+    INT telemetry_timer = 0;
 
     tm_printf((UB *)"[IMU] Task started on PRC%d\n", (INT)tk_get_prc());
 
@@ -142,30 +163,47 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 if (imu_dd <= 0) {
                     imu_dd = tk_opn_dev((const UB *)IMU_I2C_DEVNAME, TD_UPDATE);
                     if (imu_dd <= E_OK) {
-                        tm_printf((UB *)"[IMU] cannot open %s, er=%d\n", (UB *)IMU_I2C_DEVNAME, imu_dd);
+                        tm_printf((UB *)"[IMU STATUS] FAILED to open I2C device %s (er=%d)\n", (UB *)IMU_I2C_DEVNAME, imu_dd);
                         imu_dd = 0;
                         tk_dly_tsk(1000);
                         break;
                     }
                     imu_route_pins();
+                    tk_dly_tsk(50);
+                    imu_scan_bus();
                 }
 
                 // Configure LSM303DLHC Accelerometer
-                // CTRL_REG1_A: 0x57 (100Hz ODR, all axes enabled)
-                // CTRL_REG4_A: 0x08 (High-resolution mode enabled)
-                if (imu_write_reg(LSM303_ACCEL_ADDR, CTRL_REG1_A, 0x57) &&
-                    imu_write_reg(LSM303_ACCEL_ADDR, CTRL_REG4_A, 0x08)) {
-                    tm_printf((UB *)"[IMU] LSM303DLHC configured on GP%d (SDA), GP%d (SCL)\n",
-                              IMU_SDA_PIN, IMU_SCL_PIN);
+                // Try configured address (0x19) or alt address (0x18)
+                UW accel_addr = LSM303_ACCEL_ADDR;
+                ER er1 = imu_write_reg(accel_addr, CTRL_REG1_A, 0x57);
+                if (er1 < E_OK) {
+                    // Try alternative address 0x18
+                    accel_addr = 0x18;
+                    er1 = imu_write_reg(accel_addr, CTRL_REG1_A, 0x57);
+                }
+
+                ER er2 = (er1 >= E_OK) ? imu_write_reg(accel_addr, CTRL_REG4_A, 0x08) : er1;
+
+                if (er1 >= E_OK && er2 >= E_OK) {
+                    active_accel_addr = accel_addr;
+                    tm_printf((UB *)"====================================================\n");
+                    tm_printf((UB *)"[IMU STATUS] CONNECTED! LSM303DLHC ready at 0x%02x\n", (UINT)active_accel_addr);
+                    tm_printf((UB *)"[IMU STATUS] Bus: %s | SDA: GP%d | SCL: GP%d\n",
+                              (UB *)IMU_I2C_DEVNAME, IMU_SDA_PIN, IMU_SCL_PIN);
+                    tm_printf((UB *)"====================================================\n");
                     state = STATE_CALIBRATING;
                 } else {
-                    tm_printf((UB *)"[IMU] Device not found on I2C bus. Retrying...\n");
-                    tk_dly_tsk(500);
+                    tm_printf((UB *)"[IMU STATUS] NOT CONNECTED! No response at 0x19 or 0x18 (er=%d).\n", er1);
+                    tm_printf((UB *)"             Check wiring: SDA -> GP%d, SCL -> GP%d, 3.3V, GND.\n",
+                              IMU_SDA_PIN, IMU_SCL_PIN);
+                    tk_dly_tsk(1000);
                 }
                 break;
             }
 
             case STATE_CALIBRATING: {
+                tm_printf((UB *)"[IMU STATUS] Calibrating 1g static baseline...\n");
                 // Collect 50 samples to establish static flat-ground 1g reference
                 float sum_z = 0.0f;
                 const int SAMPLES = 50;
@@ -177,8 +215,9 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     tk_dly_tsk(10);
                 }
                 baseline_z = sum_z / (float)SAMPLES;
-                tm_printf((UB *)"[IMU] Baseline calibrated: Z = %d.%02d g\n", 
-                          (INT)baseline_z, (INT)(fabs(baseline_z * 100.0f)) % 100);
+                INT bz_int = (INT)baseline_z;
+                INT bz_dec = (INT)(fabsf(baseline_z * 100.0f)) % 100;
+                tm_printf((UB *)"[IMU STATUS] Calibration complete. Baseline Z: %d.%02d g\n", bz_int, bz_dec);
 
                 state = STATE_MONITORING;
                 break;
@@ -190,6 +229,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                 float total_g = sqrtf(gx * gx + gy * gy + gz * gz);
                 float pitch = atan2f(gx, sqrtf(gy * gy + gz * gz)) * 180.0f / 3.14159f;
+                float roll  = atan2f(gy, gz) * 180.0f / 3.14159f;
 
                 // Priority 1: Emergency Shock Detection (> 2.5g)
                 if (total_g > SHOCK_THRESHOLD_G) {
@@ -211,6 +251,17 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     break;
                 }
 
+                // Periodic telemetry display every 500 ms (50 * 10ms ticks)
+                if (++telemetry_timer >= 50) {
+                    telemetry_timer = 0;
+                    INT g_int = (INT)total_g;
+                    INT g_dec = (INT)(fabsf(total_g * 100.0f)) % 100;
+                    INT gz_int = (INT)gz;
+                    INT gz_dec = (INT)(fabsf(gz * 100.0f)) % 100;
+
+                    tm_printf((UB *)"[IMU READINGS] Pitch: %4d deg | Roll: %4d deg | Total: %d.%02d g | Z: %d.%02d g [OK]\n",
+                              (INT)pitch, (INT)roll, g_int, g_dec, gz_int, gz_dec);
+                }
                 break;
             }
 
@@ -366,3 +417,4 @@ EXPORT void imu_task(INT stacd, void *exinf)
 // 		tk_dly_tsk(250);
 // 	}
 // }
+
