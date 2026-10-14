@@ -104,7 +104,7 @@ EXPORT ER robot_tasks_start(void)
 		// { ir_sensor_task, IR_CENTER_PIN, "IR-center" },
 		{ ir_barcode_task, 5, IR_LEFT_PIN, TP_PRC1, "IR-right" },
 		{ ir_barcode_decoder_task, 5, 0, TP_PRC1, "IR-barcode-decoder" },
-		{ motor_task, 9, 0, TP_PRC2, "motors" },
+		{ motor_task, 9, 0, TP_PRC1, "motors" },
 		// { imu_task, 0, "IMU" }
 	};
     
