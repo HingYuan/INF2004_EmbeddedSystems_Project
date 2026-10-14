@@ -66,6 +66,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     crb_push(&barcode_characters, n_msg.data.decoded_char);
 
                     // match with network's CRB(to do) to match each decoded letter to the commands, store into instruction hashmap
+                    
 
                     break;
                 case MSG_OBSTACLE_DETECTED:
