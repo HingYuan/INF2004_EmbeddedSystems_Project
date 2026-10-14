@@ -4,11 +4,10 @@
 #include <tk/tkernel.h>
 
 typedef enum {
-    MODE_LINE_FOLLOWING,    // IR is aware of line and navigator is following it
-    MODE_WALL_HUGGING,      // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
-    MODE_REENTRY_DETECT,    // IR detects black line during MODE_WALL_HUGGING
-    MODE_REENTRY_ADVANCE,   // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
-    MODE_REENTRY_PIVOT,     // Navigator spins the car in place to align with line
+    MODE_LINE_FOLLOWING,        // IR is aware of line and navigator is following it
+    MODE_WALL_HUGGING,          // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
+    MODE_REENTRY_ADVANCE,       // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
+    MODE_REENTRY_PIVOT,         // Navigator spins the car in place to align with line
 } MOVEMENT_MODE;
 
 typedef enum {
@@ -24,16 +23,16 @@ typedef enum {
 } DIRECTION;
 
 typedef enum {
-    MSG_IR_UPDATE,
-    MSG_OBSTACLE_DETECTED,
-    MSG_BARCODE_DECODED,
+    MSG_IR_UPDATE,              // Line following sensor update, car veering off
+    MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
+    MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
 } MESSAGE_TYPE;
 
 typedef struct {
     MESSAGE_TYPE type;
     union {
         IR_STATE ir_state;
-        VB decoded_char;
+        B decoded_char;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 
