@@ -1,3 +1,6 @@
+#include <stdint.h>
+#include <stdbool.h>
+
 #include <tk/tkernel.h>
 #include <tk/device.h>
 #include <tm/tmonitor.h>
@@ -5,7 +8,292 @@
 
 #include "IMU_task.h"
 #include "../robot_tasks.h"
+#include "../../device/include/dev_i2c.h"
 
+/* No <math.h>/libm here: the header clashes with uT-Kernel's size_t typedef,
+ * and libm drags in newlib syscalls (_write, _sbrk...) the kernel doesn't
+ * provide. These small helpers are accurate enough for tilt/shock detection. */
+#define fabsf(x)        __builtin_fabsf(x)   // inlined, no libm call
+#define fabs(x)         __builtin_fabs(x)
+
+LOCAL float imu_sqrtf(float x)
+{
+    if (x <= 0.0f) return 0.0f;
+    float r = (x > 1.0f) ? x : 1.0f;        // start above the root
+    for (int i = 0; i < 12; i++) r = 0.5f * (r + x / r);  // Newton
+    return r;
+}
+
+/* atan2 in radians, max error ~0.005 rad (~0.3 deg) */
+LOCAL float imu_atan2f(float y, float x)
+{
+    const float PI = 3.14159265f;
+    float ax = fabsf(x), ay = fabsf(y);
+    if (ax == 0.0f && ay == 0.0f) return 0.0f;
+    float a = (ax > ay) ? ay / ax : ax / ay;
+    float r = a * (PI / 4.0f) + 0.273f * a * (1.0f - a);
+    if (ay > ax) r = PI / 2.0f - r;
+    if (x < 0.0f) r = PI - r;
+    return (y < 0.0f) ? -r : r;
+}
+#define sqrtf(x)        imu_sqrtf(x)
+#define atan2f(y, x)    imu_atan2f(y, x)
+
+#if (IMU_SDA_PIN % 4) != 0 || IMU_SDA_PIN > 20 || IMU_SCL_PIN != (IMU_SDA_PIN + 1)
+#error "IMU pins must be an RP2040 I2C0 SDA/SCL pair: GP0/1, GP4/5, GP8/9, GP12/13, GP16/17 or GP20/21"
+#endif
+#if IMU_SDA_PIN == 0 && !TM_CONSOLE_USB_CDC
+#error "IMU on GP0/GP1 collides with the UART console; build with CONSOLE=usb_cdc"
+#endif
+
+extern ID navigator_mbfid;
+
+typedef enum {
+    STATE_INITIALIZE,
+    STATE_CALIBRATING,
+    STATE_MONITORING,
+    STATE_TILT_WARNING,
+    STATE_HUMP_INTEGRATING,
+    STATE_SHOCK_DETECTED
+} IMU_FSM_STATE;
+
+#define CTRL_REG1_A           0x20
+#define CTRL_REG4_A           0x23
+#define OUT_X_L_A             0x28
+
+LOCAL ID imu_dd = 0;    // "iica" device descriptor
+
+/* The I2C driver routes I2C0 to GP8/GP9 at boot. Route it to the IMU pins
+ * instead. GP8/GP9 are only detached if they still carry I2C (the motor task
+ * may already have claimed them for PWM) - RP2040 ORs a peripheral input that
+ * is selected on several pins, so an idle GP8/GP9 would corrupt SDA reads. */
+LOCAL void imu_route_pins(void)
+{
+#if IMU_SDA_PIN != 8
+    if((in_w(GPIO_CTRL(8)) & 0x1F) == GPIO_CTRL_FUNCSEL_I2C) out_w(GPIO_CTRL(8), GPIO_CTRL_FUNCSEL_NULL);
+    if((in_w(GPIO_CTRL(9)) & 0x1F) == GPIO_CTRL_FUNCSEL_I2C) out_w(GPIO_CTRL(9), GPIO_CTRL_FUNCSEL_NULL);
+#endif
+    out_w(GPIO(IMU_SDA_PIN), GPIO_IE | GPIO_DRIVE_4MA | GPIO_PUE | GPIO_SHEMITT);
+    out_w(GPIO(IMU_SCL_PIN), GPIO_IE | GPIO_DRIVE_4MA | GPIO_PUE | GPIO_SHEMITT);
+    out_w(GPIO_CTRL(IMU_SDA_PIN), GPIO_CTRL_FUNCSEL_I2C);
+    out_w(GPIO_CTRL(IMU_SCL_PIN), GPIO_CTRL_FUNCSEL_I2C);
+}
+
+LOCAL bool imu_write_reg(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    return i2c_write_reg(imu_dd, addr, reg, val) >= E_OK;
+}
+
+LOCAL bool imu_read_accel_raw(int16_t *x, int16_t *y, int16_t *z)
+{
+    UB reg = OUT_X_L_A | 0x80; // Set MSB for auto-increment
+    UB raw[6];
+    T_I2C_EXEC exec;
+    SZ asz;
+
+    // Register-pointer write + 6-byte read in one repeated-start transaction
+    exec.sadr     = LSM303_ACCEL_ADDR;
+    exec.snd_size = 1;
+    exec.snd_data = &reg;
+    exec.rcv_size = sizeof(raw);
+    exec.rcv_data = raw;
+    if (tk_swri_dev(imu_dd, TDN_I2C_EXEC, &exec, sizeof(exec), &asz) < E_OK) return false;
+
+    // 12-bit accelerometer data is left-justified in 16-bit registers (shift right by 4)
+    *x = (int16_t)((raw[1] << 8) | raw[0]) >> 4;
+    *y = (int16_t)((raw[3] << 8) | raw[2]) >> 4;
+    *z = (int16_t)((raw[5] << 8) | raw[4]) >> 4;
+
+    return true;
+}
+
+static void imu_read_accel_g(float *gx, float *gy, float *gz)
+{
+    int16_t rx = 0, ry = 0, rz = 0;
+    if (imu_read_accel_raw(&rx, &ry, &rz)) {
+        *gx = (float)rx * 0.001f;
+        *gy = (float)ry * 0.001f;
+        *gz = (float)rz * 0.001f;
+    } else {
+        *gx = 0.0f;
+        *gy = 0.0f;
+        *gz = 1.0f; // Default baseline fallback
+    }
+}
+
+EXPORT void imu_task(INT stacd, void *exinf)
+{
+    (void)stacd;
+    (void)exinf;
+
+    IMU_FSM_STATE state = STATE_INITIALIZE;
+    float baseline_z = 1.0f;
+    
+    // Integration variables for hump height
+    float vertical_velocity = 0.0f; // m/s
+    float hump_peak_height = 0.0f;  // cm
+
+    tm_printf((UB *)"[IMU] Task started on PRC%d\n", (INT)tk_get_prc());
+
+    while (1) {
+        switch (state) {
+            case STATE_INITIALIZE: {
+                // Open the uT-Kernel I2C0 driver (400 kHz Fast Mode, set by the driver)
+                if (imu_dd <= 0) {
+                    imu_dd = tk_opn_dev((const UB *)IMU_I2C_DEVNAME, TD_UPDATE);
+                    if (imu_dd <= E_OK) {
+                        tm_printf((UB *)"[IMU] cannot open %s, er=%d\n", (UB *)IMU_I2C_DEVNAME, imu_dd);
+                        imu_dd = 0;
+                        tk_dly_tsk(1000);
+                        break;
+                    }
+                    imu_route_pins();
+                }
+
+                // Configure LSM303DLHC Accelerometer
+                // CTRL_REG1_A: 0x57 (100Hz ODR, all axes enabled)
+                // CTRL_REG4_A: 0x08 (High-resolution mode enabled)
+                if (imu_write_reg(LSM303_ACCEL_ADDR, CTRL_REG1_A, 0x57) &&
+                    imu_write_reg(LSM303_ACCEL_ADDR, CTRL_REG4_A, 0x08)) {
+                    tm_printf((UB *)"[IMU] LSM303DLHC configured on GP%d (SDA), GP%d (SCL)\n",
+                              IMU_SDA_PIN, IMU_SCL_PIN);
+                    state = STATE_CALIBRATING;
+                } else {
+                    tm_printf((UB *)"[IMU] Device not found on I2C bus. Retrying...\n");
+                    tk_dly_tsk(500);
+                }
+                break;
+            }
+
+            case STATE_CALIBRATING: {
+                // Collect 50 samples to establish static flat-ground 1g reference
+                float sum_z = 0.0f;
+                const int SAMPLES = 50;
+
+                for (int i = 0; i < SAMPLES; i++) {
+                    float gx, gy, gz;
+                    imu_read_accel_g(&gx, &gy, &gz);
+                    sum_z += gz;
+                    tk_dly_tsk(10);
+                }
+                baseline_z = sum_z / (float)SAMPLES;
+                tm_printf((UB *)"[IMU] Baseline calibrated: Z = %d.%02d g\n", 
+                          (INT)baseline_z, (INT)(fabs(baseline_z * 100.0f)) % 100);
+
+                state = STATE_MONITORING;
+                break;
+            }
+
+            case STATE_MONITORING: {
+                float gx, gy, gz;
+                imu_read_accel_g(&gx, &gy, &gz);
+
+                float total_g = sqrtf(gx * gx + gy * gy + gz * gz);
+                float pitch = atan2f(gx, sqrtf(gy * gy + gz * gz)) * 180.0f / 3.14159f;
+
+                // Priority 1: Emergency Shock Detection (> 2.5g)
+                if (total_g > SHOCK_THRESHOLD_G) {
+                    state = STATE_SHOCK_DETECTED;
+                    break;
+                }
+
+                // Priority 2: Critical Tilt Warning (> 30 degrees)
+                if (fabsf(pitch) > SAFE_TILT_LIMIT_DEG) {
+                    state = STATE_TILT_WARNING;
+                    break;
+                }
+
+                // Priority 3: Hump/Terrain Bump Detection
+                if (fabsf(gz - baseline_z) > HUMP_THRESHOLD_G) {
+                    vertical_velocity = 0.0f;
+                    hump_peak_height = 0.0f;
+                    state = STATE_HUMP_INTEGRATING;
+                    break;
+                }
+
+                break;
+            }
+
+            case STATE_TILT_WARNING: {
+                float gx, gy, gz;
+                imu_read_accel_g(&gx, &gy, &gz);
+                float pitch = atan2f(gx, sqrtf(gy * gy + gz * gz)) * 180.0f / 3.14159f;
+
+                tm_printf((UB *)"[IMU WARNING] Safe tilt exceeded! Pitch: %d deg\n", (INT)pitch);
+
+                IMU_TELEMETRY_MSG msg = {
+                    .event = IMU_MSG_TILT_WARNING,
+                    .pitch_deg = pitch,
+                    .peak_g = sqrtf(gx * gx + gy * gy + gz * gz)
+                };
+                if (navigator_mbfid > E_OK) {
+                    tk_snd_mbf(navigator_mbfid, &msg, sizeof(IMU_TELEMETRY_MSG), TMO_POL); //
+                }
+
+                // Hysteresis recovery check
+                if (fabsf(pitch) < (SAFE_TILT_LIMIT_DEG - 5.0f)) {
+                    state = STATE_MONITORING;
+                }
+                break;
+            }
+
+            case STATE_HUMP_INTEGRATING: {
+                float gx, gy, gz;
+                imu_read_accel_g(&gx, &gy, &gz);
+
+                // dt = 10 ms (0.01 s)
+                const float dt = 0.01f;
+                // Vertical net acceleration: a = (gz - baseline_z) * 9.81 m/s^2
+                float net_accel_mps2 = (gz - baseline_z) * 9.80665f;
+
+                vertical_velocity += net_accel_mps2 * dt;
+                
+                // Height using kinematic energy balance: h = v^2 / (2 * g)
+                float current_height_cm = (vertical_velocity * vertical_velocity) / (2.0f * 9.80665f) * 100.0f;
+                if (current_height_cm > hump_peak_height) {
+                    hump_peak_height = current_height_cm;
+                }
+
+                // Check for return to flat ground
+                if (fabsf(gz - baseline_z) < 0.10f) {
+                    tm_printf((UB *)"[IMU HUMP] Hump Cleared. Peak height: %d.%d cm\n",
+                              (INT)hump_peak_height, (INT)(hump_peak_height * 10.0f) % 10);
+
+                    IMU_TELEMETRY_MSG msg = {
+                        .event = IMU_MSG_HUMP_INTEGRATING,
+                        .estimated_height_cm = hump_peak_height
+                    };
+                    if (navigator_mbfid > E_OK) {
+                        tk_snd_mbf(navigator_mbfid, &msg, sizeof(IMU_TELEMETRY_MSG), TMO_POL); //[cite: 7]
+                    }
+                    state = STATE_MONITORING;
+                }
+                break;
+            }
+
+            case STATE_SHOCK_DETECTED: {
+                tm_printf((UB *)"[IMU CRITICAL] E-STOP TRIGGERED! High-G impact detected.\n");
+
+                IMU_TELEMETRY_MSG msg = {
+                    .event = IMU_MSG_SHOCK_DETECTED,
+                    .peak_g = SHOCK_THRESHOLD_G
+                };
+                if (navigator_mbfid > E_OK) {
+                    tk_snd_mbf(navigator_mbfid, &msg, sizeof(IMU_TELEMETRY_MSG), TMO_POL); //[cite: 7]
+                }
+
+                // Enforce safety lockdown
+                while (1) {
+                    tk_dly_tsk(1000);
+                }
+                break;
+            }
+        }
+
+        // 100 Hz sampling period (10 ms)
+        tk_dly_tsk(10);
+    }
+}
 
 
 // LOCAL ER read_accel(ID iic, int16_t *x, int16_t *y, int16_t *z)
