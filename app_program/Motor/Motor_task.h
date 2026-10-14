@@ -21,6 +21,7 @@
 typedef struct {
     int16_t target_speed_left;
     int16_t target_speed_right;
+    int16_t turn_ticks;
 } MotionCommand;
 
 // Mailbox created in app_main.c: Navigator -> Motor Controller
