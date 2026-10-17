@@ -66,19 +66,17 @@ static const CODE_39_ENTRY code39_dict[] = {
 #define CODE39_DICT_SIZE (sizeof(code39_dict) / sizeof(code39_dict[0]))
   
 #define BARS_PER_CHAR      10
-#define BAR_THRESHOLD    2500
+#define BAR_THRESHOLD    2000
 #define DEBOUNCE_TICKS      5
 
-EXPORT void ir_sensor_task(INT pin_left, INT pin_right, INT side, void *exinf)
+EXPORT void ir_sensor_zeroing(INT stacd, void *exinf) 
 {
-	INT left_prev_state;
-	INT right_prev_state;
+    // unpack packed pin numbers
+    INT pin_left = (stacd >> 16) & 0xFF;
+    INT pin_right = (stacd >> 8) & 0xFF;
 
-    INT left_state_change;
-    INT right_state_change;
-
-    INT left_debounce_count = 0;
-    INT right_debounce_count = 0;
+    INT left_state;
+    INT right_state;
 
     // Set up left IR
 	(void)exinf;
@@ -94,88 +92,77 @@ EXPORT void ir_sensor_task(INT pin_left, INT pin_right, INT side, void *exinf)
 		return;
 	}
 
-    left_prev_state = (INT)gpio_get_val((UINT)pin_left);
-    right_prev_state = (INT)gpio_get_val((UINT)pin_right);
-    
-	while(1) {
-		INT left_curr_state = (INT)gpio_get_val((UINT)pin_left);
-        INT right_curr_state = (INT)gpio_get_val((UINT)pin_right);
+    while(1) {
+		INT left_state = (INT)gpio_get_val((UINT)pin_left);
+        INT right_state = (INT)gpio_get_val((UINT)pin_right);
 
-        INT state_changed = 0;
+        tm_printf("[IR left] %d\t", left_state);
+        tm_printf("[IR right] %d\n", right_state);
 
-        // Do debouncing to make sure that car is committing to state change, do this to reduce spam to navigator mbf
-
-        // Debounce left sensor
-        if (left_curr_state != left_prev_state) {
-            left_debounce_count++;
-
-            if (left_debounce_count >= DEBOUNCE_TICKS) {
-                left_prev_state = left_curr_state;
-                left_debounce_count = 0;
-                state_changed = 1;
-            }
-        } else {
-            left_debounce_count = 0;
-        }
-
-        // Debounce right sensor
-        if (right_curr_state != right_prev_state) {
-            right_debounce_count++;
-
-            if (right_debounce_count >= DEBOUNCE_TICKS) {
-                right_prev_state = right_curr_state;
-                right_debounce_count = 0;
-                state_changed = 1;
-            }
-        } else {
-            right_debounce_count = 0;
-        }
-        
-        if (state_changed) {
-            // Construct and send message to navigator
-            NAVIGATOR_MESSAGE nm;
-            nm.type = MSG_IR_UPDATE;
-
-            // If state change is for both sensors
-            if (left_state_change == 1 && right_state_change == 1) {			    // change to Black-Black
-                nm.data.ir_state = STATE_B_B;
-            } else if (left_state_change == 0 && right_state_change == 0) {         // change to White-White
-                nm.data.ir_state = STATE_W_W;
-            }
-
-            // If state change for only one sensor
-            if (left_state_change > right_state_change) {	    			        // change to Black-White	
-                nm.data.ir_state = STATE_B_W;
-            } else if (left_state_change < right_state_change) {				    // change to White-Black
-                nm.data.ir_state = STATE_W_B;
-            }
-
-            tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
-        }
-
-        tk_dly_tsk(10);
+        tk_dly_tsk(1000);
     }
 }
 
-EXPORT void ir_barcode_task(INT pin, void *exinf)
+EXPORT void ir_sensor_task(INT stacd, void *exinf)
+{
+    // unpack packed pin numbers
+    INT pin_left = (stacd >> 16) & 0xFF;
+    INT pin_right = (stacd >> 8) & 0xFF;
+
+    INT left_state;
+    INT right_state;
+
+    // Set up left IR
+	(void)exinf;
+	if(gpio_set_pin((UINT)pin_left, GPIO_MODE_IN) < E_OK) {
+		tm_printf((UB *)"[ir] GP%d input setup failed\n", pin_left);
+		return;
+	}
+
+    // Set up right IR
+    (void)exinf;
+	if(gpio_set_pin((UINT)pin_right, GPIO_MODE_IN) < E_OK) {
+		tm_printf((UB *)"[ir] GP%d input setup failed\n", pin_right);
+		return;
+	}
+
+    while(1) {
+		INT left_state = (INT)gpio_get_val((UINT)pin_left);
+        INT right_state = (INT)gpio_get_val((UINT)pin_right);
+
+        NAVIGATOR_MESSAGE nm;
+        nm.type = MSG_IR_UPDATE;
+        if (left_state == 1 && right_state == 1) nm.data.ir_state = STATE_B_B;          // Black-black
+        else if (left_state == 0 && right_state == 0) nm.data.ir_state = STATE_W_W;     // White-white
+        else if (left_state == 1 && right_state == 0) nm.data.ir_state = STATE_B_W;     // Black-white
+        else nm.data.ir_state = STATE_W_B;                                              // White-black
+        
+        tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+
+        tk_dly_tsk(50);
+    }
+}
+
+EXPORT void ir_barcode_task(INT stacd, void *exinf)
 {
 	INT previous_state;
 	INT current_state;
     UW current_time;
 
 	(void)exinf;
-	if(gpio_set_pin((UINT)pin, GPIO_MODE_IN) < E_OK) {
-		tm_printf((UB *)"[ir] GP%d input setup failed\n", pin);
+	if(gpio_set_pin((UINT)stacd, GPIO_MODE_IN) < E_OK) {
+		tm_printf((UB *)"[ir] GP%d input setup failed\n", stacd);
 		return;
 	}
 
-	previous_state = (INT)gpio_get_val((UINT)pin);
+	previous_state = (INT)gpio_get_val((UINT)stacd);
     UW previous_time = time_us();
 
-	tm_printf((UB *)"[ir] GP%d initial %s\n", pin, previous_state ? "HIGH" : "LOW");
+    tm_printf((UB *)"[ir] Task started, waiting for bars...\n");
+	tm_printf((UB *)"[ir] GP%d initial %s\n", stacd, previous_state ? "HIGH" : "LOW");
 
 	while(1) {
-		current_state = (INT)gpio_get_val((UINT)pin);
+		current_state = (INT)gpio_get_val((UINT)stacd);
         current_time = time_us();
 
         // State change
@@ -189,7 +176,7 @@ EXPORT void ir_barcode_task(INT pin, void *exinf)
             // Push to message buffer
             tk_snd_mbf(barcode_mbfid, (void *)&br, sizeof(BAR_RECORD), TMO_FEVR);
 
-            tm_printf((UB *)"[ir] GP%d %s %u\n", pin, current_state ? "HIGH" : "LOW", current_time-previous_time);
+            tm_printf((UB *)"[ir] GP%d %s %u %u\n", stacd, current_state ? "HIGH" : "LOW", current_time-previous_time, (current_time-previous_time)>=BAR_THRESHOLD ? 1 : 0);
 
             // reset state
 			previous_state = current_state;
