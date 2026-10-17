@@ -3,13 +3,15 @@
 #include <bsp/libbsp.h>
 
 #include "Motor_task.h"
+#include "../robot_tasks.h"
 
 // 125 MHz / (6249 + 1) = 20 kHz PWM
-#define MOTOR_PWM_WRAP  6249U
+// #define MOTOR_PWM_WRAP  6249U
+#define MOTOR_PWM_WRAP  3124U		// halved the PWM wrap. Below I also maintained the PWM duty cycle. Testing stuff
 
 #define CTRL_PERIOD_MS          20   /* state machine / PI period */
-#define RAMP_STEP_PCT           5    /* ACCEL: +5% per period */
-#define BRAKE_STEP_PCT          10   /* BRAKE: -10% per period */
+#define RAMP_STEP_PCT           20    /* ACCEL: +20% per period. Increased from 5% */
+#define BRAKE_STEP_PCT          20   /* BRAKE: -20% per period, increased from 10% */
 #define TICKS_PER_PERIOD_AT_100 10   /* TUNE: encoder ticks per 20 ms at 100% */
 #define KP                      3    /* TUNE */
 #define KI                      1    /* TUNE */
@@ -52,7 +54,8 @@ LOCAL void set_motor(UINT pin_a, UINT pin_b, INT speed)
 
 	if(speed > 100) speed = 100;
 	if(speed < -100) speed = -100;
-	duty = (MOTOR_PWM_WRAP + 1U) * (UW)(speed < 0 ? -speed : speed) / 100U;
+	// duty = (MOTOR_PWM_WRAP + 1U) * (UW)(speed < 0 ? -speed : speed) / 100U;
+	duty = (MOTOR_PWM_WRAP + 1U) * (UW)(speed < 0 ? -speed : speed) / 200U;
 
 	if(speed >= 0) {
 		pwm_set_cc(pin_a, duty);
@@ -78,7 +81,7 @@ LOCAL INT ramp(INT cur, INT target, INT step)
 	return cur;
 }
 
-/* PI speed loop: target is feed-forward, encoder error corrects it */
+/* PI speed loop: target is feed-forward, encoder error corrects it. I am a dumb function */
 LOCAL INT pi_speed(INT target_pct, W measured, INT *integ)
 {
 	INT want = target_pct * TICKS_PER_PERIOD_AT_100 / 100;
@@ -109,7 +112,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 		MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B,
 		MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B
 	};
-	MotionCommand cmd = {0, 0};
+	MOTOR_COMMAND cmd = {0, 0};
 	UINT left_state, right_state;
 	INT i;
 
@@ -125,6 +128,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 	(void)stacd;
 	(void)exinf;
+
+	tm_printf((UB *)"[motor] Task started\n");
 
 	// Set up Motor Pins (start with motors safely off)
 	for(i = 0; i < 4; i++) {
@@ -183,7 +188,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			prev_r = enc_r_ticks;
 
 			/* always drain the buffer, even in E-STOP (command is then ignored) */
-			if(tk_rcv_mbf(motion_mbf_id, &cmd, TMO_POL) == (INT)sizeof(cmd)) new_cmd = TRUE;
+			if(tk_rcv_mbf(motor_mbfid, &cmd, TMO_POL) == (INT)sizeof(cmd)) new_cmd = TRUE;
 
 			switch(state) {
 			case MS_IDLE:
@@ -228,8 +233,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					}
 					/* else: steering adjustment, new targets, stay in CRUISE */
 				}
-				out_l = pi_speed(tgt_l, dl, &integ_l);
-				out_r = pi_speed(tgt_r, dr, &integ_r);
+				// out_l = pi_speed(tgt_l, dl, &integ_l);		// This function is dumb.
+				// out_r = pi_speed(tgt_r, dr, &integ_r);		// This function is dumb.
+				out_l = tgt_l;
+				out_r = tgt_r;
 				if(stalled(out_l, out_r, dl, dr, &stall_cnt)) {
 					out_l = out_r = 0;
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
@@ -242,8 +249,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				break;
 
 			case MS_TURN:
-				out_l = pi_speed(tgt_l, dl, &integ_l);
-				out_r = pi_speed(tgt_r, dr, &integ_r);
+				// out_l = pi_speed(tgt_l, dl, &integ_l);		// This function is dumb.
+				// out_r = pi_speed(tgt_r, dr, &integ_r);		// This function is dumb.
+				out_l = tgt_l;
+				out_r = tgt_r;
 				if(stalled(out_l, out_r, dl, dr, &stall_cnt)) {
 					out_l = out_r = 0;
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);

@@ -22,13 +22,11 @@ typedef struct {
     int16_t target_speed_left;
     int16_t target_speed_right;
     int16_t turn_ticks;
-} MotionCommand;
+} MOTOR_COMMAND;
 
 
 // Set TRUE from any task to emergency stop, FALSE to release
 IMPORT volatile BOOL motor_estop;
-// Mailbox created in app_main.c: Navigator -> Motor Controller
-IMPORT ID motion_mbf_id;
 
 // Encoder tick counts, updated by motor_task
 IMPORT volatile W enc_l_ticks;

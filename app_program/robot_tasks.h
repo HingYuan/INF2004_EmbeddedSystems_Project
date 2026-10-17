@@ -5,6 +5,7 @@
 
 IMPORT ID barcode_mbfid;
 IMPORT ID navigator_mbfid;
+IMPORT ID motor_mbfid;
 IMPORT ID ranger_flgid;
 
 IMPORT UW time_us(void);
