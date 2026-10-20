@@ -11,6 +11,9 @@
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
 #include "mqtt_config.h"
+#include <tk/tkernel.h>
+#include "../robot_tasks.h"
+#include "../Navigator/Navigator_task.h"
 
 extern uint64_t time_us_64(void);
 
@@ -59,6 +62,46 @@ static void mqtt_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
         mqtt_message_count++;
         tm_printf((UB *)"[mqtt] #%u %s: %s\n",
                   mqtt_message_count, mqtt_topic, mqtt_payload);
+
+        /* If message is a command for the robot, parse L,R,T and send to navigator */
+        int l = 0, r = 0, t = 0;
+        char *p = mqtt_payload;
+        int sign = 1, val = 0;
+
+        /* Parse speed left */
+        while(*p == ' ') p++;
+        if(*p == '-') { sign = -1; p++; } else if(*p == '+') p++;
+        while(*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+        l = sign * val;
+
+        if(*p == ',') {
+            p++;
+            while(*p == ' ') p++;
+            sign = 1; val = 0;
+            if(*p == '-') { sign = -1; p++; } else if(*p == '+') p++;
+            while(*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+            r = sign * val;
+
+            if(*p == ',') {
+                p++;
+                while(*p == ' ') p++;
+                sign = 1; val = 0;
+                if(*p == '-') { sign = -1; p++; } else if(*p == '+') p++;
+                while(*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+                t = sign * val;
+            }
+
+            NAVIGATOR_MESSAGE nav_cmd;
+            nav_cmd.type = MSG_REMOTE_CMD;
+            nav_cmd.data.remote_cmd.target_speed_left = (int16_t)l;
+            nav_cmd.data.remote_cmd.target_speed_right = (int16_t)r;
+            nav_cmd.data.remote_cmd.turn_ticks = (int16_t)t;
+
+            ER er = tk_snd_mbf(navigator_mbfid, &nav_cmd, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+            if(er < E_OK) {
+                tm_printf((UB *)"[mqtt] navigator queue full, cmd dropped\n");
+            }
+        }
     }
 }
 
@@ -139,16 +182,77 @@ static void mqtt_begin(void)
     }
 }
 
+#define MQTT_TELEMETRY_INTERVAL_MS 500U
+static uint32_t mqtt_next_telemetry_ms;
+
+static void json_signed_number(char *output, size_t capacity, size_t *length,
+                               int32_t value)
+{
+    if(value < 0) {
+        json_char(output, capacity, length, '-');
+        value = -value;
+    }
+    json_number(output, capacity, length, (uint32_t)value);
+}
+
+size_t telemetry_json(char *output, size_t capacity)
+{
+    size_t length = 0U;
+
+    if(capacity == 0U) return 0U;
+    json_char(output, capacity, &length, '{');
+    json_text(output, capacity, &length, "\"speed_l\":");
+    json_signed_number(output, capacity, &length, (int32_t)telemetry_snapshot.speed_left);
+    json_text(output, capacity, &length, ",\"speed_r\":");
+    json_signed_number(output, capacity, &length, (int32_t)telemetry_snapshot.speed_right);
+    json_text(output, capacity, &length, ",\"ir\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.ir_state);
+    json_text(output, capacity, &length, ",\"mode\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.movement_mode);
+    json_text(output, capacity, &length, ",\"enc_l\":");
+    json_signed_number(output, capacity, &length, telemetry_snapshot.enc_l);
+    json_text(output, capacity, &length, ",\"enc_r\":");
+    json_signed_number(output, capacity, &length, telemetry_snapshot.enc_r);
+    json_text(output, capacity, &length, ",\"seq\":");
+    json_number(output, capacity, &length, telemetry_snapshot.seq);
+    json_char(output, capacity, &length, '}');
+
+    if(length >= capacity) length = capacity - 1U;
+    output[length] = '\0';
+    return length;
+}
+
 void mqtt_dashboard_poll(struct netif *netif)
 {
     uint32_t now;
 
     if(netif == NULL || !netif_is_up(netif) || !netif_is_link_up(netif)) return;
-    if(mqtt_connected || mqtt_connect_pending) return;
 
     now = mqtt_now_ms();
-    if((int32_t)(now - mqtt_next_retry_ms) < 0) return;
-    mqtt_begin();
+
+    if(!mqtt_connected && !mqtt_connect_pending) {
+        if((int32_t)(now - mqtt_next_retry_ms) >= 0) {
+            mqtt_begin();
+        }
+        return;
+    }
+
+    if(mqtt_connected) {
+        if((int32_t)(now - mqtt_next_telemetry_ms) >= 0) {
+            char telem_buf[160];
+            size_t len = telemetry_json(telem_buf, sizeof(telem_buf));
+            if(len > 0) {
+#ifdef MQTT_PUBLISH_TOPIC
+                mqtt_publish(mqtt_client, MQTT_PUBLISH_TOPIC, telem_buf, (u16_t)len,
+                             MQTT_QOS, 0, mqtt_request_done, NULL);
+#else
+                mqtt_publish(mqtt_client, "robot/telemetry", telem_buf, (u16_t)len,
+                             MQTT_QOS, 0, mqtt_request_done, NULL);
+#endif
+            }
+            mqtt_next_telemetry_ms = now + MQTT_TELEMETRY_INTERVAL_MS;
+        }
+    }
 }
 
 static void json_char(char *output, size_t capacity, size_t *length, char value)
@@ -224,6 +328,19 @@ size_t mqtt_dashboard_json(char *output, size_t capacity)
     if(capacity == 0U) return 0U;
     if(length >= capacity) length = capacity - 1U;
     memcpy(output, disabled, length);
+    output[length] = '\0';
+    return length;
+}
+
+size_t telemetry_json(char *output, size_t capacity)
+{
+    static const char empty[] =
+        "{\"speed_l\":0,\"speed_r\":0,\"ir\":0,\"mode\":0,\"enc_l\":0,\"enc_r\":0,\"seq\":0}";
+    size_t length = sizeof(empty) - 1U;
+
+    if(capacity == 0U) return 0U;
+    if(length >= capacity) length = capacity - 1U;
+    memcpy(output, empty, length);
     output[length] = '\0';
     return length;
 }

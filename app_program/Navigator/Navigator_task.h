@@ -2,6 +2,7 @@
 #define NAVIGATOR_TASK_H
 
 #include <tk/tkernel.h>
+#include "../Motor/Motor_task.h"
 
 typedef enum {
     MODE_LINE_FOLLOWING,        // IR is aware of line and navigator is following it
@@ -29,6 +30,7 @@ typedef enum {
     MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
     MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
     MSG_TRACKING_OBSTACLE,      // NEED DISCUSS WITH CS
+    MSG_REMOTE_CMD,             // Remote motor command from MQTT
 } MESSAGE_TYPE;
 
 typedef struct {
@@ -36,6 +38,7 @@ typedef struct {
     union {
         IR_STATE ir_state;
         B decoded_char;
+        MOTOR_COMMAND remote_cmd;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 

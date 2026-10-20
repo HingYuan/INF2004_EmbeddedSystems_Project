@@ -85,6 +85,11 @@ static err_t web_send_response(struct tcp_pcb *pcb)
                                           sizeof(web_api_response));
         response_start = api_response_start;
         body = web_api_response;
+    } else if(strncmp(web_request, "GET /api/telemetry", 18U) == 0) {
+        body_length = telemetry_json(web_api_response,
+                                     sizeof(web_api_response));
+        response_start = api_response_start;
+        body = web_api_response;
     } else {
         response_start = html_response_start;
         body = web_index_html;

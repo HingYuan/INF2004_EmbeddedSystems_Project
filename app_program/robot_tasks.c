@@ -43,6 +43,9 @@ EXPORT ID motor_mbfid;
 // Flags
 EXPORT ID ranger_flgid;
 
+// Shared telemetry snapshot
+EXPORT volatile TELEMETRY_SNAPSHOT telemetry_snapshot = {0};
+
 /* 
 ==========================
 |          CODE          |

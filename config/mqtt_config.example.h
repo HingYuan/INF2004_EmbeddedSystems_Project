@@ -11,7 +11,8 @@
 #define MQTT_BROKER_IP        "192.168.1.10"
 #define MQTT_BROKER_PORT      1883
 #define MQTT_CLIENT_ID        "utk-picow"
-#define MQTT_SUBSCRIBE_TOPIC  "dashboard/#"
+#define MQTT_SUBSCRIBE_TOPIC  "robot/command"
+#define MQTT_PUBLISH_TOPIC    "robot/telemetry"
 #define MQTT_USERNAME         ""
 #define MQTT_PASSWORD         ""
 #define MQTT_QOS              0
