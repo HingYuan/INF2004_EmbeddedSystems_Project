@@ -14,8 +14,9 @@
 #include "Motor/Motor_task.h"
 #include "Navigator/Navigator_task.h"
 #include "Ultrasonic/Ultrasonic_task.h"
-// #include "Wifi/Wifi_task.h"
+// #include "Network/Network_task.h"
 #include "Navigator/Navigator_task.h"
+#include "Util/free_time_baseline.h"
 
 /* 
 ==========================
@@ -38,6 +39,7 @@ typedef struct {
 // Message buffers
 EXPORT ID barcode_mbfid;
 EXPORT ID navigator_mbfid;
+EXPORT ID motor_mbfid;
 
 // Flags
 EXPORT ID ranger_flgid;
@@ -95,17 +97,21 @@ LOCAL ER start_task(PERIPHERAL_TASK entry, INT priority, INT stacd, UW assprc, c
 
 EXPORT ER robot_tasks_start(void)
 {
-    tk_dly_tsk(1000);
+	// pack pin values for IR sensor task
+	const INT packed_stacd = (IR_LEFT_PIN << 16) | (IR_CENTER_PIN << 8);
 
 	static const TASK_START tasks[] = {
 		// { servo_task, 0, "servo" },
 		// { ultrasonic_task, 0, "ultrasonic" },
-		// { ir_sensor_task, IR_LEFT_PIN, "IR-left" },
-		// { ir_sensor_task, IR_CENTER_PIN, "IR-center" },
-		{ ir_barcode_task, 5, IR_LEFT_PIN, TP_PRC1, "IR-right" },
-		{ ir_barcode_decoder_task, 5, 0, TP_PRC1, "IR-barcode-decoder" },
-		{ motor_task, 9, 0, TP_PRC2, "motors" },
+		// { ir_sensor_zeroing, 5, packed_stacd, TP_PRC1, "IR-zeroing"},				// IR zeroing (for testing line following IR sensors)
+		// { ir_sensor_task, 2, packed_stacd, TP_PRC1, "IR line sensors" },             // IR line following sensors
+		// { ir_barcode_task, 2, IR_RIGHT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
+		// { ir_barcode_decoder_task, 2, 0, TP_PRC1, "IR barcode decoder" },			// Barcode decoder
+		// { motor_task, 2, 0, TP_PRC1, "Motors" },										// Motors
 		// { imu_task, 0, "IMU" }
+		// { navigator_task, 1, 0, TP_PRC1, "Navigator" },								// Navigator (brain)
+		{ calib_counter_task, 15, 0, TP_PRC1, "Calibration counter" },				// Free time calibration counter
+		{ calib_timer_task, 10, 0, TP_PRC1, "Calibration timer" },					// Free time calibration timer
 	};
     
     // Create flags
@@ -122,6 +128,8 @@ EXPORT ER robot_tasks_start(void)
     // Create message buffers
     T_CMBF cmbf = {0};
 	cmbf.mbfatr = TA_TFIFO; // First-In, First-Out queue
+
+	// Barcode scanner mbf
 	cmbf.maxmsz = sizeof(BAR_RECORD); // Max size of one message
 	cmbf.bufsz = sizeof(BAR_RECORD) * 18; // Capacity for 20 queued bars
 
@@ -131,6 +139,7 @@ EXPORT ER robot_tasks_start(void)
 		return (ER)barcode_mbfid;
 	}
 
+	// navigator task mbf
     cmbf.maxmsz = sizeof(NAVIGATOR_MESSAGE);
 	cmbf.bufsz = sizeof(NAVIGATOR_MESSAGE) * 20;
 
@@ -139,6 +148,20 @@ EXPORT ER robot_tasks_start(void)
 		tm_printf((UB *)"[init] create navigator mbf failed, er=%d\n", navigator_mbfid);
 		return (ER)navigator_mbfid;
 	}
+
+	// motor task mbf
+	LOCAL UW motion_mbf_buf[(5 * sizeof(MOTOR_COMMAND)) / sizeof(UW) + 5 * 4];
+	cmbf.maxmsz = sizeof(MOTOR_COMMAND);
+	cmbf.bufsz = sizeof(MOTOR_COMMAND) * 5;
+	cmbf.bufptr = motion_mbf_buf;
+
+	motor_mbfid = tk_cre_mbf(&cmbf);
+	if(motor_mbfid <= E_OK) {
+		tm_printf((UB *)"[init] create motor mbf failed, er=%d\n", motor_mbfid);
+		return (ER)motor_mbfid;
+	}
+
+	tk_dly_tsk(1000);
 
     UINT i;
 	ER er;

@@ -88,6 +88,7 @@ LOCAL ID	mtxid;			/* guards next_seq                   */
 LOCAL ID	mbfid;			/* producer -> consumer              */
 LOCAL ID	semid;			/* consumer -> producer (credits)    */
 LOCAL ID	flgid;			/* both -> monitor                   */
+ID motion_mbf_id;           /* Navigation -> Motor Controller    */
 
 /* Shared state.  next_seq is guarded by the mutex; the counters below are
    written by one task each and only read by the monitor, so they need no
@@ -243,7 +244,7 @@ LOCAL void monitor_task(INT stacd, void *exinf)
  *  WiFi status -- only built when WIFI=cyw43
  *
  *  The radio is not driven from here.  A dedicated service task owns the
- *  CYW43439, lwIP and the echo session -- pinned to processor 1 under SMP,
+ *  CYW43439, lwIP and the echo session -- pinned to processor 2 under SMP,
  *  and simply the only processor there is on a single-core build.  This task
  *  only reads the snapshot that service publishes and prints what changed.
  *  Reading is safe from any task: cyw43_utk_get_status() takes a seqlock
@@ -313,8 +314,9 @@ LOCAL void wifi_status_task(INT stacd, void *exinf)
 				fmt_ipv4(ip, st.dhcp_address);
 				fmt_ipv4(gw, st.dhcp_gateway);
 				fmt_ipv4(dns, st.dhcp_dns);
-				tm_printf((UB *)"[wifi] ip=%s  gw=%s  dns=%s\n",
-					  ip, gw, dns);
+				tm_printf((UB *)"[wifi] ip=%s  gw=%s  dns=%s  netif=%u/%u owner=prc%u\n",
+					  ip, gw, dns, st.netif_up, st.netif_link_up,
+					  st.owner_prc);
 			}
 		}
 
@@ -412,7 +414,13 @@ LOCAL T_CTSK ctsk_wifi = {
 	.itskpri	= 8,
 	.stksz		= STACK_SZ,
 	.task		= wifi_status_task,
-	.tskatr		= TA_HLNG | TA_RNG3,
+	.tskatr		= TA_HLNG | TA_RNG3
+#if TK_SUPPORT_SMP
+				| TA_ASSPRC,
+	.assprc		= TP_PRC2,
+#else
+				,
+#endif
 };
 #endif	/* TM_WIFI_CYW43 */
 
@@ -438,7 +446,7 @@ LOCAL T_CTSK ctsk_consumer = {
 	.task		= consumer_task,
 #if TK_SUPPORT_SMP
 	.tskatr		= TA_HLNG | TA_RNG3 | TA_ASSPRC,
-	.assprc		= TP_PRC2,
+	.assprc		= TP_PRC1,
 #else
 	.tskatr		= TA_HLNG | TA_RNG3,
 #endif
@@ -503,14 +511,13 @@ LOCAL BOOL made(const char *what, ID id)
 }
 
 EXPORT INT usermain(void)
-{
-	tm_printf("--- SYSTEM BOOT --- \n");
-	
+{	
 	ID	tid;
 
 	mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
 	mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
 	mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
+
 	semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
 	flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
 

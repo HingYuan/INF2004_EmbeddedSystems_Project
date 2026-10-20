@@ -5,7 +5,7 @@
  */
 
 /* Pico SDK and cyw43-driver hooks supplied by micro T-Kernel.
- * The radio is polled only by its own service task -- pinned to TP_PRC1
+ * The radio is polled only by its own service task -- pinned to TP_PRC2
  * under SMP, and the sole processor on a single-core build -- so no SDK
  * background interrupt or second scheduler is introduced either way. */
 
