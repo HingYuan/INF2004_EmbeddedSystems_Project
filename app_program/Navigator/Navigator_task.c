@@ -58,7 +58,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     MOTOR_COMMAND mot_cmd = { 0, -0, 0 };
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     
-                                    m_mode = MODE_DECISION_MAKING;
+                                    // m_mode = MODE_DECISION_MAKING;
 
                                 } else {
                                     // Errorneous state
