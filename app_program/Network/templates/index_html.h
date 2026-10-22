@@ -8,7 +8,7 @@ static const char web_index_html[] =
 "<title>Pico W</title><style>"
 "*{box-sizing:border-box}"
 "body{margin:1rem;font:14px/1.4 system-ui,sans-serif;background:#eef5f7;color:#17324d}"
-"main{max-width:50rem;background:#fff;padding:1.5rem;border-radius:8px;border:1px solid #c7d9df}"
+" main { max-width: 46rem; margin: 0 auto; padding: 2rem; background: white; border: 1px solid #c7d9df; border-radius: 8px; }"
 "h1{margin:0 0 .5rem;font-size:1.2rem}"
 ".g{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}"
 ".c{background:#f2f7f8;padding:.7rem;border-radius:4px}"

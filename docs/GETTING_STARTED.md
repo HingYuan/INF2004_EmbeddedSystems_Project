@@ -2,6 +2,9 @@
 
 From a clean machine to a Pico W running both cores. Roughly 15 minutes.
 
+# RUN THIS ASAP TO INSTALL SUBMODULES RECURSIVELY
+# ```git submodule update --init --recursive```
+
 ---
 
 ## 1. Prerequisites
