@@ -130,9 +130,11 @@ EXPORT ER robot_tasks_start(void)
     T_CMBF cmbf = {0};
 	cmbf.mbfatr = TA_TFIFO; // First-In, First-Out queue
 
+	LOCAL UW motion_mbf_buf[(5 * sizeof(MOTOR_COMMAND)) / sizeof(UW) + 5 * 4];
+
 	// Barcode scanner mbf
 	cmbf.maxmsz = sizeof(BAR_RECORD); // Max size of one message
-	cmbf.bufsz = sizeof(BAR_RECORD) * 18; // Capacity for 20 queued bars
+	cmbf.bufsz = sizeof(BAR_RECORD) * 20; // Capacity for 20 queued bars
 
 	barcode_mbfid = tk_cre_mbf(&cmbf);
 	if(barcode_mbfid <= E_OK) {
@@ -151,7 +153,6 @@ EXPORT ER robot_tasks_start(void)
 	}
 
 	// motor task mbf
-	LOCAL UW motion_mbf_buf[(5 * sizeof(MOTOR_COMMAND)) / sizeof(UW) + 5 * 4];
 	cmbf.maxmsz = sizeof(MOTOR_COMMAND);
 	cmbf.bufsz = sizeof(MOTOR_COMMAND) * 5;
 	cmbf.bufptr = motion_mbf_buf;
