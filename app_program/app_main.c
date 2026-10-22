@@ -31,7 +31,6 @@
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
-#include "Util/set_clock_125mhz.h"
 
 #if TK_SUPPORT_SMP
 #include <tk/smp.h>
@@ -512,9 +511,7 @@ LOCAL BOOL made(const char *what, ID id)
 }
 
 EXPORT INT usermain(void)
-{	
-	// init_sys_clock_125mhz();
-	
+{		
 	ID	tid;
 
 	mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
