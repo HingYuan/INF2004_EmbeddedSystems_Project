@@ -107,7 +107,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
 
                             break;
-                        case MSG_OBSTACLE_PROFILED:   // Put the profiling here for now
+                        case MSG_OBSTACLE_PROFILED: {   // require brackets for variable 
+                            // Put the profiling here for now
                             const OBSTACLE_PROFILE *p = &n_msg.data.obstacle_profile;
 
                             tm_printf((UB *)"[nav] Scan: L=%u(%d) C=%u(%d) R=%u(%d)\n",
@@ -117,7 +118,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             // No bypass command yet: keep the car stopped.
                             break;
-                        
+                        }
                         default:
 
 
