@@ -76,8 +76,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             break;
                         case MSG_OBSTACLE_DETECTED:
-
+                            motor_estop = TRUE;             // set to stop for now 
                             m_mode = MODE_WALL_HUGGING;
+                            prev_ir_state = STATE_NULL;
+
+                            tm_printf((UB *)"[nav] Obstacle at %u cm; stopped\n", n_msg.data.obstacle_distance_cm);
 
                             break;
                         default:
@@ -104,6 +107,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
 
                             break;
+                        case MSG_OBSTACLE_PROFILED: {   // require brackets for variable 
+                            // Put the profiling here for now
+                            const OBSTACLE_PROFILE *p = &n_msg.data.obstacle_profile;
+
+                            tm_printf((UB *)"[nav] Scan: L=%u(%d) C=%u(%d) R=%u(%d)\n",
+                                    p->left_cm, p->left_valid,
+                                    p->center_cm, p->center_valid,
+                                    p->right_cm, p->right_valid);
+
+                            // No bypass command yet: keep the car stopped.
+                            break;
+                        }
                         default:
 
 

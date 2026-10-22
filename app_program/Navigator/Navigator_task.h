@@ -28,14 +28,26 @@ typedef enum {
     MSG_IR_UPDATE,              // Line following sensor update, car veering off
     MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
     MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
-    MSG_TRACKING_OBSTACLE,      // NEED DISCUSS WITH CS
+    MSG_TRACKING_OBSTACLE,      // Reserved for future avoidance updates
+    MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
 } MESSAGE_TYPE;
+
+typedef struct {
+    UW left_cm;
+    UW center_cm;
+    UW right_cm;
+    BOOL left_valid;
+    BOOL center_valid;
+    BOOL right_valid;
+} OBSTACLE_PROFILE;
 
 typedef struct {
     MESSAGE_TYPE type;
     union {
         IR_STATE ir_state;
         B decoded_char;
+        UW obstacle_distance_cm;
+        OBSTACLE_PROFILE obstacle_profile;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 

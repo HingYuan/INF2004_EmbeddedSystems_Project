@@ -102,6 +102,7 @@ EXPORT ER robot_tasks_start(void)
 
 	static const TASK_START tasks[] = {
 		// { servo_task, 0, "servo" },
+		{ ultrasonic_task, 2, 0, TP_PRC1, "Ultrasonic" },
 		// { ultrasonic_task, 0, "ultrasonic" },
 		{ ir_sensor_task, 2, packed_stacd, TP_PRC1, "IR line sensors" },             // IR line following sensors
 		{ ir_barcode_task, 2, IR_RIGHT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
