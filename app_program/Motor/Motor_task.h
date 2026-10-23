@@ -27,6 +27,8 @@ typedef struct {
 
 // Set TRUE from any task to emergency stop, FALSE to release
 IMPORT volatile BOOL motor_estop;
+// Navigator requests confirmation when the motors have stopped
+IMPORT volatile BOOL motor_stop_ack_requested;
 
 // Encoder tick counts, updated by motor_task
 IMPORT volatile W enc_l_ticks;

@@ -5,7 +5,8 @@ From a clean machine to a Pico W running both cores. Roughly 15 minutes.
 # RUN THIS ASAP TO INSTALL SUBMODULES RECURSIVELY
 # ```git submodule update --init --recursive```
 
-
+# Note this change in cpu_clock.c that sets up the 125MHz clock on cold start instead of defaulting to the 6MHz clock.
+# ```out_w(0x4005802C, (XOSC_MHz | (1 << 9)));```
 
 ---
 

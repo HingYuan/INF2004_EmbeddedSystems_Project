@@ -7,6 +7,7 @@
 #include "../robot_tasks.h"
 #include "../Util/C_ring_buffer.h"
 #include "../Motor/Motor_task.h"
+#include "../Ultrasonic/Ultrasonic_task.h"
 
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
@@ -14,6 +15,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
 
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    BOOL scan_requested = FALSE;
 
     // initialize circular ring buffer to store decoded characters
     C_RING_BUFFER barcode_characters;
@@ -21,6 +23,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
     INT left_debounce_ticks = 0;
     INT right_debounce_ticks = 0;
+
+    MOTOR_COMMAND mot_cmd = { 0, 0, 0 };
+
+    INT instruction_idx = 0;
+    DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };
 
     IR_STATE prev_ir_state = STATE_NULL;
 
@@ -37,28 +44,44 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             if (curr_state != prev_ir_state) {
 
                                 if (curr_state == STATE_W_W) {
-                                    MOTOR_COMMAND mot_cmd = { 20, -20, 0 };
+                                    mot_cmd.target_speed_left =     30;
+                                    mot_cmd.target_speed_right =   -30;
+                                    mot_cmd.turn_ticks =             0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     tm_printf("W_W\n");
 
                                 } else if (curr_state == STATE_W_B) {
                                     // Car veering left, adjust right
-                                    MOTOR_COMMAND mot_cmd = { 25, -15, 0 };
+                                    mot_cmd.target_speed_left =     55;
+                                    mot_cmd.target_speed_right =   -35;
+                                    mot_cmd.turn_ticks =             0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                     tm_printf("W_B\n");
 
                                 } else if (curr_state == STATE_B_W) {
                                     // Car veering right, adjust left
-                                    MOTOR_COMMAND mot_cmd = { 15, -25, 0 };
+                                    mot_cmd.target_speed_left =     35;
+                                    mot_cmd.target_speed_right =   -55;
+                                    mot_cmd.turn_ticks =             0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    tm_printf("B_W\n");
 
                                 } else if (curr_state == STATE_B_B) {
                                     // Car at instersection
-                                    MOTOR_COMMAND mot_cmd = { 0, -0, 0 };
+                                    mot_cmd.target_speed_left =      0;
+                                    mot_cmd.target_speed_right =    -0;
+                                    mot_cmd.turn_ticks =             0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     
-                                    // m_mode = MODE_DECISION_MAKING;
+                                    m_mode = MODE_DECISION_MAKING;       // switch to decision making
+
+                                    tm_printf("B_B\n");
 
                                 } else {
                                     // Errorneous state
@@ -76,13 +99,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             break;
                         case MSG_OBSTACLE_DETECTED:
-                            motor_estop = TRUE;             // set to stop for now 
-                            m_mode = MODE_WALL_HUGGING;
+                            // Ultrasonic has already requested a stop
+                            motor_estop = TRUE;
+                            m_mode = MODE_OBSTACLE_ASSESS;
+                            scan_requested = FALSE;
                             prev_ir_state = STATE_NULL;
 
-                            tm_printf((UB *)"[nav] Obstacle at %u cm; stopped\n", n_msg.data.obstacle_distance_cm);
+                            // Ask Motor to confirm it has stopped
+                            motor_stop_ack_requested = TRUE;
 
+                            tm_printf((UB *)"[nav] Obstacle detected\n");
                             break;
+
                         default:
                             // Ignore other states
 
@@ -90,35 +118,149 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     }
 
                     break;
+
+                // Junction Navigation
                 case MODE_DECISION_MAKING:
                     
+                    DIRECTION curr_decision = instructions_fake[instruction_idx];
 
+                    switch (curr_decision) {
+                        case DIR_FRONT:
+
+
+                            break;
+                        case DIR_BACK:
+
+
+                            break;
+                        case DIR_LEFT:
+                            mot_cmd.target_speed_left =         0;
+                            mot_cmd.target_speed_right =      -50;
+                            mot_cmd.turn_ticks =                0;
+
+                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                            tm_printf("Turning left!\n");
+
+                            break;
+                        case DIR_RIGHT:
+                            mot_cmd.target_speed_left =        50;
+                            mot_cmd.target_speed_right =       -0;
+                            mot_cmd.turn_ticks =                0;
+
+                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                            tm_printf("Turning right!\n");
+
+                            break;
+                        default:
+
+
+                            break;
+                    }
+                    m_mode = MODE_LINE_FOLLOWING;
+
+                    break;
+                case MODE_OBSTACLE_ASSESS:
+                    switch (n_msg.type) {
+
+                        case MSG_MOTOR_STOPPED:
+                            if (!scan_requested) {
+                                ER er = tk_set_flg(
+                                    ranger_flgid,
+                                    SONAR_SCAN_REQUEST
+                                );
+
+                                if (er < E_OK) {
+                                    motor_estop = TRUE;
+                                    m_mode = MODE_SAFE_STOP;
+                                    break;
+                                }
+
+                                scan_requested = TRUE;
+                            }
+                            break;
+
+                        case MSG_OBSTACLE_PROFILED: {
+                            if (!scan_requested) {
+                                motor_estop = TRUE;
+                                m_mode = MODE_SAFE_STOP;
+                                break;
+                            }
+
+                            const OBSTACLE_PROFILE *p =
+                                &n_msg.data.obstacle_profile;
+
+                            if (!p->profile_valid) {
+                                motor_estop = TRUE;
+                                m_mode = MODE_SAFE_STOP;
+
+                                tm_printf((UB *)"[nav] Invalid profile\n");
+                                break;
+                            }
+
+                            tm_printf(
+                                (UB *)"[nav] Closest: %u cm at %d deg\n",
+                                p->closest_cm,
+                                p->closest_angle_deg
+                            );
+
+                            tm_printf(
+                                (UB *)"[nav] Edges: R=%d L=%d\n",
+                                p->right_edge_deg,
+                                p->left_edge_deg
+                            );
+
+                            tm_printf(
+                                (UB *)"[nav] Estimated width: %u cm\n",
+                                p->estimated_width_cm
+                            );
+
+                            // A valid profile alone is not a safe route
+                            if (!p->left_clearance_valid &&
+                                !p->right_clearance_valid) {
+
+                                motor_estop = TRUE;
+                                m_mode = MODE_SAFE_STOP;
+
+                                tm_printf(
+                                    (UB *)"[nav] Clearance unverified\n"
+                                );
+                                break;
+                            }
+
+                            // Bypass planning requires motor integration
+                            motor_estop = TRUE;
+                            m_mode = MODE_SAFE_STOP;
+
+                            tm_printf(
+                                (UB *)"[nav] Bypass not yet enabled\n"
+                            );
+                            break;
+                        }
+
+                        default:
+                            break;
+                    }
                     break;
                 case MODE_WALL_HUGGING:
                     switch (n_msg.type) {
                         case MSG_IR_UPDATE:
+                            IR_STATE ir_state = n_msg.data.ir_state;
+
+                            if (ir_state == STATE_B_W || ir_state == STATE_W_B || ir_state == STATE_B_B) m_mode = MODE_REENTRY_ADVANCE;
 
                             break;
                         case MSG_OBSTACLE_DETECTED:
+                        
+                            motor_estop = TRUE;
+                            m_mode = MODE_SAFE_STOP;
 
+                            break;
 
                             break;
                         case MSG_TRACKING_OBSTACLE:
 
 
                             break;
-                        case MSG_OBSTACLE_PROFILED: {   // require brackets for variable 
-                            // Put the profiling here for now
-                            const OBSTACLE_PROFILE *p = &n_msg.data.obstacle_profile;
-
-                            tm_printf((UB *)"[nav] Scan: L=%u(%d) C=%u(%d) R=%u(%d)\n",
-                                    p->left_cm, p->left_valid,
-                                    p->center_cm, p->center_valid,
-                                    p->right_cm, p->right_valid);
-
-                            // No bypass command yet: keep the car stopped.
-                            break;
-                        }
                         default:
 
 
@@ -151,6 +293,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             break;
                     }
 
+                    break;
+                case MODE_SAFE_STOP:
+                    motor_estop = TRUE;
                     break;
                 default:
 

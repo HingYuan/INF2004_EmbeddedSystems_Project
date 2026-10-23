@@ -19,8 +19,6 @@ EXPORT void diagnostic_task(INT stacd, void *exinf)
         
         // Read the hardware timer
         UW current_time = time_us();
-
-        tm_printf("%d\n", current_time);
         
         // Check if 1,000,000 microseconds (1 second) have elapsed
         if (current_time - start_time >= 1000000) {
