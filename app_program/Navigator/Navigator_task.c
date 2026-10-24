@@ -180,60 +180,49 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             break;
 
                         case MSG_OBSTACLE_PROFILED: {
-                            if (!scan_requested) {
-                                motor_estop = TRUE;
-                                m_mode = MODE_SAFE_STOP;
-                                break;
-                            }
-
                             const OBSTACLE_PROFILE *p =
                                 &n_msg.data.obstacle_profile;
 
-                            if (!p->profile_valid) {
+                            if (!scan_requested || !p->profile_valid) {
+                                tm_printf((UB *)"[nav] Scan incomplete/invalid\n");
                                 motor_estop = TRUE;
                                 m_mode = MODE_SAFE_STOP;
-
-                                tm_printf((UB *)"[nav] Invalid profile\n");
                                 break;
                             }
 
-                            tm_printf(
-                                (UB *)"[nav] Closest: %u cm at %d deg\n",
-                                p->closest_cm,
-                                p->closest_angle_deg
-                            );
+                            tm_printf((UB *)"[nav] Closest: %u cm at %d deg\n",
+                                      p->closest_cm, p->closest_angle_deg);
 
-                            tm_printf(
-                                (UB *)"[nav] Edges: R=%d L=%d\n",
-                                p->right_edge_deg,
-                                p->left_edge_deg
-                            );
+                            if (p->right_edge_valid)
+                                tm_printf((UB *)"[nav] Right edge: %d deg\n",
+                                          p->right_edge_deg);
+                            else
+                                tm_printf((UB *)"[nav] Right edge: unknown\n");
 
-                            tm_printf(
-                                (UB *)"[nav] Estimated width: %u cm\n",
-                                p->estimated_width_cm
-                            );
+                            if (p->left_edge_valid)
+                                tm_printf((UB *)"[nav] Left edge: %d deg\n",
+                                          p->left_edge_deg);
+                            else
+                                tm_printf((UB *)"[nav] Left edge: unknown\n");
 
-                            // A valid profile alone is not a safe route
-                            if (!p->left_clearance_valid &&
-                                !p->right_clearance_valid) {
+                            if (p->width_valid)
+                                tm_printf((UB *)"[nav] Approx width: %u cm\n",
+                                          p->estimated_width_cm);
+                            else
+                                tm_printf((UB *)"[nav] Approx width: unknown\n");
 
-                                motor_estop = TRUE;
-                                m_mode = MODE_SAFE_STOP;
+                            // Candidate offsets include robot half-width and gap.
+                            if (p->left_offset_valid)
+                                tm_printf((UB *)"[nav] Left centre offset: %u cm\n",
+                                          p->left_offset_cm);
+                            if (p->right_offset_valid)
+                                tm_printf((UB *)"[nav] Right centre offset: %u cm\n",
+                                          p->right_offset_cm);
 
-                                tm_printf(
-                                    (UB *)"[nav] Clearance unverified\n"
-                                );
-                                break;
-                            }
-
-                            // Bypass planning requires motor integration
+                            // A candidate offset does not prove a safe corridor.
                             motor_estop = TRUE;
                             m_mode = MODE_SAFE_STOP;
-
-                            tm_printf(
-                                (UB *)"[nav] Bypass not yet enabled\n"
-                            );
+                            tm_printf((UB *)"[nav] Bypass disabled: clearance not verified\n");
                             break;
                         }
 
