@@ -3,8 +3,6 @@
 
 #include <tk/tkernel.h>
 
-#define OBSTACLE_COARSE_COUNT 7
-
 typedef enum {
     MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
     MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
@@ -40,26 +38,29 @@ typedef enum {
     MSG_TRACKING_OBSTACLE,
 } MESSAGE_TYPE;
 
-typedef struct {                // Coarse or Fine scan results
+typedef struct {
     UW closest_cm;
-    W closest_angle_deg;
+    W closest_angle_deg;       // Positive angle is left
 
     W left_edge_deg;
     W right_edge_deg;
     BOOL left_edge_valid;
     BOOL right_edge_valid;
 
-    UW estimated_width_cm;
+    UW estimated_width_cm;     // Approximate visible lateral extent
     BOOL width_valid;
 
-    UW left_clearance_cm;
+    UW left_offset_cm;         // Proposed lateral centre offset, NOT clearance
+    UW right_offset_cm;
+    BOOL left_offset_valid;
+    BOOL right_offset_valid;
+
+    UW left_clearance_cm;      // Unknown until the entire route is checked
     UW right_clearance_cm;
     BOOL left_clearance_valid;
     BOOL right_clearance_valid;
 
-    // Valid scan does not necessarily mean safe passage
-    BOOL profile_valid;
-
+    BOOL profile_valid;        // Basic scan quality, not a safe route
 } OBSTACLE_PROFILE;
 
 typedef enum {                  // Movement phases within wall hugging
