@@ -21,7 +21,8 @@
 typedef struct {
     int16_t target_speed_left;
     int16_t target_speed_right;
-    int16_t turn_ticks;
+    INT turn_ticks_left;
+    INT turn_ticks_right;
 } MOTOR_COMMAND;
 
 

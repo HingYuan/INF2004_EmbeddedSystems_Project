@@ -11,25 +11,32 @@
 
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
+    // General
     NAVIGATOR_MESSAGE n_msg;
+    NAVIGATOR_MESSAGE discard_msg;
     INT message_size;
-
+    MOTOR_COMMAND mot_cmd;
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+
+    // Line following
+    IR_STATE prev_ir_state = STATE_NULL;
+
+    // Barcode decoding
+    C_RING_BUFFER barcode_characters;                                           // initialize circular ring buffer to store decoded characters
+    crb_init(&barcode_characters);
+    INT instruction_idx = 0;
+    DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };       // Initialize instructions (fake for now)
+
+    // Decision making
+    B num_blacks = 0;
+    B desired_num_blacks;
+
+    // Obstacle
     BOOL scan_requested = FALSE;
 
-    // initialize circular ring buffer to store decoded characters
-    C_RING_BUFFER barcode_characters;
-    crb_init(&barcode_characters);
-
+    // Unused
     INT left_debounce_ticks = 0;
     INT right_debounce_ticks = 0;
-
-    MOTOR_COMMAND mot_cmd = { 0, 0, 0 };
-
-    INT instruction_idx = 0;
-    DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };
-
-    IR_STATE prev_ir_state = STATE_NULL;
 
     while (1) {
         message_size = tk_rcv_mbf(navigator_mbfid, (void *)&n_msg, TMO_FEVR); // Set as timeout forever (TMO_FEVR) as IR is continuously sending updates, so no timeout needed.
@@ -46,7 +53,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 if (curr_state == STATE_W_W) {
                                     mot_cmd.target_speed_left =     30;
                                     mot_cmd.target_speed_right =   -30;
-                                    mot_cmd.turn_ticks =             0;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     tm_printf("W_W\n");
@@ -55,7 +63,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     // Car veering left, adjust right
                                     mot_cmd.target_speed_left =     55;
                                     mot_cmd.target_speed_right =   -35;
-                                    mot_cmd.turn_ticks =             0;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
@@ -65,7 +74,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     // Car veering right, adjust left
                                     mot_cmd.target_speed_left =     35;
                                     mot_cmd.target_speed_right =   -55;
-                                    mot_cmd.turn_ticks =             0;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
@@ -75,11 +85,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     // Car at instersection
                                     mot_cmd.target_speed_left =      0;
                                     mot_cmd.target_speed_right =    -0;
-                                    mot_cmd.turn_ticks =             0;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    tk_dly_tsk(500);
                                     
-                                    m_mode = MODE_DECISION_MAKING;       // switch to decision making
+                                    m_mode = MODE_DECISION_MAKING_ADVANCE;
 
                                     tm_printf("B_B\n");
 
@@ -119,44 +131,86 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                     break;
 
+                case MODE_DECISION_MAKING_ADVANCE:
+                    
+                    mot_cmd.target_speed_left = 50;
+                    mot_cmd.target_speed_right = 50;
+                    mot_cmd.turn_ticks_left = 100000;
+                    mot_cmd.turn_ticks_right = 100000;
+
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    tm_printf("Advancing\n");
+
+                    tk_dly_tsk(500);
+
+                    m_mode = MODE_DECISION_MAKING;
+
                 // Junction Navigation
                 case MODE_DECISION_MAKING:
-                    
-                    DIRECTION curr_decision = instructions_fake[instruction_idx];
 
-                    switch (curr_decision) {
-                        case DIR_FRONT:
+                    switch (n_msg.type) {
+                        case MSG_IR_UPDATE:
+
+                            if (prev_ir_state == STATE_B_B) {
+                                // should still be B_B after advance
+                                DIRECTION curr_decision = instructions_fake[instruction_idx];
+
+                                switch (curr_decision) {
+
+                                }
+                            }
+
+                            
+
+                            switch (curr_decision) {
+                                case DIR_FRONT:
 
 
-                            break;
-                        case DIR_BACK:
+                                    break;
+                                case DIR_BACK:
 
 
-                            break;
-                        case DIR_LEFT:
-                            mot_cmd.target_speed_left =         0;
-                            mot_cmd.target_speed_right =      -50;
-                            mot_cmd.turn_ticks =                0;
+                                    break;
+                                case DIR_LEFT:
+                                    mot_cmd.target_speed_left =       -100;
+                                    mot_cmd.target_speed_right =      -100;
+                                    mot_cmd.turn_ticks_left =            1000000;
+                                    mot_cmd.turn_ticks_right =           1000000;
 
-                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                            tm_printf("Turning left!\n");
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    tm_printf("Turning left!\n");
 
-                            break;
-                        case DIR_RIGHT:
-                            mot_cmd.target_speed_left =        50;
-                            mot_cmd.target_speed_right =       -0;
-                            mot_cmd.turn_ticks =                0;
+                                    break;
+                                case DIR_RIGHT:
+                                    mot_cmd.target_speed_left =        100;
+                                    mot_cmd.target_speed_right =       100;
+                                    mot_cmd.turn_ticks_left =            0;
+                                    mot_cmd.turn_ticks_right =           0;
 
-                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                            tm_printf("Turning right!\n");
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    tm_printf("Turning right!\n");
+
+                                    break;
+                                default:
+
+
+                                    break;
+                            }
+
+                            // clear message buffer
+                            while (tk_rcv_mbf(navigator_mbfid, &discard_msg, TMO_POL) > 0) { }
+
+                            // Reset variables
+                            prev_ir_state = STATE_NULL;
+                            m_mode = MODE_LINE_FOLLOWING;
+
+                            tk_dly_tsk(100);
 
                             break;
                         default:
-
-
+                            
                             break;
                     }
-                    m_mode = MODE_LINE_FOLLOWING;
 
                     break;
                 case MODE_OBSTACLE_ASSESS:

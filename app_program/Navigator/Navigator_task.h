@@ -6,11 +6,12 @@
 #define OBSTACLE_COARSE_COUNT 7
 
 typedef enum {
-    MODE_LINE_FOLLOWING,        // IR is aware of line and navigator is following it
-    MODE_DECISION_MAKING,       // Car stops at intersection, need to refer to next instruction
-    MODE_WALL_HUGGING,          // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
-    MODE_REENTRY_ADVANCE,       // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
-    MODE_REENTRY_PIVOT,         // Navigator spins the car in place to align with line
+    MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
+    MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
+    MODE_DECISION_MAKING,           // Car stops at intersection, need to refer to next instruction, rotate
+    MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
+    MODE_REENTRY_ADVANCE,           // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
+    MODE_REENTRY_PIVOT,             // Navigator spins the car in place to align with line
     MODE_OBSTACLE_ASSESS,  
     MODE_SAFE_STOP              
 } MOVEMENT_MODE;

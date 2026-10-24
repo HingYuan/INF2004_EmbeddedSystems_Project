@@ -10,7 +10,7 @@
 // #define MOTOR_PWM_WRAP  6249U
 #define MOTOR_PWM_WRAP  3124U		// halved the PWM wrap. Below I also maintained the PWM duty cycle. Testing stuff
 
-#define CTRL_PERIOD_MS            10  /* state machine / PI period */
+#define CTRL_PERIOD_MS          10   /* state machine / PI period */
 #define RAMP_STEP_PCT           200  /* ACCEL: +20% per period. Increased from 5% */
 #define BRAKE_STEP_PCT          200  /* BRAKE: -20% per period, increased from 10% */
 #define TICKS_PER_PERIOD_AT_100 10   /* TUNE: encoder ticks per 20 ms at 100% */
@@ -123,8 +123,14 @@ EXPORT void motor_task(INT stacd, void *exinf)
 	INT out_l = 0, out_r = 0;       /* % actually sent to PWM */
 	INT integ_l = 0, integ_r = 0;
 	W prev_l = 0, prev_r = 0;
-	W turn_start = 0;
-	INT turn_goal = 0;
+
+	W turn_start_l = 0;
+	W turn_start_r = 0;
+	INT turn_goal_l = 0;
+	INT turn_goal_r = 0;
+	BOOL left_done;
+	BOOL right_done;
+	
 	INT stall_cnt = 0;
 	INT ms = 0;
 	INT stop_stable_periods = 0;
@@ -158,11 +164,13 @@ EXPORT void motor_task(INT stacd, void *exinf)
 	left_state = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
 	right_state = read_encoder_state(MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B);
 
-		while(1) {
+	while(1) {
 		/* ---- every 1 ms: encoders + e-stop ---- */
+		// record current encoder state
 		UINT next_left = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
 		UINT next_right = read_encoder_state(MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B);
 
+		// 
 		enc_l_ticks += quadrature_delta(left_state, next_left);
 		enc_r_ticks += quadrature_delta(right_state, next_right);
 		left_state = next_left;
@@ -199,9 +207,13 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				if(new_cmd && (cmd.target_speed_left != 0 || cmd.target_speed_right != 0)) {
 					tgt_l = cmd.target_speed_left;
 					tgt_r = cmd.target_speed_right;
-					turn_goal = cmd.turn_ticks;
+
+					turn_goal_l = cmd.turn_ticks_left;
+					turn_goal_r = cmd.turn_ticks_right;
+
 					integ_l = integ_r = 0;
 					stall_cnt = 0;
+
 					SET_STATE(MS_ACCEL);
 				}
 				break;
@@ -210,16 +222,29 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				if(new_cmd) {
 					tgt_l = cmd.target_speed_left;
 					tgt_r = cmd.target_speed_right;
-					turn_goal = cmd.turn_ticks;
+
+					turn_goal_l = cmd.turn_ticks_left;
+					turn_goal_r = cmd.turn_ticks_right;
+					
 					if(tgt_l == 0 && tgt_r == 0) { SET_STATE(MS_BRAKE); break; }
 				}
+
 				out_l = ramp(out_l, tgt_l, RAMP_STEP_PCT);
 				out_r = ramp(out_r, tgt_r, RAMP_STEP_PCT);
+
 				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
 				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
+
 				if(out_l == tgt_l && out_r == tgt_r) {
-					if(turn_goal != 0) { turn_start = enc_l_ticks; SET_STATE(MS_TURN); }
-					else SET_STATE(MS_CRUISE);
+					if(turn_goal_l != 0 || turn_goal_r != 0) {
+						turn_start_l = enc_l_ticks;
+						turn_start_r = enc_r_ticks;
+
+						SET_STATE(MS_TURN);
+					}
+					else {
+						SET_STATE(MS_CRUISE);
+					}
 				}
 				break;
 
@@ -227,11 +252,18 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				if(new_cmd) {
 					tgt_l = cmd.target_speed_left;
 					tgt_r = cmd.target_speed_right;
+
 					if(tgt_l == 0 && tgt_r == 0) { SET_STATE(MS_BRAKE); break; }
+
 					integ_l = integ_r = 0;
-					if(cmd.turn_ticks != 0) {
-						turn_goal = cmd.turn_ticks;
-						turn_start = enc_l_ticks;
+
+					if(cmd.turn_ticks_left != 0 || cmd.turn_ticks_right != 0) {
+						turn_goal_l = cmd.turn_ticks_left;
+						turn_goal_r = cmd.turn_ticks_right;
+
+						turn_start_l = enc_l_ticks;
+						turn_start_r = enc_r_ticks;
+						
 						SET_STATE(MS_TURN);
 						break;
 					}
@@ -241,15 +273,21 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				// out_r = pi_speed(tgt_r, dr, &integ_r);		// This function is dumb.
 				out_l = tgt_l;
 				out_r = tgt_r;
+
 				if(stalled(out_l, out_r, dl, dr, &stall_cnt)) {
 					out_l = out_r = 0;
+
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
 					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
+
 					SET_STATE(MS_FAULT);
+					
 					break;
 				}
+
 				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
 				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
+
 				break;
 
 			case MS_TURN:
@@ -257,30 +295,49 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				// out_r = pi_speed(tgt_r, dr, &integ_r);		// This function is dumb.
 				out_l = tgt_l;
 				out_r = tgt_r;
+
 				if(stalled(out_l, out_r, dl, dr, &stall_cnt)) {
 					out_l = out_r = 0;
+					
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
 					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
+					
 					SET_STATE(MS_FAULT);
+					
 					break;
 				}
+
 				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
 				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
-				if(iabs((INT)(enc_l_ticks - turn_start)) >= turn_goal) {
-					turn_goal = 0;
+
+				BOOL left_done =
+					(turn_goal_l == 0) ||
+					(iabs((INT)(enc_l_ticks - turn_start_l)) >= turn_goal_l);
+
+				BOOL right_done =
+					(turn_goal_r == 0) ||
+					(iabs((INT)(enc_r_ticks - turn_start_r)) >= turn_goal_r);
+
+				if (left_done && right_done) {
+					turn_goal_l = 0;
+					turn_goal_r = 0;
 					SET_STATE(MS_BRAKE);
 				}
+
 				break;
 
 			case MS_BRAKE:
 				out_l = ramp(out_l, 0, BRAKE_STEP_PCT);
 				out_r = ramp(out_r, 0, BRAKE_STEP_PCT);
+
 				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
 				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
+
 				if(out_l == 0 && out_r == 0) {
 					tgt_l = tgt_r = 0;
 					SET_STATE(MS_IDLE);
 				}
+
 				break;
 
 			case MS_FAULT:
@@ -289,6 +346,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					tgt_l = tgt_r = 0;
 					SET_STATE(MS_IDLE);
 				}
+
 				break;
 
 			case MS_ESTOP:
@@ -313,8 +371,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 						tm_printf((UB *)"[motors] Stop confirmed\n");
 					}
 				}
+
 				break;
 			default:
+
 				break;
 			}
 		}
