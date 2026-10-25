@@ -244,7 +244,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                     tk_dly_tsk(250);
 
-                                    if (++instruction_idx > instructions_count) { instructions_idx--; }
+                                    if (++instruction_idx > instructions_count) { instruction_idx--; }
 
                                     // Reset variables
                                     num_rotations = 0;
