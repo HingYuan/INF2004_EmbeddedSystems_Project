@@ -30,7 +30,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     C_RING_BUFFER barcode_characters;                                           // initialize circular ring buffer to store decoded characters
     crb_init(&barcode_characters);
     INT instruction_idx = 0;
-    DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };       // Initialize instructions (fake for now)
+    DIRECTION instructions_fake[50] = { DIR_LEFT, DIR_RIGHT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
+    INT instructions_count = sizeof(instructions_fake) / sizeof(DIRECTION);
 
     // Decision making
     B num_rotations = 0;
@@ -243,7 +244,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                     tk_dly_tsk(250);
 
-                                    instruction_idx++;
+                                    if (++instruction_idx > instructions_count) { instructions_idx--; }
 
                                     // Reset variables
                                     num_rotations = 0;
