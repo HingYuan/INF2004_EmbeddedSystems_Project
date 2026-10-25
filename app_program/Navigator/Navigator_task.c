@@ -161,6 +161,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                     tk_dly_tsk(1);
 
+                    break;
+
                 // Junction Navigation
                 case MODE_DECISION_MAKING_TURN:
 
