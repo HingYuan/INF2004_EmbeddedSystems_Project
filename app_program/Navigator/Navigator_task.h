@@ -104,6 +104,10 @@ typedef struct {
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 
+typedef struct {
+    MOVEMENT_MODE m_mode;
+} TELEMETRY_SNAPSHOT;
+
 IMPORT void navigator_task(INT stacd, void *exinf);
 
 #endif

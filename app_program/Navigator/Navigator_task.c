@@ -21,6 +21,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd;
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    MOVEMENT_MODE prev_m_mode = MODE_LINE_FOLLOWING;
 
     // Line following
     IR_STATE prev_ir_state = STATE_NULL;
@@ -183,8 +184,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                             num_rotations = 2;
                                         }
 
-                                        mot_cmd.target_speed_left =    -30;
-                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.target_speed_left =    -35;
+                                        mot_cmd.target_speed_right =   -35;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -239,6 +240,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                     tk_dly_tsk(250);
+
+                                    instruction_idx++;
 
                                     // Reset variables
                                     num_rotations = 0;
@@ -395,7 +398,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         }
 
-        // tk_dly_tsk(10);
+
+        // Add code to send m_mode to wifi driver
+        if (m_mode != prev_m_mode) {
+            // Send telemetry
+            
+        }
+        prev_m_mode = m_mode;
+
     }
 }
 
