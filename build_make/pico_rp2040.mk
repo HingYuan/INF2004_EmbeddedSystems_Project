@@ -381,7 +381,7 @@ endif
 
 ifeq ($(WIFI),cyw43)
 
-PICO_SDK_PATH ?= ../../sdk/pico-sdk
+PICO_SDK_PATH ?= ../pico-sdk
 CYW43_DRIVER_PATH := $(PICO_SDK_PATH)/lib/cyw43-driver
 CYW43_PICO_PATH := $(PICO_SDK_PATH)/src/rp2_common/pico_cyw43_driver
 WIFIDIR := ../lib/libwifi/sysdepend/pico_rp2040

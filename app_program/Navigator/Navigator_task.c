@@ -9,11 +9,15 @@
 #include "../Motor/Motor_task.h"
 #include "../Ultrasonic/Ultrasonic_task.h"
 
+void clear_navigator_mbf() {
+    NAVIGATOR_MESSAGE discard_msg;
+    while (tk_rcv_mbf(navigator_mbfid, &discard_msg, TMO_POL) > 0) { }
+}
+
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
     // General
     NAVIGATOR_MESSAGE n_msg;
-    NAVIGATOR_MESSAGE discard_msg;
     INT message_size;
     MOTOR_COMMAND mot_cmd;
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
@@ -28,11 +32,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };       // Initialize instructions (fake for now)
 
     // Decision making
-    B num_blacks = 0;
-    B desired_num_blacks;
+    B num_rotations = 0;
 
     // Obstacle
     BOOL scan_requested = FALSE;
+    BYPASS_PHASE bypass_phase = BYPASS_TURN_OUT;
 
     // Unused
     INT left_debounce_ticks = 0;
@@ -89,9 +93,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    tk_dly_tsk(500);
                                     
                                     m_mode = MODE_DECISION_MAKING_ADVANCE;
+                                    // m_mode = MODE_DECISION_MAKING_TURN;
 
                                     tm_printf("B_B\n");
 
@@ -132,79 +136,118 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     break;
 
                 case MODE_DECISION_MAKING_ADVANCE:
-                    
-                    mot_cmd.target_speed_left = 50;
-                    mot_cmd.target_speed_right = 50;
-                    mot_cmd.turn_ticks_left = 100000;
-                    mot_cmd.turn_ticks_right = 100000;
+                    tk_dly_tsk(500);
+
+                    mot_cmd.target_speed_left =     50;
+                    mot_cmd.target_speed_right =   -50;
+                    mot_cmd.turn_ticks_left =        0;
+                    mot_cmd.turn_ticks_right =       0;
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                    tm_printf("Advancing\n");
 
                     tk_dly_tsk(500);
 
-                    m_mode = MODE_DECISION_MAKING;
+                    mot_cmd.target_speed_left =      0;
+                    mot_cmd.target_speed_right =    -0;
+                    mot_cmd.turn_ticks_left =        0;
+                    mot_cmd.turn_ticks_right =       0;
+
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                    tk_dly_tsk(1000);
+
+                    m_mode = MODE_DECISION_MAKING_TURN;
+
+                    tk_dly_tsk(1);
 
                 // Junction Navigation
-                case MODE_DECISION_MAKING:
+                case MODE_DECISION_MAKING_TURN:
 
                     switch (n_msg.type) {
                         case MSG_IR_UPDATE:
 
-                            if (prev_ir_state == STATE_B_B) {
-                                // should still be B_B after advance
+                            IR_STATE curr_ir_state = n_msg.data.ir_state;
+
+                            if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                 DIRECTION curr_decision = instructions_fake[instruction_idx];
 
                                 switch (curr_decision) {
+                                    case DIR_FRONT:
+                                        m_mode = MODE_LINE_FOLLOWING;
 
+                                        break;
+                                    case DIR_BACK:
+                                        if (curr_ir_state == STATE_B_W) {
+                                            num_rotations = 3;
+                                        } else {
+                                            num_rotations = 2;
+                                        }
+
+                                        mot_cmd.target_speed_left =    -30;
+                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        break;
+                                    case DIR_LEFT:
+                                        if (curr_ir_state == STATE_B_W) {
+                                            num_rotations = 2;
+                                        } else {
+                                            num_rotations = 1;
+                                        }
+
+                                        mot_cmd.target_speed_left =    -30;
+                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        break;
+                                    case DIR_RIGHT:
+                                        if (curr_ir_state == STATE_B_W) {
+                                            num_rotations = 2;
+                                        } else {
+                                            num_rotations = 2;
+                                        }
+
+                                        mot_cmd.target_speed_left =     30;
+                                        mot_cmd.target_speed_right =    30;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        break;
+                                    default:
+                                        m_mode = MODE_LINE_FOLLOWING;
+
+                                        break;
+                                }
+
+                            } else if (curr_ir_state == STATE_B_W) {
+                                num_rotations--;
+                                
+                                if (num_rotations <= 0) {
+                                    mot_cmd.target_speed_left =     0;
+                                    mot_cmd.target_speed_right =    0;
+                                    mot_cmd.turn_ticks_left =       0;
+                                    mot_cmd.turn_ticks_right =      0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    tk_dly_tsk(250);
+
+                                    // Reset variables
+                                    num_rotations = 0;
+                                    prev_ir_state = STATE_NULL;
+                                    m_mode = MODE_LINE_FOLLOWING;
                                 }
                             }
 
-                            
-
-                            switch (curr_decision) {
-                                case DIR_FRONT:
-
-
-                                    break;
-                                case DIR_BACK:
-
-
-                                    break;
-                                case DIR_LEFT:
-                                    mot_cmd.target_speed_left =       -100;
-                                    mot_cmd.target_speed_right =      -100;
-                                    mot_cmd.turn_ticks_left =            1000000;
-                                    mot_cmd.turn_ticks_right =           1000000;
-
-                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    tm_printf("Turning left!\n");
-
-                                    break;
-                                case DIR_RIGHT:
-                                    mot_cmd.target_speed_left =        100;
-                                    mot_cmd.target_speed_right =       100;
-                                    mot_cmd.turn_ticks_left =            0;
-                                    mot_cmd.turn_ticks_right =           0;
-
-                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    tm_printf("Turning right!\n");
-
-                                    break;
-                                default:
-
-
-                                    break;
-                            }
-
-                            // clear message buffer
-                            while (tk_rcv_mbf(navigator_mbfid, &discard_msg, TMO_POL) > 0) { }
-
-                            // Reset variables
-                            prev_ir_state = STATE_NULL;
-                            m_mode = MODE_LINE_FOLLOWING;
-
-                            tk_dly_tsk(100);
+                            prev_ir_state = curr_ir_state;
 
                             break;
                         default:
@@ -352,7 +395,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         }
 
-        tk_dly_tsk(10);
+        // tk_dly_tsk(10);
     }
 }
 

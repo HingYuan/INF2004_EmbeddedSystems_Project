@@ -6,7 +6,7 @@
 typedef enum {
     MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
     MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
-    MODE_DECISION_MAKING,           // Car stops at intersection, need to refer to next instruction, rotate
+    MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
     MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
     MODE_REENTRY_ADVANCE,           // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
     MODE_REENTRY_PIVOT,             // Navigator spins the car in place to align with line
@@ -36,6 +36,8 @@ typedef enum {
     MSG_MOTOR_STOPPED,          
     MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
     MSG_TRACKING_OBSTACLE,
+    MSG_SONAR_PROBED,
+    MSG_MOTOR_MOVE_DONE
 } MESSAGE_TYPE;
 
 typedef struct {
@@ -63,12 +65,33 @@ typedef struct {
     BOOL profile_valid;        // Basic scan quality, not a safe route
 } OBSTACLE_PROFILE;
 
-typedef enum {                  // Movement phases within wall hugging
-    BYPASS_TURN_OUT,                
-    BYPASS_FOLLOW_SIDE,
-    BYPASS_VERIFY_EDGE,
-    BYPASS_CLEAR_CORNER
+// Bypass movement phases
+typedef enum {
+    BYPASS_IDLE,
+    BYPASS_TURN_OUT,
+    BYPASS_CHECK_OUT,
+    BYPASS_SHIFT_OUT,
+    BYPASS_TURN_PARALLEL,
+    BYPASS_CHECK_SIDE,
+    BYPASS_CHECK_FORWARD,
+    BYPASS_ADVANCE,
+    BYPASS_CHECK_CLEAR,
+    BYPASS_CLEAR_CORNER,
+    BYPASS_TURN_IN,
+    BYPASS_CHECK_RETURN,
+    BYPASS_FIND_LINE,
+    BYPASS_LINE_FOUND,
+    BYPASS_TURN_ALIGN,
+    BYPASS_VERIFY_LINE,
+    BYPASS_COMPLETE,
+    BYPASS_ABORT
 } BYPASS_PHASE;
+
+typedef struct {
+    UW distance_cm;
+    W angle_deg;
+    BOOL valid;
+} SONAR_PROBE_RESULT;
 
 typedef struct {
     MESSAGE_TYPE type;
@@ -77,6 +100,7 @@ typedef struct {
         B decoded_char;
         UW obstacle_distance_cm;
         OBSTACLE_PROFILE obstacle_profile;
+        SONAR_PROBE_RESULT sonar_probe;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 
