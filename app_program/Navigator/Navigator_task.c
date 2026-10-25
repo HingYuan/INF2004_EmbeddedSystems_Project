@@ -402,8 +402,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
         // Add code to send m_mode to wifi driver
         if (m_mode != prev_m_mode) {
             // Send telemetry
-            
-        }
+
+        }   
         prev_m_mode = m_mode;
 
     }
