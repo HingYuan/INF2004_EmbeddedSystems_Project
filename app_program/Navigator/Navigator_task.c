@@ -156,7 +156,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                    tk_dly_tsk(1000);
+                    tk_dly_tsk(500);
 
                     m_mode = MODE_DECISION_MAKING_TURN;
 
@@ -181,7 +181,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         break;
                                     case DIR_BACK:
-                                        if (curr_ir_state == STATE_B_W) {
+                                        if (curr_ir_state == STATE_W_W || curr_ir_state == STATE_B_W) {
                                             num_rotations = 3;
                                         } else {
                                             num_rotations = 2;
@@ -196,14 +196,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         break;
                                     case DIR_LEFT:
-                                        if (curr_ir_state == STATE_B_W) {
+                                        if (curr_ir_state == STATE_W_W || curr_ir_state == STATE_B_W) {
                                             num_rotations = 2;
                                         } else {
                                             num_rotations = 1;
                                         }
 
-                                        mot_cmd.target_speed_left =    -30;
-                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.target_speed_left =    -35;
+                                        mot_cmd.target_speed_right =   -35;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -211,14 +211,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         break;
                                     case DIR_RIGHT:
-                                        if (curr_ir_state == STATE_B_W) {
+                                        if (curr_ir_state == STATE_W_W || curr_ir_state == STATE_W_B) {
                                             num_rotations = 2;
                                         } else {
-                                            num_rotations = 2;
+                                            num_rotations = 1;
                                         }
 
-                                        mot_cmd.target_speed_left =     30;
-                                        mot_cmd.target_speed_right =    30;
+                                        mot_cmd.target_speed_left =     35;
+                                        mot_cmd.target_speed_right =    35;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -231,7 +231,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         break;
                                 }
 
-                            } else if (curr_ir_state == STATE_B_W) {
+                            } else if (curr_ir_state == STATE_B_W && prev_ir_state == STATE_W_W) {
                                 num_rotations--;
                                 
                                 if (num_rotations <= 0) {
