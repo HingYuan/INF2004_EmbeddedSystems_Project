@@ -4,14 +4,15 @@
 
 #include "Motor_task.h"
 #include "../robot_tasks.h"
+#include "../Navigator/Navigator_task.h"
 
 // 125 MHz / (6249 + 1) = 20 kHz PWM
 // #define MOTOR_PWM_WRAP  6249U
 #define MOTOR_PWM_WRAP  3124U		// halved the PWM wrap. Below I also maintained the PWM duty cycle. Testing stuff
 
-#define CTRL_PERIOD_MS          20   /* state machine / PI period */
-#define RAMP_STEP_PCT           20    /* ACCEL: +20% per period. Increased from 5% */
-#define BRAKE_STEP_PCT          20   /* BRAKE: -20% per period, increased from 10% */
+#define CTRL_PERIOD_MS            10  /* state machine / PI period */
+#define RAMP_STEP_PCT           200  /* ACCEL: +20% per period. Increased from 5% */
+#define BRAKE_STEP_PCT          200  /* BRAKE: -20% per period, increased from 10% */
 #define TICKS_PER_PERIOD_AT_100 10   /* TUNE: encoder ticks per 20 ms at 100% */
 #define KP                      3    /* TUNE */
 #define KI                      1    /* TUNE */
@@ -26,6 +27,7 @@ typedef enum { MS_IDLE, MS_ACCEL, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_EST
 EXPORT volatile W enc_l_ticks = 0; // Left wheel encoder tick count
 EXPORT volatile W enc_r_ticks = 0; // Right wheel encoder tick count
 EXPORT volatile BOOL motor_estop = FALSE;
+EXPORT volatile BOOL motor_stop_ack_requested = FALSE;
 
 // The BSP has no GPIO interrupt API, so encoders are polled every 1 ms
 // and decoded as quadrature (state = A<<1 | B).
@@ -125,6 +127,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 	INT turn_goal = 0;
 	INT stall_cnt = 0;
 	INT ms = 0;
+	INT stop_stable_periods = 0;
 
 	(void)stacd;
 	(void)exinf;
@@ -173,6 +176,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				SET_STATE(MS_ESTOP);
 			}
 		} else if(state == MS_ESTOP) {
+			stop_stable_periods = 0;
 			SET_STATE(MS_IDLE);
 		}
 
@@ -288,6 +292,28 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				break;
 
 			case MS_ESTOP:
+				 // Confirm that wheel encoders have stopped changing
+				if (dl == 0 && dr == 0) {
+					if (stop_stable_periods < 3)
+						stop_stable_periods++;
+				} else {
+					stop_stable_periods = 0;
+				}
+
+				if (motor_stop_ack_requested && stop_stable_periods >= 3) {
+					NAVIGATOR_MESSAGE msg = {0};
+					msg.type = MSG_MOTOR_STOPPED;
+
+					// Non-blocking send keeps motor control responsive
+					ER er = tk_snd_mbf(navigator_mbfid, &msg,
+									sizeof(msg), TMO_POL);
+
+					if (er >= E_OK) {
+						motor_stop_ack_requested = FALSE;
+						tm_printf((UB *)"[motors] Stop confirmed\n");
+					}
+				}
+				break;
 			default:
 				break;
 			}

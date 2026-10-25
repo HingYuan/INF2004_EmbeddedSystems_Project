@@ -7,6 +7,7 @@
 #include "../robot_tasks.h"
 #include "../Util/C_ring_buffer.h"
 #include "../Motor/Motor_task.h"
+#include "../Ultrasonic/Ultrasonic_task.h"
 
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
@@ -14,6 +15,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
 
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    BOOL scan_requested = FALSE;
 
     // initialize circular ring buffer to store decoded characters
     C_RING_BUFFER barcode_characters;
@@ -21,6 +23,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
     INT left_debounce_ticks = 0;
     INT right_debounce_ticks = 0;
+
+    MOTOR_COMMAND mot_cmd = { 0, 0, 0 };
+
+    INT instruction_idx = 0;
+    DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };
 
     IR_STATE prev_ir_state = STATE_NULL;
     INT curr_speed_left = 0;
@@ -46,37 +53,32 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 if (curr_state != prev_ir_state) {
 
-                                    if (curr_state == STATE_W_W) {
-                                        MOTOR_COMMAND mot_cmd = { 20, -20, 0 };
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        curr_speed_left = mot_cmd.target_speed_left;
-                                        curr_speed_right = mot_cmd.target_speed_right;
-                                        tm_printf("W_W\n");
+                                if (curr_state == STATE_W_W) {
+                                    mot_cmd.target_speed_left =     30;
+                                    mot_cmd.target_speed_right =   -30;
+                                    mot_cmd.turn_ticks =             0;
 
-                                    } else if (curr_state == STATE_W_B) {
-                                        // Car veering left, adjust right
-                                        MOTOR_COMMAND mot_cmd = { 25, -15, 0 };
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        curr_speed_left = mot_cmd.target_speed_left;
-                                        curr_speed_right = mot_cmd.target_speed_right;
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    tm_printf("W_W\n");
+
+                                } else if (curr_state == STATE_W_B) {
+                                    // Car veering left, adjust right
+                                    MOTOR_COMMAND mot_cmd = { 25, -15, 0 };
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                         tm_printf("W_B\n");
 
-                                    } else if (curr_state == STATE_B_W) {
-                                        // Car veering right, adjust left
-                                        MOTOR_COMMAND mot_cmd = { 15, -25, 0 };
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        curr_speed_left = mot_cmd.target_speed_left;
-                                        curr_speed_right = mot_cmd.target_speed_right;
+                                } else if (curr_state == STATE_B_W) {
+                                    // Car veering right, adjust left
+                                    MOTOR_COMMAND mot_cmd = { 15, -25, 0 };
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                    } else if (curr_state == STATE_B_B) {
-                                        // Car at instersection
-                                        MOTOR_COMMAND mot_cmd = { 0, -0, 0 };
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        curr_speed_left = mot_cmd.target_speed_left;
-                                        curr_speed_right = mot_cmd.target_speed_right;
-                                        
-                                        m_mode = MODE_DECISION_MAKING;
+                                } else if (curr_state == STATE_B_B) {
+                                    // Car at instersection
+                                    MOTOR_COMMAND mot_cmd = { 0, -0, 0 };
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    
+                                    m_mode = MODE_DECISION_MAKING;
 
                                     } else {
                                         // Errorneous state
@@ -92,29 +94,29 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 crb_push(&barcode_characters, n_msg.data.decoded_char);
 
-                                break;
-                            case MSG_OBSTACLE_DETECTED:
+                            break;
+                        case MSG_OBSTACLE_DETECTED:
 
-                                m_mode = MODE_WALL_HUGGING;
+                            m_mode = MODE_WALL_HUGGING;
 
-                                break;
-                            default:
-                                // Ignore other states
+                            break;
+                        default:
+                            // Ignore other states
 
                                 break;
                         }
 
-                        break;
-                    case MODE_DECISION_MAKING:
-                        
+                    break;
+                case MODE_DECISION_MAKING:
+                    
 
-                        break;
-                    case MODE_WALL_HUGGING:
-                        switch (n_msg.type) {
-                            case MSG_IR_UPDATE:
+                    break;
+                case MODE_WALL_HUGGING:
+                    switch (n_msg.type) {
+                        case MSG_IR_UPDATE:
 
-                                break;
-                            case MSG_OBSTACLE_DETECTED:
+                            break;
+                        case MSG_OBSTACLE_DETECTED:
 
 
                                 break;
@@ -154,8 +156,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
                         }
 
-                        break;
-                    default:
+                    break;
+                default:
 
                         break;
                 }

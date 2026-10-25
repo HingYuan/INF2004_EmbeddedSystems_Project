@@ -511,7 +511,7 @@ LOCAL BOOL made(const char *what, ID id)
 }
 
 EXPORT INT usermain(void)
-{	
+{		
 	ID	tid;
 
 	mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;

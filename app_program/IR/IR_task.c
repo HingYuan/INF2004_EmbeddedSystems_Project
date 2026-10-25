@@ -139,7 +139,7 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
         
         tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
 
-        tk_dly_tsk(50);
+        tk_dly_tsk(10);
     }
 }
 
