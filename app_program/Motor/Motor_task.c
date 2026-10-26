@@ -17,8 +17,8 @@
 #define KP                      3    /* TUNE */
 #define KI                      1    /* TUNE */
 #define INTEG_MAX               30
-#define STALL_MIN_PCT           20   /* only check stall above this power */
-#define STALL_PERIODS           25   /* 25 x 20 ms = 0.5 s with no ticks = stall */
+#define STALL_MIN_PCT           10   /* only check stall above this power */
+#define STALL_PERIODS           50   /* 25 x 20 ms = 0.5 s with no ticks = stall */
 
 typedef enum { MS_IDLE, MS_ACCEL, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 

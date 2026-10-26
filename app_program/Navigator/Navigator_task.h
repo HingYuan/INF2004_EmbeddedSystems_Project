@@ -37,7 +37,8 @@ typedef enum {
     MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
     MSG_TRACKING_OBSTACLE,
     MSG_SONAR_PROBED,
-    MSG_MOTOR_MOVE_DONE
+    MSG_MOTOR_MOVE_DONE,
+    MSG_IMU_UPDATE,
 } MESSAGE_TYPE;
 
 typedef struct {
@@ -92,6 +93,10 @@ typedef struct {
     W angle_deg;
     BOOL valid;
 } SONAR_PROBE_RESULT;
+
+typedef struct {
+    
+}
 
 typedef struct {
     MESSAGE_TYPE type;
