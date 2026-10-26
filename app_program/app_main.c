@@ -88,6 +88,7 @@ LOCAL ID	mtxid;			/* guards next_seq                   */
 LOCAL ID	mbfid;			/* producer -> consumer              */
 LOCAL ID	semid;			/* consumer -> producer (credits)    */
 LOCAL ID	flgid;			/* both -> monitor                   */
+ID motion_mbf_id;           /* Navigation -> Motor Controller    */
 
 /* Shared state.  next_seq is guarded by the mutex; the counters below are
    written by one task each and only read by the monitor, so they need no
@@ -445,7 +446,7 @@ LOCAL T_CTSK ctsk_consumer = {
 	.task		= consumer_task,
 #if TK_SUPPORT_SMP
 	.tskatr		= TA_HLNG | TA_RNG3 | TA_ASSPRC,
-	.assprc		= TP_PRC2,
+	.assprc		= TP_PRC1,
 #else
 	.tskatr		= TA_HLNG | TA_RNG3,
 #endif
@@ -510,12 +511,13 @@ LOCAL BOOL made(const char *what, ID id)
 }
 
 EXPORT INT usermain(void)
-{	
+{		
 	ID	tid;
 
 	mpfid = tk_cre_mpf(&cmpf); if(!made("mpf", mpfid)) return 1;
 	mtxid = tk_cre_mtx(&cmtx); if(!made("mtx", mtxid)) return 1;
 	mbfid = tk_cre_mbf(&cmbf); if(!made("mbf", mbfid)) return 1;
+
 	semid = tk_cre_sem(&csem); if(!made("sem", semid)) return 1;
 	flgid = tk_cre_flg(&cflg); if(!made("flg", flgid)) return 1;
 

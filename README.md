@@ -1,178 +1,269 @@
-# µT-Kernel 3.0 - RP2040 dual-core SMP Port
+# Getting Started - µT-Kernel 3.0 dual-core SMP on RP2040
 
-µT-Kernel 3.0 (IEEE 2050-2018) on the Raspberry Pi Pico W (RP2040, two Cortex-M0+ cores), derived from the official µT-Kernel 3.0 BSP Pico port. It builds from one source tree in two qualified configurations: **single core** (the default) and **dual-core SMP**, where both cores run the same kernel against a global ready queue serialized by a recursive big kernel lock built on RP2040 hardware spinlocks.
+From a clean machine to a Pico W running both cores. Roughly 15 minutes.
+
+# RUN THIS ASAP TO INSTALL SUBMODULES RECURSIVELY
+# ```git submodule update --init --recursive```
+
+# Note this change in cpu_clock.c that sets up the 125MHz clock on cold start instead of defaulting to the 6MHz clock.
+# ```out_w(0x4005802C, (XOSC_MHz | (1 << 9)));```
+
+# Command to run without web server
+# ```mingw32-make -C build_make E2U=tools/elf2uf2.exe smp=1 CONSOLE=usb_cdc```
+
+# Command to run with web server
+# ```mingw32-make -C build_make E2U=tools/elf2uf2.exe smp=1 CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 -j8```
+
+# ```CONSOLE=usb_cdc``` for micro-USB connection and ```CONSOLE=uart``` for debugger.
+
+---
+
+## 1. Prerequisites
+
+| Need | Why |
+|---|---|
+| Raspberry Pi **Pico W** | The target board. RP2040, two Cortex-M0+ cores. |
+| `arm-none-eabi-gcc` | Cross-compiler. Baseline used for qualification: **13.2.1**. |
+| A host C++ compiler (`g++`) | Builds `elf2uf2`, the UF2 packaging tool, from source. |
+| GNU `make` | The build system. This port does not use CMake or the Pico SDK build. |
+| USB data cable | Provides the default USB CDC console. |
+| USB-serial adapter | Only needed for the optional UART console - GP0 TX, GP1 RX, 115200 8N1. |
+| Pico SDK | The default USB console links TinyUSB from the Pico SDK. |
+| External LED + resistor on **GP16** | Liveness indicator. The Pico W's on-board LED is on the CYW43439 radio, not an RP2040 pin, so it is unavailable while the radio is powered down. |
+
+On Debian/Ubuntu:
 
 ```sh
-make          # single core  (default)
-make SMP=1    # dual-core SMP
+sudo apt install gcc-arm-none-eabi build-essential
+arm-none-eabi-gcc --version
 ```
 
-**Current capabilities**
+---
 
-- **Single core by default, SMP when you ask for it** - one `SMP` switch, one source tree; both configurations pass their own hardware gate (single core 11/11, SMP 58/58)
-- **True SMP scheduling** - global ready queue with per-core dispatch, static task affinity, cross-core wake, inter-processor interrupts, and remote task management, all qualified on hardware
-- **Full preemptive kernel** - tasks, priorities, semaphores, event flags, mutexes, mailboxes, message buffers, fixed and variable memory pools, cyclic and alarm handlers with per-processor assignment
-- **Measured 1.799x speedup** - the same 384-job workload runs 44.4% faster with one worker per core than with both pinned to one
-- **Two qualified console profiles** - UART0 (the baseline) and an optional SMP USB-CDC profile that survives a dual-core print storm with zero unintended drops
-- **CYW43439 radio bring-up** - firmware boot, station enable, OTP MAC and active scan pass a 72/72 hardware gate as a development profile
-- **Working IP networking** - DHCP, DNS and a repeating 64-packet UDP echo exchange, confirmed end to end against a Linux host on both one core and two
+## 1b. Pico SDK - only if you want USB-CDC or Wi-Fi
 
-See [docs/PORT_RP2040.md](docs/PORT_RP2040.md) for exactly what is validated on hardware, what is ported but not yet validated, and what is not ported.
+The default build uses USB CDC, so install the Pico SDK's TinyUSB submodule.
+The SDK is required for:
 
-> [!IMPORTANT]
-> The qualified release boundary is **SMP + UART**, plus the optional SMP
-> USB-CDC console. IP networking and arbitrary concurrent peripheral access
-> are development profiles, not part of that boundary.
-> [docs/PORT_RP2040.md](docs/PORT_RP2040.md) states the supported scope and
-> the RP2040 safety rules.
+| Profile | Needs from the SDK |
+|---|---|
+| `CONSOLE=usb_cdc` | `lib/tinyusb`, plus a set of pico-sdk headers |
+| `WIFI=cyw43` | `lib/cyw43-driver`, `lib/lwip`, and the `hardware_pio` / `hardware_dma` / `hardware_gpio` sources |
+
+Note what is **not** used: this port does not use the SDK's CMake build, does
+not link the pico-sdk runtime, and does not need `picotool` or the SDK's
+toolchain. It compiles a handful of SDK sources and headers into its own make
+build. `lib/libtm/sysdepend/pico_rp2040/usb/usb_sdk_compat.c` supplies the few
+SDK hooks TinyUSB calls, mapped onto µT-Kernel's `tk_def_int()`.
+
+### Install
+
+Qualified against **Pico SDK 2.2.0**.
+
+```sh
+git clone -b 2.2.0 https://github.com/raspberrypi/pico-sdk.git ~/pico/pico-sdk
+cd ~/pico/pico-sdk
+```
+
+Only three of the SDK's five submodules are needed - `mbedtls` and `btstack`
+are not used, and skipping them saves a large download:
+
+```sh
+git submodule update --init lib/tinyusb        # for CONSOLE=usb_cdc
+git submodule update --init lib/cyw43-driver   # for WIFI=cyw43
+git submodule update --init lib/lwip           # for WIFI=cyw43
+```
+
+(`git submodule update --init` with no path fetches all five, which also works.)
+
+### Point the build at it
+
+```sh
+export PICO_SDK_PATH=$HOME/pico/pico-sdk
+```
+
+In Windows Git Bash, use the Windows checkout path in MSYS form, for example:
+
+```sh
+export PICO_SDK_PATH=/c/Users/<you>/pico/pico-sdk
+```
+
+Add that to your shell profile to make it permanent, or pass it per build:
+
+```sh
+make SMP=1 CONSOLE=usb_cdc PICO_SDK_PATH=$HOME/pico/pico-sdk -j8
+```
+
+> [!WARNING]
+> The makefile's fallback default is the **relative** path
+> `../../sdk/pico-sdk`, which is unlikely to resolve for you. Always set
+> `PICO_SDK_PATH` explicitly rather than relying on it.
+
+### Check it
+
+```sh
+echo $PICO_SDK_PATH
+ls $PICO_SDK_PATH/lib/tinyusb/src/tusb.c          # CONSOLE=usb_cdc
+ls $PICO_SDK_PATH/lib/cyw43-driver/src            # WIFI=cyw43
+ls $PICO_SDK_PATH/lib/lwip/src                    # WIFI=cyw43
+```
+
+If a submodule was not initialized the build stops immediately and says which
+one:
+
+```
+TinyUSB not found at <path>/lib/tinyusb. Set PICO_SDK_PATH, or build with CONSOLE=uart
+CYW43 driver not found below <path>; initialize the pico-sdk submodules
+lwIP not found below <path>; initialize the pico-sdk submodules
+```
 
 ---
 
-## Hardware
-
-- Raspberry Pi **Pico W** (RP2040, dual Cortex-M0+, 2 MB flash)
-- USB cable (data, not charge-only)
-- A USB data cable for the default USB CDC console; a USB-serial adapter is only needed for the optional UART console
-- An **external LED on GP16** for the liveness indicator. The Pico W's on-board LED is wired to the CYW43439 radio rather than to an RP2040 pin, so it is unavailable in the radio-down qualified profiles. GP23, GP24, GP25 and GP29 are reserved by the radio.
-
----
-
-## Quick start
+## 2. Clone the repo
 
 ```sh
 git clone https://github.com/sirfonzie/mtk3smp-rp2040.git
 cd mtk3smp-rp2040
+```
 
-# build -- single core by default
+---
+
+## 3. About the UF2 converter (no action needed)
+
+Nothing to do here - it is automatic. This section only explains what you will
+see scroll past on the first build.
+
+The RP2040 bootloader does not accept an ELF. It presents a USB mass-storage
+drive and expects **UF2**: a flat format of 512-byte blocks, each carrying its
+own target address, designed to survive being written by an ordinary file
+copy. So the linked image has to be repackaged.
+
+A normal Pico project gets this from the Pico SDK's CMake build, where
+`pico_add_extra_outputs()` builds the converter as a host tool invisibly. This
+port does not use the Pico SDK build - it inherits the upstream µT-Kernel BSP's
+plain GNU make system, the same one that builds the RX and STM32 targets, which
+has no notion of host helper tools.
+
+So the build does it itself. `build_make/pico_rp2040.mk` carries a rule that
+compiles `tools/elf2uf2/main.cpp` with your **host** `g++` (not
+`arm-none-eabi-gcc` - this program runs on your PC, never on the Pico) and the
+linked image depends on it. On the first build you will see:
+
+```
+Host tool: tools/elf2uf2
+```
+
+after which every link ends with the packaging step. The converter is rebuilt
+only if its own source changes, and it survives `make clean` - it is a host
+artifact, gitignored, and not portable between machines. Override `HOSTCXX`
+if your host compiler is not `g++`.
+
+---
+
+## 4. Build - one core or two
+
+**The build is single core by default.** USB CDC is the default console, and
+`SMP` is the only switch that decides
+how many RP2040 cores the kernel uses.
+
+### Single core (default)
+
+```sh
 cd build_make
 make -j8
 ```
 
-Hold **BOOTSEL** while connecting the Pico, then copy
-`build_make/mtk3pico_smp0_usb_cdc.uf2` to the `RPI-RP2` drive that appears.
+Produces `mtk3pico_smp0_usb_cdc.uf2`. Core 1 is never started and the SMP
+scheduler is compiled out, so the kernel behaves as the stock single-core
+µT-Kernel 3.0 Pico BSP. Start here if you are unsure - it is the conservative
+configuration, and it has its own 11/11 hardware regression gate.
 
-To build the dual-core SMP kernel instead, add `SMP=1` -- see
-[Building for one core or two](#building-for-one-core-or-two).
-
-Requires `arm-none-eabi-gcc` (baseline: 13.2.1), a host `g++`, and the Pico
-SDK 2.2.0 for TinyUSB. The build
-compiles the ELF-to-UF2 converter itself on first run - the RP2040 bootloader
-accepts UF2, not ELF, and unlike a Pico SDK/CMake project nothing else
-provides that helper here. See
-[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for a full step-by-step
-walkthrough.
-
----
-
-## Documentation
-
-| Doc | Covers |
-|---|---|
-| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Step-by-step toolchain setup, build, flash, console, troubleshooting |
-| [docs/PORT_RP2040.md](docs/PORT_RP2040.md) | Feature status: what is validated on hardware, what is ported but not validated, and what is not ported. Also carries the RP2040 safety rules, the driver-ownership matrix, and the idle/exception model |
-
----
-
-## Building for one core or two
-
-**The build is single core by default.** `SMP` is the switch, and it is the
-only thing that decides how many RP2040 cores the kernel uses:
-
-| You want | Command | Produces |
-|---|---|---|
-| **One core** (default) | `make -j8` | `mtk3pico_smp0_usb_cdc.uf2` |
-| **Two cores** (SMP) | `make SMP=1 -j8` | `mtk3pico_smp1_usb_cdc.uf2` |
-
-`make` with no arguments is exactly `make SMP=0`. Core 1 is never started, the
-SMP scheduler is compiled out, and the kernel behaves as the stock
-single-core µT-Kernel 3.0 Pico BSP. This is the conservative choice and the
-one to use if you are unsure.
-
-`SMP=1` starts the second core, enables the global ready queue, the recursive
-big kernel lock and the IPI transport, and lets tasks be assigned to either
-processor. Both configurations are qualified — Phase 12 passed **58/58** in
-SMP and **11/11** in the single-core regression — and both are built from the
-same source tree.
-
-Switching between profiles needs no manual cleanup: the build stamps a
-profile id into `build_make/.build_profile` and discards objects built for a
-different one automatically, reporting
-`Build profile is now ...; discarding objects built for another profile.`
-
-### Choosing the console
-
-`CONSOLE` is independent of `SMP`:
-
-| Console | Command | Notes |
-|---|---|---|
-| USB-CDC (default) | `make SMP=1 -j8` | Console over the Pico's own USB data cable. Requires the Pico SDK for TinyUSB. |
-| UART0 | `make SMP=1 CONSOLE=uart -j8` | GP0 TX / GP1 RX, 115200 8N1. Requires a USB-serial adapter. |
-
-The USB console is the only part of this tree that needs the Pico SDK, and it
-uses just the TinyUSB library, not the SDK's CMake build. Point
-`PICO_SDK_PATH` at your checkout, or export it once. Without it the build
-stops with `TinyUSB not found at <path>. Set PICO_SDK_PATH, or build with
-CONSOLE=uart`.
-
-### All profiles at a glance
-
-| Profile | Command | Status |
-|---|---|---|
-| Single core, USB-CDC | `make -j8` | Single-core USB console build |
-| Dual core, USB-CDC | `make SMP=1 -j8` | **Qualified** — USB profile, 71/71 |
-| Single or dual core, UART | `make CONSOLE=uart -j8` | UART fallback |
-| Radio boot + active scan | `make SMP=1 WIFI=cyw43 -j8` | Development — 72/72 hardware gate, not in the release |
-
-The artifact name always follows the profile:
-`mtk3pico_smp<SMP>_<CONSOLE>[<wifi>].uf2`.
-
-### Networking (development only)
-
-Networking builds on the radio profile through additional knobs —
-`WIFI_JOIN`, `WIFI_NETIF`, `WIFI_STATIC`, `WIFI_DHCP`, `WIFI_DNS`,
-`WIFI_UDP`, `WIFI_TCP`, `WIFI_TCPBULK`. Each builds on the one before it
-(`WIFI_UDP` needs `WIFI_DNS`, `WIFI_TCP` needs `WIFI_UDP`). These read local
-configuration headers that are deliberately **not** committed; copy the
-matching `config/*.example.h` and edit it:
+### Dual core (SMP)
 
 ```sh
-cp config/wifi_credentials.example.h config/wifi_credentials.h
-cp config/network_config.example.h   config/network_config.h
-# fill in the values, and set each file's *_SET flag from 0 to 1
-make SMP=1 WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 -j8
-```
-
-### Web Server & MQTT Sensor Dashboard
-
-The project includes an integrated HTTP web dashboard and MQTT subscriber for real-time sensor monitoring (IMU, servos, environment):
-
-```sh
-# copy credentials & broker templates if not already created
-cp config/wifi_credentials.example.h config/wifi_credentials.h
-cp config/mqtt_config.example.h      config/mqtt_config.h
-
-# build the dashboard profile
 cd build_make
-make WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 SMP=1 CONSOLE=usb_cdc
+make SMP=1 -j8
 ```
 
-- **Dashboard:** Served over HTTP port `8080` (`http://<pico-ip>:8080`) displaying live IMU readings, servo metrics, telemetry, and payload event logs.
-- **MQTT Client:** Subscribes to configured topic (default `sensors/#`), prints received data to USB serial monitor, and exposes data to the web UI via `/api/mqtt`.
-- **Test Server:** See [`app_program/Network/mqtt_test_server/README.md`](app_program/Network/mqtt_test_server/README.md) to launch a local Python broker and test publisher.
+Produces `mtk3pico_smp1_usb_cdc.uf2`. This starts the second core and enables the
+global ready queue, the recursive big kernel lock, the IPI transport and task
+affinity. Qualified at 58/58.
 
-Each template guards itself: an unedited copy fails at compile time with a
-message naming the file and the flag, rather than building and then failing
-to associate at runtime.
+### Console choice, independent of core count
 
-`config/wifi_credentials.h`, `network_config.h`, `udp_test_config.h`,
-and `tcp_test_config.h` are all gitignored. Never commit
-a populated copy.
+```sh
+make SMP=1 -j8                  # USB CDC console over the Pico's USB data cable
+make SMP=1 CONSOLE=uart -j8     # optional UART0 console: GP0 TX, GP1 RX, 115200 8N1
+```
 
-## What the demo does (what you see on first flash)
+**`CONSOLE=usb_cdc` links TinyUSB from the Pico SDK** - see [step 1b](#1b-pico-sdk---only-if-you-want-usb-cdc-or-wi-fi)
+for installing it and setting `PICO_SDK_PATH`.
 
-A small **producer/consumer pipeline** across four tasks, putting one pass
-through every IPC primitive the kernel offers. Radio builds add a fifth task
-that reports WiFi status and the UDP echo traffic:
+### Radio (development profile, not in the qualified release)
+
+Also needs the Pico SDK - see [step 1b](#1b-pico-sdk---only-if-you-want-usb-cdc-or-wi-fi).
+`WIFI=cyw43` currently requires `SMP=1`.
+
+```sh
+make SMP=1 WIFI=cyw43 -j8
+```
+
+### Artifact naming
+
+`mtk3pico_smp<SMP>_<CONSOLE>[<wifi>].uf2` - so `make` gives you
+`mtk3pico_smp0_usb_cdc.uf2`, and `make SMP=1` gives you
+`mtk3pico_smp1_usb_cdc.uf2`.
+
+Switching profiles needs no manual cleanup. The build stamps a profile id
+into `build_make/.build_profile` and discards objects built for a different
+one automatically:
+
+```
+Build profile is now smp1-uart-wifinone-...; discarding objects built for another profile.
+```
+
+---
+
+## 5. Flash
+
+1. Hold **BOOTSEL** on the Pico W while plugging in the USB cable.
+2. Release it. A USB mass-storage drive named `RPI-RP2` appears.
+3. Copy the `.uf2` onto that drive:
+
+```sh
+cp build_make/mtk3pico_smp0_usb_cdc.uf2 /media/$USER/RPI-RP2/   # single core
+# or, for the dual-core build:
+cp build_make/mtk3pico_smp1_usb_cdc.uf2 /media/$USER/RPI-RP2/
+```
+
+The board reboots into the new firmware as soon as the copy completes. There
+is no separate flash tool and no debug probe required.
+
+---
+
+## 6. Watch the console
+
+For the default USB CDC build, keep the Pico W connected with the USB data
+cable. After it reboots, Windows creates a USB serial (CDC) COM port. Open
+that port with PuTTY, Tera Term, or another serial terminal at `115200 8N1`.
+No UART adapter is required.
+
+For the optional UART build, wire the USB-serial adapter to **GP0 (TX)** and
+**GP1 (RX)**, ground to ground, then:
+
+```sh
+screen /dev/ttyUSB0 115200      # or: minicom -D /dev/ttyUSB0 -b 115200
+```
+
+On Linux, the USB CDC port normally appears as `/dev/ttyACM0`.
+
+---
+
+## 6b. What the demo does, and what you should see
+
+The shipped demo is a small **producer/consumer pipeline** that puts one pass
+through every IPC primitive the kernel offers. It is meant to be read and
+modified, not just run.
 
 ```
 producer  --[fixed memory pool]--> record
@@ -184,234 +275,467 @@ monitor   prints a status line
 blink     LED liveness, independent of all of the above
 ```
 
+### The tasks
+
+Four always, plus a fifth in radio builds.
+
+| Task | Priority | Processor (SMP) | What it does |
+|---|---:|---|---|
+| `producer_task` | 5 | 1 | Takes a credit, gets a block from the memory pool, stamps a mutex-guarded sequence number, sends it through the message buffer |
+| `consumer_task` | 6 | 2 | Receives, checks the payload, returns the credit, sets the event flag |
+| `monitor_task` | 7 | either | Waits on the event flag and prints one status line |
+| `wifi_status_task` | 8 | either | **Radio builds only** (`WIFI=cyw43`). Reports link, address and UDP echo traffic. Does not drive the radio - a service task owns that |
+| `blink_task` | 10 | either | Blinks GP16. Touches nothing the console touches |
+
 Under SMP the producer is pinned to processor 1 and the consumer to processor
-2 with `TA_ASSPRC`, so every message crosses a core boundary:
+2 with `TA_ASSPRC`, so **every message crosses a core boundary**. Built with
+`SMP=0` the same source runs unchanged on one core.
+
+### Which API each object demonstrates
+
+| Primitive | Calls | Used for |
+|---|---|---|
+| Fixed memory pool | `tk_cre_mpf` / `tk_get_mpf` / `tk_rel_mpf` | Allocating a record without a heap |
+| Mutex | `tk_cre_mtx` / `tk_loc_mtx` / `tk_unl_mtx` | The one genuinely shared counter |
+| Message buffer | `tk_cre_mbf` / `tk_snd_mbf` / `tk_rcv_mbf` | Passing the record between cores |
+| Semaphore | `tk_cre_sem` / `tk_wai_sem` / `tk_sig_sem` | Credit-based flow control |
+| Event flag | `tk_cre_flg` / `tk_set_flg` / `tk_wai_flg` | Waking the monitor on two conditions (`TWF_ANDW \| TWF_CLR`) |
+| Tasks | `tk_cre_tsk` / `tk_sta_tsk` / `tk_dly_tsk` / `tk_slp_tsk` | Creating and pacing the tasks |
+| SMP | `TA_ASSPRC`, `TP_PRC1` / `TP_PRC2`, `tk_get_prc()` | Pinning, and reporting where work ran |
+
+### What you should see
+
+**Dual core** (`make SMP=1 CONSOLE=usb_cdc`):
 
 ```
+microT-Kernel Version 3.00
+
 === uT-Kernel 3.0 / RP2040 demo ===
 SMP build: 2 processors
 producer -> [mbf] -> consumer, 2 credits, 500 ms period
 
+[monitor] seq=2 produced=2 consumed=2 dropped=0  made_on=prc1 seen_on=prc2
 [monitor] seq=6 produced=6 consumed=6 dropped=0  made_on=prc1 seen_on=prc2
+[monitor] seq=10 produced=10 consumed=10 dropped=0  made_on=prc1 seen_on=prc2
+[monitor] seq=14 produced=14 consumed=14 dropped=0  made_on=prc1 seen_on=prc2
 ```
 
-Built with `SMP=0` the same source runs unchanged on one core and both read
-`prc1`. The blink task on GP16 is deliberately independent of the console: if
-output stops but the LED still blinks, the console is at fault; if the LED
-freezes, the kernel is.
-
-It is one file with the tunables at the top - meant to be read, changed and
-reflashed. **Full walkthrough**, including which call demonstrates which
-object and what to try changing:
-[docs/GETTING_STARTED.md § 6b](docs/GETTING_STARTED.md#6b-what-the-demo-does-and-what-you-should-see).
-
----
-
-## Performance numbers
-
-The measured qualification results - wake/dispatch latency, cross-core wake,
-lock contention and hold times, idle stack high water, and the Phase 13
-scaling benchmark - are recorded in
-[docs/PORT_RP2040.md](docs/PORT_RP2040.md), with the date and profile of each
-run.
-
-**The phase harnesses that produced them, and the per-phase hardware captures,
-are not part of this release.** They are held back with the numbers being
-prepared for publication, and will be published alongside them so the results
-are reproducible from this repository.
-
-The figures are observed measurements and broad bounded-response gates, **not
-hard-real-time guarantees**. The recursive big kernel lock masks local
-interrupts while held, so workload-specific worst-case latency still requires
-application-level analysis.
-
----
-
-## Project structure
+**Single core** (`make SMP=0 CONSOLE=usb_cdc`) - same source, same pipeline,
+both ends on the one processor:
 
 ```
-kernel/            µT-Kernel 3.0 core, with the SMP scheduler and per-core state
-include/           Kernel and BSP headers; sysdepend/pico_rp2040/ holds board config
-lib/               libtk / libtm support libraries
-device/            Device manager and inherited peripheral drivers
-config/            Kernel configuration; *.example.h templates for local secrets
-build_make/        GNU make build; pico_rp2040.mk is the Pico target
-etc/linker/pico_rp2040/
-                   Linker script
-tools/elf2uf2/     UF2 packaging tool, built from source
-app_program/       The demo: the tasks, the kernel objects, and usermain()
-docs/              Getting started and port feature status
+=== uT-Kernel 3.0 / RP2040 demo ===
+single-core build
+producer -> [mbf] -> consumer, 2 credits, 500 ms period
+
+[monitor] seq=2 produced=2 consumed=2 dropped=0  made_on=prc1 seen_on=prc1
+[monitor] seq=6 produced=6 consumed=6 dropped=0  made_on=prc1 seen_on=prc1
+[monitor] seq=10 produced=10 consumed=10 dropped=0  made_on=prc1 seen_on=prc1
 ```
 
----
+Both captured from a Pico W over USB-CDC. The banner line and the
+`seen_on=` field are the two places the configuration shows up.
 
-## Testing and Bug Reports
+Captured from a Pico W over USB-CDC.
 
-This port is qualified by phase gates run on real Pico W hardware. The
-qualified boundary is SMP + UART (Phase 12: SMP 58/58, single-core 11/11),
-plus the optional SMP USB-CDC console (Phase 11: 71/71). Phase 13 adds an
-application-level scaling demonstration at 65/65.
+`made_on=prc1 seen_on=prc2` is the interesting part - it is the pipeline
+crossing cores. On a `SMP=0` build both read `prc1` and the banner says
+`single-core build`.
 
-**Soak testing note:** the longest recorded soak is **ten seconds** - 501
-ownership audits and 3,785,087 core-1 lock operations with zero invariant
-failures. Behaviour over hours or days has not been characterised. The
-qualified profiles should be considered well-gated but not long-run proven.
+### Why `seq` climbs by about 4, not exactly 4
 
-Embedded software depends heavily on board revision, toolchain version, and
-usage patterns that may not have been covered. If you hit unexpected
-behaviour, a crash, or a reproducible failure, please open an issue with what
-happened, how to reproduce it, the console output at the point of failure,
-your `arm-none-eabi-gcc` version, and your board.
+The producer runs every 500 ms and the monitor reports every 2000 ms, so you
+expect 4 records per line. Mostly you get 4, and occasionally 3.
 
-**Where help is most useful:** [docs/PORT_RP2040.md](docs/PORT_RP2040.md)
-lists what is validated and what is not. The "Ported, not validated" entries -
-IP networking over CYW43439, the inherited peripheral drivers
-under concurrent cross-core use, and anything long-running - are where an
-extra pair of hands would make the most difference. A result is worth having
-whether it worked or not.
+That is not a fault - it is `tk_dly_tsk` doing exactly what it says. The call
+sleeps for an interval **measured from when it is called**, so the producer's
+real period is 500 ms *plus* the time it spends taking a credit, getting a
+pool block, locking the mutex and sending the message: about 510 ms. Over a
+capture of 13 reports that works out to 3.92 records per report, and every so
+often the fourth record lands just after the monitor has printed.
 
----
+This is the classic difference between **relative** and **absolute** delay. If
+you need a period that does not drift, do not sleep for a fixed interval -
+compute the next absolute deadline and sleep until that, so the work time is
+absorbed instead of accumulated. Making that change is a good exercise: the
+`seq` deltas should settle to exactly 4.
 
-## How the port works
+### On the USB-CDC console
 
-The RP2040 has two Cortex-M0+ cores and no cache coherency problem to solve,
-but also no load-linked/store-conditional: atomicity comes from the hardware
-spinlock block. This port builds a **recursive big kernel lock** on those
-spinlocks and serializes all kernel state behind it, so both cores run the
-same kernel image against one global ready queue.
+With `CONSOLE=usb_cdc` the console is a 4 KB ring drained by the host, so
+timing matters in a way it does not over UART:
 
-Core 0 boots normally and is the sole SysTick timekeeper; core 1 is brought up
-afterwards and explicitly disables its local SysTick, with the common handler
-rejecting and counting any tick that arrives off core 0 anyway. Cross-core
-work - waking a task resident on the other core, delivering a cyclic or alarm
-callback to its assigned processor, remote task management - travels by
-inter-processor interrupt, with reasons coalesced so a burst costs one IPI.
+- The monitor **waits for the host to enumerate** (`tm_usb_state() >= 2`)
+before printing the banner. Anything printed earlier would go into a ring
+nobody is reading and be lost. The wait is bounded at about 20 s, so a
+headless board still runs the demo - you just will not see the start of it.
+- Expect the banner a second or two after you open the port, not at reset.
+- One status line every `REPORT_MS` cannot overrun a 4 KB ring, so drops
+should never appear. If they do, the monitor says so on its own line
+(`[monitor] console dropped N bytes`).
+- Over UART none of this applies: `tm_printf` writes straight to the UART
+from the calling context, with no ring, no service task and no interrupt -
+which is exactly why it stays the qualified console while the scheduler is
+under test.
 
-Peripheral IRQs are permanently owned by processor 1 (RP2040 core 0). The
-inherited mSDI driver layer was converted from local interrupt masking to
-SMP-aware serialization: an atomic `FastLock` counter, interrupt-preserving
-cross-core locks around each task/IRQ handoff, and auto-cleared event flags in
-place of sleep/wakeup pairs so a timeout/completion race cannot strand a stale
-wakeup.
+### What the LED tells you
 
-### What SMP support cost, in source terms
+The LED on GP16 blinks at 2 Hz once USB is up (immediately on a UART build).
+Before that it blinks a *count* of how far USB bring-up got - long flash = 5,
+short flash = 1:
 
-The SMP conversion changes **36 files** relative to the upstream Pico BSP
-(`tron-forum/mtk3_bsp`, branch `pico_rp2040`, commit `15ed232`) — 11 added and
-25 modified. That count excludes documentation, the qualification
-applications, USB/Wi-Fi work, and unrelated Pico W baseline fixes.
-
-**Added** — the SMP interfaces (`include/tk/smp.h`, `kernel/knlinc/smp.h`,
-`kernel/knlinc/smp_lock.h`), the RP2040 backend
-(`kernel/sysdepend/cpu/rp2040/smp_atomic.c`, `smp_rp2040.c`), and the generic
-scheduler and locking (`kernel/tkernel/ready_queue_smp.c`, `smp_dispatch.c`,
-`smp_lock.c`).
-
-**Modified** — configuration to select `TK_SUPPORT_SMP` and `TK_MAX_CORE`; the
-ARMv6-M context-switch, exception and dispatch paths to make saved task
-context processor-aware; board init and idle handling to start core 1 and give
-each core a private Thread-mode idle context; and the generic kernel
-(`task.c`, `task_manage.c`, `task_sync.c`, `wait.c`, `timer.c`,
-`time_calls.c`, `klock.c`, `cpuctl.c`) for affinity, remote task management,
-cross-core wakeups and single-owner timekeeping.
-
-The generic scheduler and locking policy is largely reusable. Atomics,
-interrupts, secondary-core startup, context switching and the IPI transport
-are target-specific — `kernel/sysdepend/cpu/rp2040/` is the principal
-replacement point for another SoC.
-
-Separately, the inherited peripheral drivers (`device/ser/`, `device/i2c/`,
-`device/adc/`, `lib/libtk/fastlock.c`) were made SMP-safe. That work is not
-required for the core SMP kernel to boot.
-
----
-
-## About µT-Kernel 3.0
-
-µT-Kernel 3.0 is a real-time OS for small-scale embedded systems and IoT edge
-nodes, developed by TRON Forum.
-
-- Compliant with IEEE Standard 2050-2018; highly compatible with µT-Kernel 2.0
-- Released as open source under T-License 2.2
-
-Specification: [tron-forum.github.io/mtkernel_3](https://tron-forum.github.io/mtkernel_3/)
-Upstream BSP: [github.com/tron-forum/mtk3_bsp](https://github.com/tron-forum/mtk3_bsp), branch `pico_rp2040`, tag `v1.00.00.B5-pico_rp2040`
-TRON Forum: [www.tron.org](https://www.tron.org)
-
-This port is derived from that tag, which is retained as the `upstream` remote
-and as the root commit of this repository; the original BSP README is
-preserved there.
-
----
-
-## Author
-
-Muhamed Fauzi Bin Abbas, with AI Assistants.
-
----
-
-## Licensing
-
-This repository combines upstream µT-Kernel 3.0 source with port work written
-for the RP2040. Nothing here is relicensed: upstream copyright headers are
-left intact in every file, and where this section and a file header disagree,
-**the file header governs**. Full licence texts are in [`LICENSES/`](LICENSES/).
-
-| Part of the repository | Copyright | Licence |
-|---|---|---|
-| `kernel/`, `include/`, `lib/libtk/`, `lib/libtm/` (core), `device/`, `config/` - µT-Kernel 3.0 and this port's SMP additions to it: per-core kernel state, the global ready queue, the recursive big kernel lock, cross-core dispatch, and the RP2040 SMP backend | µT-Kernel 3.0, © 2006-2023 Ken Sakamura, released by TRON Forum | T-License 2.2 - [`T-License-2.2_TEF000-219-200401.pdf`](LICENSES/T-License-2.2_TEF000-219-200401.pdf) |
-| `lib/libnet/lwip/`, `lib/libwifi/`, `lib/libtm/sysdepend/pico_rp2040/usb/`, `app_program/` - the lwIP raw-API driver, the CYW43439 polling service, the TinyUSB console glue, and the demo application. Built against third-party libraries, but not derived from them | © 2026 Muhamed Fauzi Bin Abbas | Apache-2.0 - [`Apache-2.0.txt`](LICENSES/Apache-2.0.txt) |
-| `lib/libwifi/sysdepend/pico_rp2040/cyw43_bus_pio_spi.pio.h`, `tools/elf2uf2/` - generated from, or copied from, Pico SDK sources | © 2020 Raspberry Pi (Trading) Ltd. | BSD-3-Clause - [`BSD-3-Clause_Raspberry-Pi.txt`](LICENSES/BSD-3-Clause_Raspberry-Pi.txt) |
-
-### A note on T-License 2.1
-
-TRON Forum releases µT-Kernel 3.0 as a whole under **T-License 2.2**, and the
-upstream repository names `TEF000-219-200401.pdf` as the governing document.
-
-64 files still carry "T-License 2.1" in their headers, predating the relicense
-- 36 of them in `kernel/tkernel/`, the rest spread across `kernel/knlinc/`,
-`kernel/tstdlib/`, `kernel/usermain/`, `kernel/sysdepend/`, `include/sys/`,
-`include/tk/`, `include/tm/` and `lib/libtk/`. T-License 2.1
-([`T-License-2.1_TEF000-218-150401.pdf`](LICENSES/T-License-2.1_TEF000-218-150401.pdf))
-is included in `LICENSES/` so those headers resolve to a text present in this
-repository. This is a record of what the files say, not a claim that any part
-of µT-Kernel 3.0 is offered under 2.1 rather than 2.2.
-
-Every file added by this port carries a 2.2 header, an Apache-2.0 SPDX tag, or
-the original Raspberry Pi BSD-3-Clause notice.
-
-### Build dependencies (not redistributed here)
-
-**The `arm-none-eabi` GCC toolchain** is required to build and is not included.
-
-**The Raspberry Pi Pico SDK** is required only for the `CONSOLE=usb_cdc` and
-`WIFI=cyw43` profiles, and is not included. Those profiles compile sources
-from three of its submodules, each under its own licence and obtained with the
-SDK rather than from here:
-
-| Component | Upstream | Licence |
-|---|---|---|
-| TinyUSB | `hathach/tinyusb` | MIT, © 2018 hathach (tinyusb.org) |
-| lwIP | `lwip-tcpip/lwip` | BSD-3-Clause, © 2001-2002 Swedish Institute of Computer Science |
-| cyw43-driver | `georgerobotics/cyw43-driver` | © 2019-2022 George Robotics Pty Ltd. **Hardware-restricted** - see below |
-
-> [!IMPORTANT]
-> The **cyw43-driver licence is not a plain BSD licence.** Raspberry Pi Ltd
-> grants use "solely with the Licensor's microcontroller chip (RP2040) or any
-> other semiconductor device produced by the Licensor. No other use is
-> permitted." Its redistribution clause carries the same restriction. That
-> covers this port, which is RP2040-only by definition, but it does mean the
-> `WIFI=cyw43` profile cannot be carried to non-Raspberry-Pi silicon. The
-> kernel, the qualified UART and USB-CDC profiles, and everything under
-> `kernel/`, `include/`, `lib/libtk/` and `lib/libtm/` are unaffected.
-
-**CYW43439 radio firmware** is distributed as a binary blob inside the Pico
-SDK under Infineon's own terms. It is not redistributed here.
-
-### Sources of the licence texts
-
-| Licence | Obtained from |
+| Level | Meaning |
 |---|---|
-| T-License 2.1 and 2.2 | TRON Forum, distributed with the upstream µT-Kernel 3.0 release |
-| Apache-2.0 | The canonical text from apache.org |
-| BSD-3-Clause (Raspberry Pi) | `LICENSE.TXT` from the Pico SDK repository |
+| 0 (dark) | `tusb_init()` failed |
+| 1 | `tk_def_int()` rejected the USB interrupt |
+| 2 | NVIC never unmasked `USBCTRL_IRQ` |
+| 3 | USB controller not enabled |
+| 4 | D+ pull-up not asserted, so no host can see the device |
+| 5 | pull-up on, but no USB interrupt has ever fired |
+| 6 | interrupts firing, but no bus reset or connect from the host |
+| 7 | host talking, enumeration not completing |
+| 8 | fully enumerated |
+
+### Reading a failure
+
+The blink task never touches the console, and that is the point:
+
+| Symptom | Meaning |
+|---|---|
+| Console output **and** LED both running | Healthy |
+| Console stops, **LED still blinking** | The console is at fault, not the kernel |
+| **LED freezes** | A console call blocked the kernel, or the kernel is wedged |
+| LED blinking a repeating count | USB never finished coming up; read it against the table above |
+
+### What is in `app_program/`
+
+| File | Lines | What it is |
+|---|---:|---|
+| `app_main.c` | 526 | The whole demo: the tasks, the kernel objects, the WiFi reporter, `usermain()` |
+| `demo_tasks.c/.h` | 90 | The console-independent blink task |
+| `usb_console_compat.h` | 31 | Console-state accessors, with constant stubs for UART builds |
+
+The build picks up whatever `.c` files are in this directory
+(`build_make/mtkernel_3/app_program/subdir.mk` globs them), so adding one
+needs no makefile edit.
+
+### A note on stack sizes
+
+Every task uses 4096 bytes rather than the 1-2 KiB that sufficed before SMP.
+The kernel path is deeper now: each critical section runs the global
+ready-queue assignment on the calling task's stack, so any task making a
+blocking kernel call needs more headroom. **Applications carried over from a
+single-core µT-Kernel may need their stacks revised upward.**
+
+### Making it yours
+
+Everything is in one file with the tunables at the top:
+
+```c
+#define N_RECORDS   4     /* blocks in the fixed memory pool */
+#define CREDITS     2     /* messages in flight at once      */
+#define PRODUCE_MS  500   /* one record every half second    */
+#define REPORT_MS   2000  /* monitor prints this often       */
+```
+
+Things worth trying: set `CREDITS` to 1 and watch the producer block; swap the
+message buffer for a mailbox; move both tasks onto the same processor and see
+whether throughput changes; remove the mutex and see whether the sequence
+numbers still come out unique under SMP; replace the producer's `tk_dly_tsk`
+with an absolute deadline and watch the `seq` deltas settle to exactly 4.
+
+Keep a console-independent blink task in whatever you build - it is the only
+thing that tells you a hang is the console rather than the kernel.
+
+---
+
+## 7. Networking (development profile)
+
+Networking is **not** part of the qualified release. It builds on the radio
+profile through additional make knobs, each reading a local configuration
+header that is deliberately not committed.
+
+```sh
+cp config/wifi_credentials.example.h config/wifi_credentials.h
+cp config/network_config.example.h   config/network_config.h
+```
+
+Edit each copy: fill in the values, **and change its `*_SET` flag from 0 to
+1**. Each template carries a guard so an unedited copy fails at compile time
+rather than building fine and then failing to associate at runtime:
+
+```c
+#define UTK_WIFI_CREDENTIALS_SET   0     /* <- set to 1 when done */
+#define UTK_WIFI_SSID       "replace-with-ssid"
+#define UTK_WIFI_PASSWORD   "replace-with-password"
+```
+
+Forget it and the build stops with:
+
+```
+config/wifi_credentials.h: placeholder values. Set your network SSID and
+password, then set UTK_WIFI_CREDENTIALS_SET to 1.
+```
+
+```sh
+
+make SMP=1 WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 -j8
+```
+
+Further knobs: `WIFI_STATIC`, `WIFI_DNS`, `WIFI_UDP`, `WIFI_TCP`,
+`WIFI_TCPBULK` - each with its own `config/*.example.h` template. They are
+cumulative: `WIFI_UDP` requires `WIFI_DNS`, and `WIFI_TCP` requires `WIFI_UDP`.
+
+A working chain looks like this - build up one knob at a time and check each
+stage on the console before adding the next:
+
+```sh
+B="SMP=1 WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1"
+make $B -j8                                  # associate, get an address, resolve a name
+make $B WIFI_UDP=1 -j8                       # UDP echo against a host listener
+make $B WIFI_UDP=1 WIFI_TCP=1 -j8            # TCP echo
+make $B WIFI_UDP=1 WIFI_TCP=1 WIFI_TCPBULK=1 -j8
+```
+
+> [!WARNING]
+> `config/wifi_credentials.h`, `network_config.h`, `udp_test_config.h`,
+> and `tcp_test_config.h` are gitignored on purpose.
+> Never commit a populated copy.
+
+The radio profiles work on **either** core count. `SMP=0` builds the same
+networking stack with the service task unpinned - there is only one processor
+to run it on. `lib/libwifi/sysdepend/pico_rp2040/smp_compat.h` supplies the
+single-core equivalents of the SMP primitives the driver uses: the cross-core
+spinlock becomes a PRIMASK mask/restore, the processor query returns 1, and
+the memory barrier stays a real `dmb` - the ordering it needs is against DMA
+and PIO, not against another CPU.
+
+A single-core radio build has been confirmed on hardware - association, DHCP
+and a full 64-packet UDP echo against a Raspberry Pi Zero 2 W, matching
+64/64 with the host's own count.
+
+Expected output once the link comes up and the session runs:
+
+```
+[wifi] link UP  rssi=-40  mac=28:cd:c1:01:23:45
+[udp] waiting: link=1 netif_up=1 link_up=1 dhcp=0 addr=0.0.0.0
+[wifi] ip=192.168.1.50  gw=192.168.1.1  dns=192.168.1.1
+[udp] session 1: echoing to 192.168.1.10:7007, 64 packets of 48 bytes
+[udp] echo #0, 48 bytes: 55 54 4b 36 00 00 40 30 e2 f3 04 15 ...
+[udp] echo #1, 48 bytes: 55 54 4b 36 00 01 40 30 ff 10 21 32 ...
+   ... one line per packet, #0 through #63 ...
+[udp] 192.168.1.10:7007  sent=64 recv=64 matched=64/64  corrupt=0 retries=0 errs=0  1360 ms
+[udp] session 1 complete: result=0  ALL PACKETS ECHOED
+```
+
+The session then repeats every 5 s. Captured from a Pico W over USB-CDC
+against `tools/linux_echo.py` on a Raspberry Pi Zero 2 W.
+
+### How the WiFi reporting works
+
+Worth understanding before you change it, because the shape is dictated by
+who owns what.
+
+**The application does not drive the radio.** A service task owns the
+CYW43439, lwIP and the echo session, and publishes a status snapshot;
+under SMP it is pinned to processor 2 (physical RP2040 core 1).
+`wifi_status_task` only reads that snapshot and prints. It reads through
+`cyw43_utk_get_status()`, which takes a **seqlock** copy - `lwip_utk_udp_get_status()`
+is a plain struct copy that is only safe inside the service itself.
+
+**The session repeats.** It sends 64 packets, reports, waits 5 s, and runs
+again, counting sessions as it goes. Set `UTK_UDP_REPEAT_MS` to 0 in
+`lib/libnet/lwip/lwip_utk_udp.c` for the original single-run behaviour.
+
+**Echoes arrive far faster than anything can print them.** At roughly 21 ms
+per packet, a reporting task polling at any sane rate would miss most of
+them. So the driver keeps a **32-entry ring** of matched echoes and the
+reporting task drains it, tracking a monotonic cursor. It polls every 200 ms
+while the link is up - about 9 new entries per drain, comfortably inside the
+ring - and backs off to 3 s when there is nothing to watch. If a reader ever
+does fall behind it says so rather than printing stale slots.
+
+**Lines are composed, then printed once.** `tm_printf` is atomic per *call*,
+not per line: a line built from several calls can be spliced by a
+higher-priority task printing between them. Every line here is formatted into
+a buffer with `tm_sprintf` and emitted with exactly one `tm_printf`. Keep that
+habit in anything you add.
+
+The `[udp] waiting:` line appears if nothing has been sent for about 5 s, and
+names what is still missing. DHCP normally finishes a second or two after the
+link comes up, so seeing it once at startup with `dhcp=0` is normal - the
+session starts as soon as an address arrives. If it repeats forever, the field
+that stays `0` is the thing to chase.
+
+The payload begins `55 54 4b 36` - ASCII `UTK6`, the driver's magic - so you
+can see at a glance that what came back is what went out.
+
+### The other end: an echo server
+
+The Pico is the **client**. It sends and expects the same bytes back, so the
+host side is a plain echo server - nothing parses the payload.
+
+| Profile | Protocol | Default port | Traffic |
+|---|---|---|---|
+| `WIFI_UDP=1` | UDP | 7007 | 64 packets x 48 bytes, stop-and-wait, 250 ms reply timeout |
+| `WIFI_TCP=1` | TCP | 7008 | connect, echo, close |
+
+[`tools/linux_echo.py`](../tools/linux_echo.py) serves both. It needs only
+Python 3 - no dependencies - so a Raspberry Pi Zero 2 W, or any Linux box on
+the same network, is enough:
+
+```sh
+python3 tools/linux_echo.py
+```
+
+It prints the addresses it can see. Put the one on the Pico's network into
+the config before building:
+
+```sh
+cp config/udp_test_config.example.h config/udp_test_config.h
+cp config/tcp_test_config.example.h config/tcp_test_config.h
+# set UTK_UDP_ECHO_ADDRESS / UTK_TCP_ECHO_ADDRESS to that address
+```
+
+Then build and flash the Pico:
+
+```sh
+B="SMP=1 WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1"
+make $B WIFI_UDP=1 -j8
+```
+
+The server prints a line per packet, and a summary on Ctrl+C. Useful options:
+`--udp-only`, `--tcp-only`, `--quiet`, `--bind`, `--udp-port`, `--tcp-port`.
+
+A few things that catch people out: the ports must match the config exactly;
+the Pi's firewall must allow inbound 7007/7008; both devices must be on the
+same subnet, since the Pico sends unicast to a literal address with no
+routing; and the session has a 30 s overall timeout, so start the server
+first.
+
+`tools/windows_udp_echo.ps1` and `tools/windows_tcp_echo.ps1` are the
+equivalent for a Windows host.
+
+### MQTT dashboard subscriber
+
+The optional MQTT profile subscribes to a broker and exposes the latest message
+through the web dashboard. Copy the configuration template and set the broker
+address and topic:
+
+```sh
+cp config/mqtt_config.example.h config/mqtt_config.h
+# edit config/mqtt_config.h and set UTK_MQTT_CONFIG_SET to 1
+```
+
+Build it with the existing Wi-Fi, DHCP, web-server, and USB-console profile:
+
+```sh
+make SMP=1 CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 \
+   WIFI_DHCP=1 WEB_SERVER=1 MQTT=1 PICO_SDK_PATH=... -j8
+```
+
+After flashing, open `http://<pico-ip-address>:8080/`. The page polls
+`/api/mqtt` once per second and shows the connection state, message count,
+latest topic, and latest payload. The MQTT client is driven by the core-1
+CYW43/lwIP owner task, so it does not create a second lwIP context.
+
+The transports also include UDP, TCP and bulk TCP profiles for diagnostics.
+
+What you have to build against:
+
+| Piece | Where |
+|---|---|
+| Working UDP and TCP client/server paths | `lib/libnet/lwip/lwip_utk_udp.c`, `lwip_utk_tcp.c`, `lwip_utk_tcpbulk.c` |
+| The netif/DHCP/DNS bring-up they sit on | `lib/libnet/lwip/lwip_utk.c`, `lwip_utk_ipv4.c` |
+| lwIP configuration | `lib/libnet/lwip/include/lwipopts.h` |
+| The radio poll service that drives it all | `lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c` |
+
+Two things to know before you start. **lwIP here is raw-API and
+single-threaded** - it is driven from the processor-1 polling service, so
+every lwIP call must happen from that context, not from an arbitrary task;
+hand work across with a kernel object instead. And if you build against a
+library written for lwIP's `altcp` layer, turn on `LWIP_ALTCP` in
+`lwipopts.h` - it is off because nothing in the tree needs it.
+
+The protocol libraries themselves are already on disk: the Pico SDK checkout
+carries lwIP's own `src/apps/` (MQTT among them). Linking one means adding it
+to `LWIP_OBJS` in `build_make/pico_rp2040.mk` - the protocol is provided, the
+session driver is what you write.
+
+The existing `lwip_utk_udp.c` is the smallest complete example of the pattern:
+init, a bounded session driven from the poll loop, and a status struct the
+application reads.
+
+---
+
+## 8. Troubleshooting
+
+### `RPI-RP2` drive does not appear
+
+Hold BOOTSEL *before* connecting power and keep holding until the drive
+mounts. Try a different USB cable - charge-only cables have no data lines.
+
+### `make` succeeded but there is no `.uf2`
+
+The build skips the packaging step when `build_make/tools/elf2uf2` is missing,
+and does so quietly. Normally the build creates it, so this means the host
+tool failed to compile - look further up the output for an error from `g++`,
+and check it is installed:
+
+```sh
+g++ --version
+ls -l build_make/tools/elf2uf2
+```
+
+Note that step uses the **host** compiler, not `arm-none-eabi-g++`. Set
+`HOSTCXX` if your host compiler has another name. The `.elf` from the run is
+fine - only the packaging was skipped.
+
+### `TinyUSB not found` / `CYW43 driver not found` / `lwIP not found`
+
+The Pico SDK is missing, `PICO_SDK_PATH` is unset or wrong, or the relevant
+submodule was never initialized. See
+[step 1b](#1b-pico-sdk---only-if-you-want-usb-cdc-or-wi-fi):
+
+```sh
+echo $PICO_SDK_PATH                                   # set? correct?
+cd $PICO_SDK_PATH && git submodule update --init lib/tinyusb lib/cyw43-driver lib/lwip
+```
+
+Remember the fallback default is the relative path `../../sdk/pico-sdk`, which
+probably does not resolve from wherever you cloned this - set the variable
+explicitly. If you only need the UART console, build with `CONSOLE=uart`
+(the default) and the SDK is not required at all.
+
+### Nothing on the UART console
+
+Confirm TX/RX are not swapped - the adapter's RX goes to the Pico's GP0 (TX).
+Confirm a common ground. Confirm 115200 8N1. If you flashed the `usb_cdc`
+profile, output goes to the Pico's USB port instead, not GP0/GP1.
+
+### Nothing on the USB-CDC console
+
+The banner is printed only after the host enumerates, so it will not appear at
+reset - open the port and wait a second or two. If nothing ever arrives, read
+the GP16 LED against the bring-up table above; it tells you how far USB got.
+
+### No LED activity
+
+The Pico W's on-board LED is on the radio chip and will not light in the
+radio-down profiles. Use an external LED on GP16, or change `BOARD_LED_PIN`
+in `include/sys/sysdepend/pico_rp2040/sysdef.h`. Avoid GP23, GP24, GP25 and
+GP29 - the radio reserves them.
+
+### Only one core seems active
+
+Confirm which image you actually flashed - the filename is the ground truth.
+`mtk3pico_smp0_*` is single core, `mtk3pico_smp1_*` is dual core. The banner
+also prints `SMP build: 2 processors` or `single-core build`. The build
+switches profiles on its own, so a stale object tree is not the usual cause.
+
+---
+
+## 9. Next steps
+
+- [docs/PORT_RP2040.md](PORT_RP2040.md) - what is validated on hardware, what is ported but not yet validated, and what is not ported. It also carries the **RP2040 safety rules** (part of the qualification boundary, not optional advice), the **driver-ownership matrix** to consult before adding a driver, and the idle/exception model
+- The µT-Kernel 3.0 specification: https://tron-forum.github.io/mtkernel_3/
