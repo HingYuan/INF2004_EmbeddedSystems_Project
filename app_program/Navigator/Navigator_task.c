@@ -8,6 +8,7 @@
 #include "../Util/C_ring_buffer.h"
 #include "../Motor/Motor_task.h"
 #include "../Ultrasonic/Ultrasonic_task.h"
+#include "../IMU/IMU_task.h"
 
 void clear_navigator_mbf() {
     NAVIGATOR_MESSAGE discard_msg;
@@ -128,6 +129,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             tm_printf((UB *)"[nav] Obstacle detected\n");
                             break;
+                        case MSG_IMU_UPDATE:
+                            tm_printf("[IMU] PITCH: %d, ROLL: %d\n", n_msg.data.imu_telemetry_msg.pitch_deg, n_msg.data.imu_telemetry_msg.roll_deg);
 
                         default:
                             // Ignore other states

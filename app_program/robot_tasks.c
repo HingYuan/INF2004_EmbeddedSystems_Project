@@ -108,7 +108,7 @@ EXPORT ER robot_tasks_start(void)
 		{ ir_barcode_task, 2, IR_RIGHT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
 		{ ir_barcode_decoder_task, 2, 0, TP_PRC1, "IR barcode decoder" },			// Barcode decoder
 		{ motor_task, 2, 0, TP_PRC1, "Motors" },										// Motors
-		// { imu_task, 0, "IMU" }
+		{ imu_task, 2, 0, TP_PRC1, "IMU" },											// IMU
 		{ navigator_task, 1, 0, TP_PRC1, "Navigator" },								// Navigator (brain)
 
 		/* Below tasks for miscellaneous purposes */

@@ -3,16 +3,11 @@
 
 #include <tk/tkernel.h>
 
-typedef enum {
-    MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
-    MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
-    MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
-    MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
-    MODE_REENTRY_ADVANCE,           // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
-    MODE_REENTRY_PIVOT,             // Navigator spins the car in place to align with line
-    MODE_OBSTACLE_ASSESS,  
-    MODE_SAFE_STOP              
-} MOVEMENT_MODE;
+/* 
+=========================================
+|                   IR                  |
+=========================================
+*/
 
 typedef enum {
     STATE_W_W,
@@ -22,24 +17,11 @@ typedef enum {
     STATE_NULL,
 } IR_STATE;
 
-typedef enum {
-    DIR_FRONT,
-    DIR_BACK,
-    DIR_LEFT,
-    DIR_RIGHT,
-} DIRECTION;
-
-typedef enum {
-    MSG_IR_UPDATE,              // Line following sensor update, car veering off
-    MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
-    MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
-    MSG_MOTOR_STOPPED,          
-    MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
-    MSG_TRACKING_OBSTACLE,
-    MSG_SONAR_PROBED,
-    MSG_MOTOR_MOVE_DONE,
-    MSG_IMU_UPDATE,
-} MESSAGE_TYPE;
+/* 
+=========================================
+|               Ultrasonic              |
+=========================================
+*/
 
 typedef struct {
     UW closest_cm;
@@ -94,9 +76,62 @@ typedef struct {
     BOOL valid;
 } SONAR_PROBE_RESULT;
 
+/* 
+=========================================
+|                  IMU                  |
+=========================================
+*/
+
+typedef enum {
+    IMU_MSG_NONE,
+    IMU_MSG_TILT_WARNING,
+    IMU_MSG_SHOCK_DETECTED,
+    IMU_MSG_HUMP_INTEGRATING
+} IMU_EVENT_TYPE;
+
 typedef struct {
-    
-}
+    IMU_EVENT_TYPE event;
+    float pitch_deg;
+    float roll_deg;
+    float peak_g;
+    float estimated_height_cm;
+} IMU_TELEMETRY_MSG;
+
+/* 
+=========================================
+|               Navigator               |
+=========================================
+*/
+
+typedef enum {
+    MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
+    MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
+    MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
+    MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
+    MODE_REENTRY_ADVANCE,           // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
+    MODE_REENTRY_PIVOT,             // Navigator spins the car in place to align with line
+    MODE_OBSTACLE_ASSESS,  
+    MODE_SAFE_STOP              
+} MOVEMENT_MODE;
+
+typedef enum {
+    DIR_FRONT,
+    DIR_BACK,
+    DIR_LEFT,
+    DIR_RIGHT,
+} DIRECTION;
+
+typedef enum {
+    MSG_IR_UPDATE,              // Line following sensor update, car veering off
+    MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
+    MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
+    MSG_MOTOR_STOPPED,          
+    MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
+    MSG_TRACKING_OBSTACLE,
+    MSG_SONAR_PROBED,
+    MSG_MOTOR_MOVE_DONE,
+    MSG_IMU_UPDATE,
+} MESSAGE_TYPE;
 
 typedef struct {
     MESSAGE_TYPE type;
@@ -106,8 +141,15 @@ typedef struct {
         UW obstacle_distance_cm;
         OBSTACLE_PROFILE obstacle_profile;
         SONAR_PROBE_RESULT sonar_probe;
+        IMU_TELEMETRY_MSG imu_telemetry_msg;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
+
+/* 
+=========================================
+|                Network                |
+=========================================
+*/
 
 typedef struct {
     MOVEMENT_MODE m_mode;

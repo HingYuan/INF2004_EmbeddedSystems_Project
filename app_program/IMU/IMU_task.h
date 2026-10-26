@@ -29,26 +29,6 @@
 
 /* 
 =========================================
-|       MESSAGE TYPE DEFINITIONS        |
-=========================================
-*/
-typedef enum {
-    IMU_MSG_NONE,
-    IMU_MSG_TILT_WARNING,
-    IMU_MSG_SHOCK_DETECTED,
-    IMU_MSG_HUMP_INTEGRATING
-} IMU_EVENT_TYPE;
-
-typedef struct {
-    IMU_EVENT_TYPE event;
-    float pitch_deg;
-    float roll_deg;
-    float peak_g;
-    float estimated_height_cm;
-} IMU_TELEMETRY_MSG;
-
-/* 
-=========================================
 |          PUBLIC INTERFACES            |
 =========================================
 */

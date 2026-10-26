@@ -8,6 +8,7 @@
 
 #include "IMU_task.h"
 #include "../robot_tasks.h"
+#include "../Navigator/Navigator_task.h"
 #include "../../device/include/dev_i2c.h"
 
 /* No <math.h>/libm here: the header clashes with uT-Kernel's size_t typedef,
@@ -154,7 +155,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
     float hump_peak_height = 0.0f;  // cm
     INT telemetry_timer = 0;
 
-    tm_printf((UB *)"[IMU] Task started on PRC%d\n", (INT)tk_get_prc());
+    // tm_printf((UB *)"[IMU] Task started on PRC%d\n", (INT)tk_get_prc());
 
     while (1) {
         switch (state) {
@@ -278,7 +279,11 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     .peak_g = sqrtf(gx * gx + gy * gy + gz * gz)
                 };
                 if (navigator_mbfid > E_OK) {
-                    tk_snd_mbf(navigator_mbfid, &msg, sizeof(IMU_TELEMETRY_MSG), TMO_POL); //
+                    NAVIGATOR_MESSAGE nav_msg = {
+                        .type = MSG_IMU_UPDATE,
+                        .data.imu_telemetry_msg = msg
+                    };
+                    tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL); //
                 }
 
                 // Hysteresis recovery check
@@ -315,7 +320,11 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         .estimated_height_cm = hump_peak_height
                     };
                     if (navigator_mbfid > E_OK) {
-                        tk_snd_mbf(navigator_mbfid, &msg, sizeof(IMU_TELEMETRY_MSG), TMO_POL); //[cite: 7]
+                        NAVIGATOR_MESSAGE nav_msg = {
+                            .type = MSG_IMU_UPDATE,
+                            .data.imu_telemetry_msg = msg
+                        };
+                        tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL); //[cite: 7]
                     }
                     state = STATE_MONITORING;
                 }
@@ -330,7 +339,11 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     .peak_g = SHOCK_THRESHOLD_G
                 };
                 if (navigator_mbfid > E_OK) {
-                    tk_snd_mbf(navigator_mbfid, &msg, sizeof(IMU_TELEMETRY_MSG), TMO_POL); //[cite: 7]
+                    NAVIGATOR_MESSAGE nav_msg = {
+                        .type = MSG_IMU_UPDATE,
+                        .data.imu_telemetry_msg = msg
+                    };
+                    tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL); //[cite: 7]
                 }
 
                 // Enforce safety lockdown
