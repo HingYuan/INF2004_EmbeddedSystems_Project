@@ -1,5 +1,8 @@
 #include "mqtt_client.h"
 
+/* Prevent syslib.h from redefining size_t so stddef.h (unsigned int) wins */
+#define PROHIBIT_DEF_SIZE_T
+
 #include <string.h>
 
 #include <tm/tmonitor.h>
@@ -95,7 +98,7 @@ static void mqtt_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
             nav_cmd.type = MSG_REMOTE_CMD;
             nav_cmd.data.remote_cmd.target_speed_left = (int16_t)l;
             nav_cmd.data.remote_cmd.target_speed_right = (int16_t)r;
-            nav_cmd.data.remote_cmd.turn_ticks = (int16_t)t;
+            nav_cmd.data.remote_cmd.turn_ticks_left = (int16_t)t;
 
             ER er = tk_snd_mbf(navigator_mbfid, &nav_cmd, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
             if(er < E_OK) {
@@ -303,13 +306,13 @@ void mqtt_dashboard_poll(struct netif *netif)
     }
 }
 
-static void json_char(char *output, size_t capacity, size_t *length, char value)
+void json_char(char *output, size_t capacity, size_t *length, char value)
 {
     if(*length + 1U < capacity) output[*length] = value;
     (*length)++;
 }
 
-static void json_text(char *output, size_t capacity, size_t *length,
+void json_text(char *output, size_t capacity, size_t *length,
                       const char *text)
 {
     while(*text != '\0') {
@@ -323,7 +326,7 @@ static void json_text(char *output, size_t capacity, size_t *length,
     }
 }
 
-static void json_number(char *output, size_t capacity, size_t *length,
+void json_number(char *output, size_t capacity, size_t *length,
                         uint32_t value)
 {
     char digits[11];
