@@ -2,6 +2,7 @@
 #define NAVIGATOR_TASK_H
 
 #include <tk/tkernel.h>
+#include "../Motor/Motor_task.h"
 
 /* 
 =========================================
@@ -131,6 +132,7 @@ typedef enum {
     MSG_SONAR_PROBED,
     MSG_MOTOR_MOVE_DONE,
     MSG_IMU_UPDATE,
+    MSG_REMOTE_CMD,             // Remote motor command from MQTT
 } MESSAGE_TYPE;
 
 typedef struct {
@@ -142,6 +144,7 @@ typedef struct {
         OBSTACLE_PROFILE obstacle_profile;
         SONAR_PROBE_RESULT sonar_probe;
         IMU_TELEMETRY_MSG imu_telemetry_msg;
+        MOTOR_COMMAND remote_cmd;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 
@@ -152,8 +155,35 @@ typedef struct {
 */
 
 typedef struct {
-    MOVEMENT_MODE m_mode;
+    // Sequence / Tick counter
+    uint32_t seq;
+
+    // High Priority: Mode & Navigation
+    uint8_t  movement_mode;     // MOVEMENT_MODE enum
+    uint8_t  bypass_phase;      // BYPASS_PHASE enum
+    uint8_t  ir_state;          // IR_STATE enum
+    char     last_barcode;      // Decoded barcode char (or 0)
+    uint8_t  instruction_idx;   // Current instruction index in mission route
+
+    // Motion & Motors
+    int16_t  speed_left;        // Target speed %
+    int16_t  speed_right;
+    int32_t  enc_l;             // Left encoder ticks
+    int32_t  enc_r;             // Right encoder ticks
+
+    // Sensor Specific: Ultrasonic
+    uint32_t obstacle_distance_cm; // Direct front obstacle distance
+    uint32_t closest_cm;        // Closest obstacle distance from scan
+    int32_t  closest_angle_deg; // Closest obstacle angle
+    uint32_t estimated_width_cm;// Obstacle estimated width
+
+    // Sensor Specific: IMU
+    float    pitch_deg;         // Vehicle pitch
+    float    roll_deg;          // Vehicle roll
+    uint8_t  imu_event;         // IMU_EVENT_TYPE enum
 } TELEMETRY_SNAPSHOT;
+
+IMPORT volatile TELEMETRY_SNAPSHOT telemetry_snapshot;
 
 IMPORT void navigator_task(INT stacd, void *exinf);
 

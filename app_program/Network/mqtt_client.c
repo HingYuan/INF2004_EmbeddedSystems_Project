@@ -195,24 +195,72 @@ static void json_signed_number(char *output, size_t capacity, size_t *length,
     json_number(output, capacity, length, (uint32_t)value);
 }
 
+static void json_float(char *output, size_t capacity, size_t *length, float value)
+{
+    if(value < 0.0f) {
+        json_char(output, capacity, length, '-');
+        value = -value;
+    }
+    int32_t whole = (int32_t)value;
+    int32_t frac = (int32_t)((value - (float)whole) * 10.0f);
+    if(frac < 0) frac = 0;
+    json_number(output, capacity, length, (uint32_t)whole);
+    json_char(output, capacity, length, '.');
+    json_number(output, capacity, length, (uint32_t)frac);
+}
+
 size_t telemetry_json(char *output, size_t capacity)
 {
     size_t length = 0U;
 
     if(capacity == 0U) return 0U;
     json_char(output, capacity, &length, '{');
-    json_text(output, capacity, &length, "\"speed_l\":");
+
+    // High Priority: Navigation & Motion
+    json_text(output, capacity, &length, "\"mode\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.movement_mode);
+    json_text(output, capacity, &length, ",\"phase\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.bypass_phase);
+    json_text(output, capacity, &length, ",\"ir\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.ir_state);
+
+    char barcode_str[2] = { telemetry_snapshot.last_barcode, '\0' };
+    json_text(output, capacity, &length, ",\"barcode\":\"");
+    if (barcode_str[0] >= 32 && barcode_str[0] <= 126) {
+        json_char(output, capacity, &length, barcode_str[0]);
+    }
+    json_text(output, capacity, &length, "\"");
+
+    json_text(output, capacity, &length, ",\"inst_idx\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.instruction_idx);
+
+    json_text(output, capacity, &length, ",\"speed_l\":");
     json_signed_number(output, capacity, &length, (int32_t)telemetry_snapshot.speed_left);
     json_text(output, capacity, &length, ",\"speed_r\":");
     json_signed_number(output, capacity, &length, (int32_t)telemetry_snapshot.speed_right);
-    json_text(output, capacity, &length, ",\"ir\":");
-    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.ir_state);
-    json_text(output, capacity, &length, ",\"mode\":");
-    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.movement_mode);
     json_text(output, capacity, &length, ",\"enc_l\":");
     json_signed_number(output, capacity, &length, telemetry_snapshot.enc_l);
     json_text(output, capacity, &length, ",\"enc_r\":");
     json_signed_number(output, capacity, &length, telemetry_snapshot.enc_r);
+
+    // Sensor Specific: Ultrasonic
+    json_text(output, capacity, &length, ",\"obs_dist\":");
+    json_number(output, capacity, &length, telemetry_snapshot.obstacle_distance_cm);
+    json_text(output, capacity, &length, ",\"closest_cm\":");
+    json_number(output, capacity, &length, telemetry_snapshot.closest_cm);
+    json_text(output, capacity, &length, ",\"closest_deg\":");
+    json_signed_number(output, capacity, &length, telemetry_snapshot.closest_angle_deg);
+    json_text(output, capacity, &length, ",\"obs_width\":");
+    json_number(output, capacity, &length, telemetry_snapshot.estimated_width_cm);
+
+    // Sensor Specific: IMU
+    json_text(output, capacity, &length, ",\"pitch\":");
+    json_float(output, capacity, &length, telemetry_snapshot.pitch_deg);
+    json_text(output, capacity, &length, ",\"roll\":");
+    json_float(output, capacity, &length, telemetry_snapshot.roll_deg);
+    json_text(output, capacity, &length, ",\"imu_event\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.imu_event);
+
     json_text(output, capacity, &length, ",\"seq\":");
     json_number(output, capacity, &length, telemetry_snapshot.seq);
     json_char(output, capacity, &length, '}');
@@ -239,7 +287,7 @@ void mqtt_dashboard_poll(struct netif *netif)
 
     if(mqtt_connected) {
         if((int32_t)(now - mqtt_next_telemetry_ms) >= 0) {
-            char telem_buf[160];
+            char telem_buf[320];
             size_t len = telemetry_json(telem_buf, sizeof(telem_buf));
             if(len > 0) {
 #ifdef MQTT_PUBLISH_TOPIC
@@ -334,8 +382,7 @@ size_t mqtt_dashboard_json(char *output, size_t capacity)
 
 size_t telemetry_json(char *output, size_t capacity)
 {
-    static const char empty[] =
-        "{\"speed_l\":0,\"speed_r\":0,\"ir\":0,\"mode\":0,\"enc_l\":0,\"enc_r\":0,\"seq\":0}";
+    static const char empty[] = "{}";
     size_t length = sizeof(empty) - 1U;
 
     if(capacity == 0U) return 0U;
