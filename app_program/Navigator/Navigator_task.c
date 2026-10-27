@@ -8,30 +8,42 @@
 #include "../Util/C_ring_buffer.h"
 #include "../Motor/Motor_task.h"
 #include "../Ultrasonic/Ultrasonic_task.h"
+#include "../IMU/IMU_task.h"
+
+void clear_navigator_mbf() {
+    NAVIGATOR_MESSAGE discard_msg;
+    while (tk_rcv_mbf(navigator_mbfid, &discard_msg, TMO_POL) >= 0) { }
+}
 
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
+    // General
     NAVIGATOR_MESSAGE n_msg;
     INT message_size;
-
+    MOTOR_COMMAND mot_cmd;
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
-    BOOL scan_requested = FALSE;
+    MOVEMENT_MODE prev_m_mode = MODE_LINE_FOLLOWING;
 
-    // initialize circular ring buffer to store decoded characters
-    C_RING_BUFFER barcode_characters;
+    // Line following
+    IR_STATE prev_ir_state = STATE_NULL;
+
+    // Barcode decoding
+    C_RING_BUFFER barcode_characters;                                           // initialize circular ring buffer to store decoded characters
     crb_init(&barcode_characters);
+    INT instruction_idx = 0;
+    DIRECTION instructions_fake[50] = { DIR_LEFT, DIR_RIGHT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
+    INT instructions_count = sizeof(instructions_fake) / sizeof(DIRECTION);
 
+    // Decision making
+    B num_rotations = 0;
+
+    // Obstacle
+    BOOL scan_requested = FALSE;
+    BYPASS_PHASE bypass_phase = BYPASS_TURN_OUT;
+
+    // Unused
     INT left_debounce_ticks = 0;
     INT right_debounce_ticks = 0;
-
-    MOTOR_COMMAND mot_cmd = { 0, 0, 0 };
-
-    INT instruction_idx = 0;
-    DIRECTION instructions_fake[10] = { DIR_LEFT, DIR_RIGHT, DIR_FRONT };
-
-    IR_STATE prev_ir_state = STATE_NULL;
-    INT curr_speed_left = 0;
-    INT curr_speed_right = 0;
 
     while (1) {
         message_size = tk_rcv_mbf(navigator_mbfid, (void *)&n_msg, TMO_FEVR); // Set as timeout forever (TMO_FEVR) as IR is continuously sending updates, so no timeout needed.
@@ -56,29 +68,43 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 if (curr_state == STATE_W_W) {
                                     mot_cmd.target_speed_left =     30;
                                     mot_cmd.target_speed_right =   -30;
-                                    mot_cmd.turn_ticks =             0;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     tm_printf("W_W\n");
 
                                 } else if (curr_state == STATE_W_B) {
                                     // Car veering left, adjust right
-                                    MOTOR_COMMAND mot_cmd = { 25, -15, 0 };
+                                    mot_cmd.target_speed_left =     55;
+                                    mot_cmd.target_speed_right =   -35;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                         tm_printf("W_B\n");
 
                                 } else if (curr_state == STATE_B_W) {
                                     // Car veering right, adjust left
-                                    MOTOR_COMMAND mot_cmd = { 15, -25, 0 };
+                                    mot_cmd.target_speed_left =     35;
+                                    mot_cmd.target_speed_right =   -55;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                 } else if (curr_state == STATE_B_B) {
                                     // Car at instersection
-                                    MOTOR_COMMAND mot_cmd = { 0, -0, 0 };
+                                    mot_cmd.target_speed_left =      0;
+                                    mot_cmd.target_speed_right =    -0;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     
-                                    m_mode = MODE_DECISION_MAKING;
+                                    m_mode = MODE_DECISION_MAKING_ADVANCE;
+                                    // m_mode = MODE_DECISION_MAKING_TURN;
 
                                     } else {
                                         // Errorneous state
@@ -100,10 +126,226 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             m_mode = MODE_WALL_HUGGING;
 
                             break;
+                        case MSG_IMU_UPDATE:
+                            tm_printf("[IMU] PITCH: %d, ROLL: %d\n", n_msg.data.imu_telemetry_msg.pitch_deg, n_msg.data.imu_telemetry_msg.roll_deg);
+
                         default:
                             // Ignore other states
 
+                            break;
+                    }
+
+                    break;
+
+                case MODE_DECISION_MAKING_ADVANCE:
+                    tk_dly_tsk(500);
+
+                    mot_cmd.target_speed_left =     50;
+                    mot_cmd.target_speed_right =   -50;
+                    mot_cmd.turn_ticks_left =        0;
+                    mot_cmd.turn_ticks_right =       0;
+
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                    tk_dly_tsk(500);
+
+                    mot_cmd.target_speed_left =      0;
+                    mot_cmd.target_speed_right =    -0;
+                    mot_cmd.turn_ticks_left =        0;
+                    mot_cmd.turn_ticks_right =       0;
+
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                    tk_dly_tsk(500);
+
+                    m_mode = MODE_DECISION_MAKING_TURN;
+                    clear_navigator_mbf();
+
+                    tk_dly_tsk(11);     // wait for next IR update
+
+                    break;
+
+                // Junction Navigation
+                case MODE_DECISION_MAKING_TURN:
+
+                    switch (n_msg.type) {
+                        case MSG_IR_UPDATE:
+
+                            IR_STATE curr_ir_state = n_msg.data.ir_state;
+                            DIRECTION curr_decision = instructions_fake[instruction_idx];
+
+                            if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
+                                switch (curr_decision) {
+                                    case DIR_FRONT:
+                                        m_mode = MODE_LINE_FOLLOWING;
+
+                                        break;
+                                    case DIR_BACK:
+                                        num_rotations = 2;
+
+                                        // mot_cmd.target_speed_left =    -60;
+                                        // mot_cmd.target_speed_right =   -60;
+                                        // mot_cmd.turn_ticks_left =        0;
+                                        // mot_cmd.turn_ticks_right =       0;
+
+                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        // tk_dly_tsk(600);
+
+                                        mot_cmd.target_speed_left =    -30;
+                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        break;
+                                    case DIR_LEFT:
+                                        num_rotations = 1;
+
+                                        // mot_cmd.target_speed_left =    -50;
+                                        // mot_cmd.target_speed_right =   -50;
+                                        // mot_cmd.turn_ticks_left =        0;
+                                        // mot_cmd.turn_ticks_right =       0;
+
+                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        // tk_dly_tsk(300);
+
+                                        mot_cmd.target_speed_left =    -30;
+                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        break;
+                                    case DIR_RIGHT:
+                                        num_rotations = 1;
+
+                                        // mot_cmd.target_speed_left =     50;
+                                        // mot_cmd.target_speed_right =    50;
+                                        // mot_cmd.turn_ticks_left =        0;
+                                        // mot_cmd.turn_ticks_right =       0;
+
+                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        // tk_dly_tsk(300);
+
+                                        mot_cmd.target_speed_left =     30;
+                                        mot_cmd.target_speed_right =    30;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                        break;
+                                    default:
+                                        m_mode = MODE_LINE_FOLLOWING;
+
+                                        break;
+                                }
+
+                            } else {
+                                if (curr_ir_state == STATE_B_W && prev_ir_state == STATE_W_W && (curr_decision == DIR_LEFT || curr_decision == DIR_BACK)) {
+                                    num_rotations--;
+                                } else if (curr_ir_state == STATE_W_B && prev_ir_state == STATE_W_W && curr_decision == DIR_RIGHT) {
+                                    num_rotations--;
+                                }
+                                
+                                if (num_rotations <= 0) {
+                                    mot_cmd.target_speed_left =     0;
+                                    mot_cmd.target_speed_right =    0;
+                                    mot_cmd.turn_ticks_left =       0;
+                                    mot_cmd.turn_ticks_right =      0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    tk_dly_tsk(250);
+
+                                    if (++instruction_idx > instructions_count) { instruction_idx--; }      // Linger on last instruction on overflow
+
+                                    // Reset variables
+                                    num_rotations = 0;
+                                    prev_ir_state = STATE_NULL;
+                                    m_mode = MODE_LINE_FOLLOWING;
+                                }
+                            }
+
+                            if (prev_ir_state != curr_ir_state) { prev_ir_state = curr_ir_state; }
+
+                            break;
+                        default:
+                            
+                            break;
+                    }
+
+                    break;
+                case MODE_OBSTACLE_ASSESS:
+                    switch (n_msg.type) {
+
+                        case MSG_MOTOR_STOPPED:
+                            if (!scan_requested) {
+                                ER er = tk_set_flg(
+                                    ranger_flgid,
+                                    SONAR_SCAN_REQUEST
+                                );
+
+                                if (er < E_OK) {
+                                    motor_estop = TRUE;
+                                    m_mode = MODE_SAFE_STOP;
+                                    break;
+                                }
+
+                                scan_requested = TRUE;
+                            }
+                            break;
+
+                        case MSG_OBSTACLE_PROFILED: {
+                            const OBSTACLE_PROFILE *p =
+                                &n_msg.data.obstacle_profile;
+
+                            if (!scan_requested || !p->profile_valid) {
+                                tm_printf((UB *)"[nav] Scan incomplete/invalid\n");
+                                motor_estop = TRUE;
+                                m_mode = MODE_SAFE_STOP;
                                 break;
+                            }
+
+                            tm_printf((UB *)"[nav] Closest: %u cm at %d deg\n",
+                                      p->closest_cm, p->closest_angle_deg);
+
+                            if (p->right_edge_valid)
+                                tm_printf((UB *)"[nav] Right edge: %d deg\n",
+                                          p->right_edge_deg);
+                            else
+                                tm_printf((UB *)"[nav] Right edge: unknown\n");
+
+                            if (p->left_edge_valid)
+                                tm_printf((UB *)"[nav] Left edge: %d deg\n",
+                                          p->left_edge_deg);
+                            else
+                                tm_printf((UB *)"[nav] Left edge: unknown\n");
+
+                            if (p->width_valid)
+                                tm_printf((UB *)"[nav] Approx width: %u cm\n",
+                                          p->estimated_width_cm);
+                            else
+                                tm_printf((UB *)"[nav] Approx width: unknown\n");
+
+                            // Candidate offsets include robot half-width and gap.
+                            if (p->left_offset_valid)
+                                tm_printf((UB *)"[nav] Left centre offset: %u cm\n",
+                                          p->left_offset_cm);
+                            if (p->right_offset_valid)
+                                tm_printf((UB *)"[nav] Right centre offset: %u cm\n",
+                                          p->right_offset_cm);
+
+                            // A candidate offset does not prove a safe corridor.
+                            motor_estop = TRUE;
+                            m_mode = MODE_SAFE_STOP;
+                            tm_printf((UB *)"[nav] Bypass disabled: clearance not verified\n");
+                            break;
                         }
 
                     break;
@@ -117,6 +359,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             break;
                         case MSG_OBSTACLE_DETECTED:
+                        
+                            motor_estop = TRUE;
+                            m_mode = MODE_SAFE_STOP;
+
+
+                            break;
+                        case MSG_TRACKING_OBSTACLE:
 
 
                                 break;
@@ -179,7 +428,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         }
 
-        tk_dly_tsk(10);
+
+        // Add code to send m_mode to wifi driver
+        if (m_mode != prev_m_mode) {
+            // Send telemetry
+
+        }   
+        prev_m_mode = m_mode;
+
     }
 }
 

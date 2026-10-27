@@ -3,17 +3,11 @@
 
 #include <tk/tkernel.h>
 
-#define OBSTACLE_COARSE_COUNT 7
-
-typedef enum {
-    MODE_LINE_FOLLOWING,        // IR is aware of line and navigator is following it
-    MODE_DECISION_MAKING,       // Car stops at intersection, need to refer to next instruction
-    MODE_WALL_HUGGING,          // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
-    MODE_REENTRY_ADVANCE,       // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
-    MODE_REENTRY_PIVOT,         // Navigator spins the car in place to align with line
-    MODE_OBSTACLE_ASSESS,  
-    MODE_SAFE_STOP              
-} MOVEMENT_MODE;
+/* 
+=========================================
+|                   IR                  |
+=========================================
+*/
 
 typedef enum {
     STATE_W_W,
@@ -22,6 +16,103 @@ typedef enum {
     STATE_B_B,
     STATE_NULL,
 } IR_STATE;
+
+/* 
+=========================================
+|               Ultrasonic              |
+=========================================
+*/
+
+typedef struct {
+    UW closest_cm;
+    W closest_angle_deg;       // Positive angle is left
+
+    W left_edge_deg;
+    W right_edge_deg;
+    BOOL left_edge_valid;
+    BOOL right_edge_valid;
+
+    UW estimated_width_cm;     // Approximate visible lateral extent
+    BOOL width_valid;
+
+    UW left_offset_cm;         // Proposed lateral centre offset, NOT clearance
+    UW right_offset_cm;
+    BOOL left_offset_valid;
+    BOOL right_offset_valid;
+
+    UW left_clearance_cm;      // Unknown until the entire route is checked
+    UW right_clearance_cm;
+    BOOL left_clearance_valid;
+    BOOL right_clearance_valid;
+
+    BOOL profile_valid;        // Basic scan quality, not a safe route
+} OBSTACLE_PROFILE;
+
+// Bypass movement phases
+typedef enum {
+    BYPASS_IDLE,
+    BYPASS_TURN_OUT,
+    BYPASS_CHECK_OUT,
+    BYPASS_SHIFT_OUT,
+    BYPASS_TURN_PARALLEL,
+    BYPASS_CHECK_SIDE,
+    BYPASS_CHECK_FORWARD,
+    BYPASS_ADVANCE,
+    BYPASS_CHECK_CLEAR,
+    BYPASS_CLEAR_CORNER,
+    BYPASS_TURN_IN,
+    BYPASS_CHECK_RETURN,
+    BYPASS_FIND_LINE,
+    BYPASS_LINE_FOUND,
+    BYPASS_TURN_ALIGN,
+    BYPASS_VERIFY_LINE,
+    BYPASS_COMPLETE,
+    BYPASS_ABORT
+} BYPASS_PHASE;
+
+typedef struct {
+    UW distance_cm;
+    W angle_deg;
+    BOOL valid;
+} SONAR_PROBE_RESULT;
+
+/* 
+=========================================
+|                  IMU                  |
+=========================================
+*/
+
+typedef enum {
+    IMU_MSG_NONE,
+    IMU_MSG_TILT_WARNING,
+    IMU_MSG_SHOCK_DETECTED,
+    IMU_MSG_HUMP_INTEGRATING
+} IMU_EVENT_TYPE;
+
+typedef struct {
+    IMU_EVENT_TYPE event;
+    float pitch_deg;
+    float roll_deg;
+    float peak_g;
+    float estimated_height_cm;
+} IMU_TELEMETRY_MSG;
+
+/* 
+=========================================
+|               Navigator               |
+=========================================
+*/
+
+typedef enum {
+    MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
+    MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
+    MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
+    MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
+    MODE_REENTRY_ADVANCE,           // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
+    MODE_REENTRY_PIVOT,             // Navigator spins the car in place to align with line
+    MODE_OBSTACLE_ASSESS,  
+    MODE_SAFE_STOP              
+} MOVEMENT_MODE;
 
 typedef enum {
     DIR_FRONT,
@@ -34,45 +125,35 @@ typedef enum {
     MSG_IR_UPDATE,              // Line following sensor update, car veering off
     MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
     MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
-    MSG_TRACKING_OBSTACLE,      // NEED DISCUSS WITH CS
+    MSG_MOTOR_STOPPED,          
+    MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
+    MSG_TRACKING_OBSTACLE,
+    MSG_SONAR_PROBED,
+    MSG_MOTOR_MOVE_DONE,
+    MSG_IMU_UPDATE,
 } MESSAGE_TYPE;
-
-typedef struct {                // Coarse or Fine scan results
-    UW closest_cm;
-    W closest_angle_deg;
-
-    W left_edge_deg;
-    W right_edge_deg;
-    BOOL left_edge_valid;
-    BOOL right_edge_valid;
-
-    UW estimated_width_cm;
-    BOOL width_valid;
-
-    UW left_clearance_cm;
-    UW right_clearance_cm;
-    BOOL left_clearance_valid;
-    BOOL right_clearance_valid;
-
-    // Valid scan does not necessarily mean safe passage
-    BOOL profile_valid;
-
-} OBSTACLE_PROFILE;
-
-typedef enum {                  // Movement phases within wall hugging
-    BYPASS_TURN_OUT,                
-    BYPASS_FOLLOW_SIDE,
-    BYPASS_VERIFY_EDGE,
-    BYPASS_CLEAR_CORNER
-} BYPASS_PHASE;
 
 typedef struct {
     MESSAGE_TYPE type;
     union {
         IR_STATE ir_state;
         B decoded_char;
+        UW obstacle_distance_cm;
+        OBSTACLE_PROFILE obstacle_profile;
+        SONAR_PROBE_RESULT sonar_probe;
+        IMU_TELEMETRY_MSG imu_telemetry_msg;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
+
+/* 
+=========================================
+|                Network                |
+=========================================
+*/
+
+typedef struct {
+    MOVEMENT_MODE m_mode;
+} TELEMETRY_SNAPSHOT;
 
 IMPORT void navigator_task(INT stacd, void *exinf);
 
