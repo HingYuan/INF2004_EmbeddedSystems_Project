@@ -98,14 +98,14 @@ LOCAL ER start_task(PERIPHERAL_TASK entry, INT priority, INT stacd, UW assprc, c
 EXPORT ER robot_tasks_start(void)
 {
 	// pack pin values for IR sensor task
-	const INT packed_stacd_ir = (IR_LEFT_PIN << 16) | (IR_CENTER_PIN << 8);
+	const INT packed_stacd_ir = (IR_CENTER_PIN << 16) | (IR_RIGHT_PIN << 8);
 	const INT packed_stacd_ultrasonic = (SONAR_TRIG_PIN << 16) | (SONAR_ECHO_PIN << 8);
 
 	static const TASK_START tasks[] = {
 		// { servo_task, 0, "servo" },
 		{ ultrasonic_task, 2, packed_stacd_ultrasonic, TP_PRC1, "Ultrasonic" },
 		{ ir_sensor_task, 2, packed_stacd_ir, TP_PRC1, "IR line sensors" },             // IR line following sensors
-		{ ir_barcode_task, 2, IR_RIGHT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
+		{ ir_barcode_task, 2, IR_LEFT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
 		{ ir_barcode_decoder_task, 2, 0, TP_PRC1, "IR barcode decoder" },			// Barcode decoder
 		{ motor_task, 2, 0, TP_PRC1, "Motors" },										// Motors
 		{ imu_task, 2, 0, TP_PRC1, "IMU" },											// IMU
