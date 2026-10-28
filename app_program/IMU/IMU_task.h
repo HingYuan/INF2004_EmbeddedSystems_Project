@@ -16,8 +16,8 @@
 // NOTE: GP0/GP1 are shared with the ultrasonic sensor and the UART console,
 // so build with CONSOLE=usb_cdc and do not run ultrasonic_task at the same time.
 #define IMU_I2C_DEVNAME       "iica"
-#define IMU_SDA_PIN           0
-#define IMU_SCL_PIN           1
+#define IMU_SDA_PIN           12
+#define IMU_SCL_PIN           13
 
 #define LSM303_ACCEL_ADDR     0x19
 #define LSM303_MAG_ADDR       0x1E

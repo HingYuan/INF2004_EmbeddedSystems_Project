@@ -313,16 +313,10 @@ void json_char(char *output, size_t capacity, size_t *length, char value)
 }
 
 void json_text(char *output, size_t capacity, size_t *length,
-                      const char *text)
+               const char *text)
 {
-    while(*text != '\0') {
-        char value = *text++;
-        if(value == '"' || value == '\\') {
-            json_char(output, capacity, length, '\\');
-        } else if((unsigned char)value < 0x20U) {
-            value = ' ';
-        }
-        json_char(output, capacity, length, value);
+    while (*text != '\0') {
+        json_char(output, capacity, length, *text++);
     }
 }
 

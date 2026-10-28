@@ -1,3 +1,4 @@
+
 #include "web_server.h"
 
 #if TM_WIFI_NETIF && TM_WEB_SERVER
@@ -16,43 +17,251 @@
 #include "templates/index_html.h"
 #include "mqtt_client.h"
 
-#define WEB_SERVER_PORT 8080U
-#define WEB_REQUEST_MAX 512U
-#define WEB_RESPONSE_MAX 1024U
+#define WEB_SERVER_PORT       8080U
+#define WEB_REQUEST_MAX       512U
+#define WEB_RESPONSE_MAX      1024U
+#define WEB_TX_CHUNK_SIZE     1024U
 
 static struct tcp_pcb *web_listener;
 static struct tcp_pcb *web_client;
+
 static size_t web_request_length;
 static char web_request[WEB_REQUEST_MAX];
 static char web_api_response[WEB_RESPONSE_MAX];
+
 static int web_response_sent;
 
+/* Active response state. */
+static const char *web_tx_header;
+static size_t web_tx_header_length;
+static size_t web_tx_header_offset;
+
+static const char *web_tx_body;
+static size_t web_tx_body_length;
+static size_t web_tx_offset;
+
+static int web_tx_active;
+static int web_tx_output_pending;
+
+
+/* Reset state for a new HTTP request. */
 static void web_reset_request(void)
 {
     web_request_length = 0;
     web_request[0] = '\0';
+
     web_response_sent = 0;
+
+    web_tx_header = NULL;
+    web_tx_header_length = 0;
+    web_tx_header_offset = 0;
+
+    web_tx_body = NULL;
+    web_tx_body_length = 0;
+    web_tx_offset = 0;
+
+    web_tx_active = 0;
+    web_tx_output_pending = 0;
 }
 
+
+/* Close the client connection. */
 static void web_close_client(struct tcp_pcb *pcb)
 {
-    if(pcb == NULL) return;
-    if(pcb == web_client) web_client = NULL;
+    err_t result;
+
+    if(pcb == NULL)
+        return;
+
+    if(pcb == web_client)
+        web_client = NULL;
+
+    web_tx_active = 0;
+    web_tx_output_pending = 0;
+
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
+    tcp_sent(pcb, NULL);
     tcp_err(pcb, NULL);
     tcp_poll(pcb, NULL, 0);
-    if(tcp_close(pcb) != ERR_OK) tcp_abort(pcb);
+
+    result = tcp_close(pcb);
+
+    if(result != ERR_OK) {
+        /*
+         * tcp_abort() invalidates the PCB. The caller must not
+         * use this PCB afterward.
+         */
+        tcp_abort(pcb);
+    }
 }
 
+
+/* Called when lwIP reports a fatal connection error. */
 static void web_error(void *arg, err_t err)
 {
     struct tcp_pcb *pcb = (struct tcp_pcb *)arg;
 
     (void)err;
-    if(pcb == web_client) web_client = NULL;
+
+    if(pcb == web_client)
+        web_client = NULL;
+
+    web_tx_active = 0;
+    web_tx_output_pending = 0;
 }
 
+
+/*
+ * Queue response data while send-buffer space is available.
+ *
+ * Returns ERR_OK when queued data is waiting to be transmitted
+ * or acknowledged. tcp_sent() calls this function again later.
+ */
+static err_t web_send_more(struct tcp_pcb *pcb)
+{
+    err_t result;
+    size_t remaining;
+    size_t chunk;
+    u16_t available;
+
+    while(web_tx_header_offset < web_tx_header_length
+          || web_tx_offset < web_tx_body_length) {
+
+        available = tcp_sndbuf(pcb);
+
+        if(available == 0U)
+            break;
+
+        if(web_tx_header_offset < web_tx_header_length) {
+            remaining =
+                web_tx_header_length - web_tx_header_offset;
+
+            chunk = remaining;
+
+            if(chunk > WEB_TX_CHUNK_SIZE)
+                chunk = WEB_TX_CHUNK_SIZE;
+
+            if(chunk > available)
+                chunk = available;
+
+            result = tcp_write(
+                pcb,
+                web_tx_header + web_tx_header_offset,
+                (u16_t)chunk,
+                TCP_WRITE_FLAG_COPY);
+
+            if(result == ERR_MEM)
+                break;
+
+            if(result != ERR_OK)
+                return result;
+
+            web_tx_header_offset += chunk;
+        } else {
+            remaining = web_tx_body_length - web_tx_offset;
+
+            chunk = remaining;
+
+            if(chunk > WEB_TX_CHUNK_SIZE)
+                chunk = WEB_TX_CHUNK_SIZE;
+
+            if(chunk > available)
+                chunk = available;
+
+            result = tcp_write(
+                pcb,
+                web_tx_body + web_tx_offset,
+                (u16_t)chunk,
+                TCP_WRITE_FLAG_COPY);
+
+            if(result == ERR_MEM)
+                break;
+
+            if(result != ERR_OK)
+                return result;
+
+            web_tx_offset += chunk;
+        }
+    }
+
+    /*
+     * Flush queued data. Even if tcp_write() previously returned
+     * ERR_MEM, there may be earlier queued data to transmit.
+     */
+    result = tcp_output(pcb);
+
+    if(result != ERR_OK)
+        return result;
+
+    web_tx_output_pending =
+        (web_tx_header_offset < web_tx_header_length
+         || web_tx_offset < web_tx_body_length);
+
+    return ERR_OK;
+}
+
+
+/* Called when the remote client acknowledges transmitted data. */
+static err_t web_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
+{
+    err_t result;
+
+    (void)arg;
+    (void)len;
+
+    if(!web_tx_active)
+        return ERR_OK;
+
+    /*
+     * Close only after all response bytes have been queued.
+     * tcp_close() queues the FIN after already queued TCP data.
+     */
+    if(web_tx_header_offset == web_tx_header_length
+       && web_tx_offset == web_tx_body_length) {
+
+        web_tx_active = 0;
+        web_close_client(pcb);
+
+        return ERR_OK;
+    }
+
+    result = web_send_more(pcb);
+
+    if(result != ERR_OK) {
+        tm_printf((UB *)"[web] send continuation failed: %d\n",
+                  result);
+
+        web_close_client(pcb);
+    }
+
+    return ERR_OK;
+}
+
+
+/* Called periodically by lwIP if a poll callback is registered. */
+static err_t web_poll(void *arg, struct tcp_pcb *pcb)
+{
+    err_t result;
+
+    (void)arg;
+
+    if(!web_tx_active || !web_tx_output_pending)
+        return ERR_OK;
+
+    result = web_send_more(pcb);
+
+    if(result != ERR_OK) {
+        tm_printf((UB *)"[web] poll send failed: %d\n", result);
+        web_close_client(pcb);
+        return ERR_OK;
+    }
+
+    return ERR_OK;
+}
+
+
+/* Select and start an HTTP response. */
 static err_t web_send_response(struct tcp_pcb *pcb)
 {
     static const char html_response_start[] =
@@ -60,17 +269,20 @@ static err_t web_send_response(struct tcp_pcb *pcb)
         "Content-Type: text/html; charset=utf-8\r\n"
         "Connection: close\r\n"
         "\r\n";
+
     static const char api_response_start[] =
         "HTTP/1.0 200 OK\r\n"
         "Content-Type: application/json\r\n"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "\r\n";
+
     static const char not_found_response[] =
         "HTTP/1.0 404 Not Found\r\n"
         "Content-Length: 0\r\n"
         "Connection: close\r\n"
         "\r\n";
+
     const char *response_start;
     const char *body;
     size_t body_length;
@@ -81,13 +293,23 @@ static err_t web_send_response(struct tcp_pcb *pcb)
         body = "";
         body_length = 0;
     } else if(strncmp(web_request, "GET /api/mqtt", 13U) == 0) {
-        body_length = mqtt_dashboard_json(web_api_response,
-                                          sizeof(web_api_response));
+        body_length = mqtt_dashboard_json(
+            web_api_response,
+            sizeof(web_api_response));
+
+        if(body_length >= sizeof(web_api_response))
+            body_length = sizeof(web_api_response) - 1U;
+
         response_start = api_response_start;
         body = web_api_response;
     } else if(strncmp(web_request, "GET /api/telemetry", 18U) == 0) {
-        body_length = telemetry_json(web_api_response,
-                                     sizeof(web_api_response));
+        body_length = telemetry_json(
+            web_api_response,
+            sizeof(web_api_response));
+
+        if(body_length >= sizeof(web_api_response))
+            body_length = sizeof(web_api_response) - 1U;
+
         response_start = api_response_start;
         body = web_api_response;
     } else {
@@ -96,68 +318,121 @@ static err_t web_send_response(struct tcp_pcb *pcb)
         body_length = WEB_INDEX_HTML_LEN;
     }
 
-    result = tcp_write(pcb, response_start, strlen(response_start),
-                       TCP_WRITE_FLAG_COPY);
-    if(result != ERR_OK) return result;
-    result = tcp_write(pcb, body, (u16_t)body_length,
-                       TCP_WRITE_FLAG_COPY);
-    if(result != ERR_OK) return result;
+    tm_printf((UB *)"[web] response body length=%u sndbuf=%u\n",
+              (unsigned int)body_length,
+              (unsigned int)tcp_sndbuf(pcb));
 
+    web_tx_header = response_start;
+    web_tx_header_length = strlen(response_start);
+    web_tx_header_offset = 0;
+
+    web_tx_body = body;
+    web_tx_body_length = body_length;
+    web_tx_offset = 0;
+
+    web_tx_active = 1;
+    web_tx_output_pending = 0;
     web_response_sent = 1;
-    (void)tcp_output(pcb);
-    web_close_client(pcb);
+
+    tcp_sent(pcb, web_sent);
+    tcp_poll(pcb, web_poll, 2U);
+
+    result = web_send_more(pcb);
+
+    if(result != ERR_OK) {
+        tm_printf((UB *)"[web] initial send failed: %d\n", result);
+        web_tx_active = 0;
+        return result;
+    }
+
+    /*
+     * Empty responses (for example, favicon 404) may have no
+     * body bytes to acknowledge. The sent callback closes normal
+     * responses after the header has been queued and acknowledged.
+     */
+    if(web_tx_header_offset == web_tx_header_length
+       && web_tx_offset == web_tx_body_length
+       && web_tx_header_length == 0U) {
+
+        web_tx_active = 0;
+        web_close_client(pcb);
+    }
+
     return ERR_OK;
 }
 
-static err_t web_receive(void *arg, struct tcp_pcb *pcb, struct pbuf *packet,
-                         err_t err)
+
+/* Receive and assemble the HTTP request. */
+static err_t web_receive(void *arg, struct tcp_pcb *pcb,
+                         struct pbuf *packet, err_t err)
 {
     size_t available;
+    u16_t packet_length;
 
     (void)arg;
+
     if(err != ERR_OK) {
-        if(packet != NULL) pbuf_free(packet);
+        if(packet != NULL)
+            pbuf_free(packet);
+
         web_close_client(pcb);
         return err;
     }
+
     if(packet == NULL) {
         web_close_client(pcb);
         return ERR_OK;
     }
 
+    packet_length = packet->tot_len;
+
     if(web_response_sent) {
-        tcp_recved(pcb, packet->tot_len);
+        tcp_recved(pcb, packet_length);
         pbuf_free(packet);
         return ERR_OK;
     }
 
     available = WEB_REQUEST_MAX - 1U - web_request_length;
-    if((size_t)packet->tot_len > available
-       || pbuf_copy_partial(packet, &web_request[web_request_length],
-                            packet->tot_len, 0) != packet->tot_len) {
-        tcp_recved(pcb, packet->tot_len);
+
+    if((size_t)packet_length > available
+       || pbuf_copy_partial(
+              packet,
+              &web_request[web_request_length],
+              packet_length,
+              0) != packet_length) {
+
+        tcp_recved(pcb, packet_length);
         pbuf_free(packet);
         web_close_client(pcb);
+
         return ERR_OK;
     }
 
-    web_request_length += packet->tot_len;
+    web_request_length += packet_length;
     web_request[web_request_length] = '\0';
-    tcp_recved(pcb, packet->tot_len);
+
+    tcp_recved(pcb, packet_length);
     pbuf_free(packet);
 
-    if(strstr(web_request, "\r\n\r\n") == NULL) return ERR_OK;
+    if(strstr(web_request, "\r\n\r\n") == NULL)
+        return ERR_OK;
 
     if(web_send_response(pcb) != ERR_OK) {
+        tm_printf((UB *)"[web] response setup failed\n");
         web_close_client(pcb);
     }
+
     return ERR_OK;
 }
 
+
+/* Accept a new HTTP connection. */
 static err_t web_accept(void *arg, struct tcp_pcb *new_client, err_t err)
 {
     (void)arg;
-    if(err != ERR_OK || new_client == NULL) return ERR_VAL;
+
+    if(err != ERR_OK || new_client == NULL)
+        return ERR_VAL;
 
     if(web_client != NULL) {
         tcp_abort(new_client);
@@ -165,28 +440,37 @@ static err_t web_accept(void *arg, struct tcp_pcb *new_client, err_t err)
     }
 
     web_client = new_client;
+
     web_reset_request();
+
     tcp_arg(new_client, new_client);
     tcp_recv(new_client, web_receive);
     tcp_err(new_client, web_error);
+
     return ERR_OK;
 }
 
+
+/* Initialize the HTTP listener. */
 void web_server_init(struct netif *netif)
 {
     err_t result;
     struct tcp_pcb *listener;
 
-    if(netif == NULL || web_listener != NULL) return;
+    if(netif == NULL || web_listener != NULL)
+        return;
 
     listener = tcp_new();
+
     if(listener == NULL) {
         tm_printf((UB *)"[web] tcp_new failed\n");
         return;
     }
 
     tcp_bind_netif(listener, netif);
+
     result = tcp_bind(listener, IP_ADDR_ANY, WEB_SERVER_PORT);
+
     if(result != ERR_OK) {
         tm_printf((UB *)"[web] tcp_bind failed: %d\n", result);
         tcp_abort(listener);
@@ -194,19 +478,28 @@ void web_server_init(struct netif *netif)
     }
 
     web_listener = tcp_listen(listener);
+
     if(web_listener == NULL) {
         tm_printf((UB *)"[web] tcp_listen failed\n");
         tcp_abort(listener);
         return;
     }
+
     tcp_accept(web_listener, web_accept);
-    tm_printf((UB *)"[web] listening on port %u\n", WEB_SERVER_PORT);
+
+    tm_printf((UB *)"[web] listening on port %u\n",
+              WEB_SERVER_PORT);
 }
 
+
+/* Restart initialization if the network becomes available later. */
 void web_server_poll(struct netif *netif)
 {
-    if(web_listener == NULL && netif != NULL
-       && netif_is_up(netif) && netif_is_link_up(netif)) {
+    if(web_listener == NULL
+       && netif != NULL
+       && netif_is_up(netif)
+       && netif_is_link_up(netif)) {
+
         web_server_init(netif);
     }
 }
