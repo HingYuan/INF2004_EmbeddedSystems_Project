@@ -4,7 +4,7 @@
 #include <tk/tkernel.h>
 
 #define IR_LEFT_PIN         6
-#define IR_CENTER_PIN      17
+#define IR_CENTER_PIN       17
 #define IR_RIGHT_PIN        5
 
 typedef struct {

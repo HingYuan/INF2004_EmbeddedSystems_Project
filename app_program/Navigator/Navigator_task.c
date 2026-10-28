@@ -44,7 +44,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     C_RING_BUFFER barcode_characters;                                           // initialize circular ring buffer to store decoded characters
     crb_init(&barcode_characters);
     INT instruction_idx = 0;
-    DIRECTION instructions_fake[50] = { DIR_LEFT, DIR_RIGHT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
+    DIRECTION instructions_fake[50] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
     INT instructions_count = sizeof(instructions_fake) / sizeof(DIRECTION);
 
     // Decision making
@@ -83,8 +83,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 if (curr_state != prev_ir_state) {
 
                                 if (curr_state == STATE_W_W) {
-                                    mot_cmd.target_speed_left =     30;
-                                    mot_cmd.target_speed_right =   -30;
+                                    mot_cmd.target_speed_left =     50;
+                                    mot_cmd.target_speed_right =   -50;
                                     mot_cmd.turn_ticks_left =        0;
                                     mot_cmd.turn_ticks_right =       0;
 
@@ -218,14 +218,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case DIR_BACK:
                                         num_rotations = 2;
 
-                                        // mot_cmd.target_speed_left =    -60;
-                                        // mot_cmd.target_speed_right =   -60;
-                                        // mot_cmd.turn_ticks_left =        0;
-                                        // mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =    -60;
+                                        mot_cmd.target_speed_right =   -60;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
 
-                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        // tk_dly_tsk(600);
+                                        tk_dly_tsk(800);
 
                                         mot_cmd.target_speed_left =    -30;
                                         mot_cmd.target_speed_right =   -30;
@@ -240,14 +240,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case DIR_LEFT:
                                         num_rotations = 1;
 
-                                        // mot_cmd.target_speed_left =    -50;
-                                        // mot_cmd.target_speed_right =   -50;
-                                        // mot_cmd.turn_ticks_left =        0;
-                                        // mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =    -50;
+                                        mot_cmd.target_speed_right =   -50;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
 
-                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        // tk_dly_tsk(300);
+                                        tk_dly_tsk(400);
 
                                         mot_cmd.target_speed_left =    -30;
                                         mot_cmd.target_speed_right =   -30;
@@ -262,17 +262,17 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case DIR_RIGHT:
                                         num_rotations = 1;
 
-                                        // mot_cmd.target_speed_left =     50;
-                                        // mot_cmd.target_speed_right =    50;
-                                        // mot_cmd.turn_ticks_left =        0;
-                                        // mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     50;
+                                        mot_cmd.target_speed_right =    50;
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
 
-                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        // tk_dly_tsk(300);
+                                        tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =     30;
-                                        mot_cmd.target_speed_right =    30;
+                                        mot_cmd.target_speed_left =     32;     // right motor weak
+                                        mot_cmd.target_speed_right =    32;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -294,7 +294,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     num_rotations--;
                                 }
                                 
-                                if (num_rotations <= 0) {
+                                if (num_rotations <= 0) {tm_printf("--==  STOP  ==--");
+
                                     mot_cmd.target_speed_left =     0;
                                     mot_cmd.target_speed_right =    0;
                                     mot_cmd.turn_ticks_left =       0;
