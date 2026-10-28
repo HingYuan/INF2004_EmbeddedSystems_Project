@@ -253,15 +253,48 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 }
 
                 // Periodic telemetry display every 500 ms (50 * 10ms ticks)
+                // if (++telemetry_timer >= 50) {
+                //     telemetry_timer = 0;
+                //     INT g_int = (INT)total_g;
+                //     INT g_dec = (INT)(fabsf(total_g * 100.0f)) % 100;
+                //     INT gz_int = (INT)gz;
+                //     INT gz_dec = (INT)(fabsf(gz * 100.0f)) % 100;
+
+                //     tm_printf((UB *)"[IMU READINGS] Pitch: %4d deg | Roll: %4d deg | Total: %d.%02d g | Z: %d.%02d g [OK]\n",
+                //               (INT)pitch, (INT)roll, g_int, g_dec, gz_int, gz_dec);
+                // }
+                //Code changed to send telemetry to navigator task instead of printing to console
+                /* Send normal IMU telemetry every 500 ms */
                 if (++telemetry_timer >= 50) {
                     telemetry_timer = 0;
-                    INT g_int = (INT)total_g;
-                    INT g_dec = (INT)(fabsf(total_g * 100.0f)) % 100;
-                    INT gz_int = (INT)gz;
-                    INT gz_dec = (INT)(fabsf(gz * 100.0f)) % 100;
+                    tm_printf((UB *)"[IMU] pitch_x100=%d roll_x100=%d total_g_x1000=%d\n",
+                    (int)(pitch * 100.0f),
+                    (int)(roll * 100.0f),
+                    (int)(total_g * 1000.0f));
+                    IMU_TELEMETRY_MSG msg = {
+                        .event = 0,  /* Normal monitoring; use a named enum if available */
+                        .pitch_deg = pitch,
+                        .roll_deg = roll,
+                        .peak_g = total_g
+                    };
 
-                    tm_printf((UB *)"[IMU READINGS] Pitch: %4d deg | Roll: %4d deg | Total: %d.%02d g | Z: %d.%02d g [OK]\n",
-                              (INT)pitch, (INT)roll, g_int, g_dec, gz_int, gz_dec);
+                    if (navigator_mbfid > E_OK) {
+                        NAVIGATOR_MESSAGE nav_msg = {
+                            .type = MSG_IMU_UPDATE,
+                            .data.imu_telemetry_msg = msg
+                        };
+
+                        ER er = tk_snd_mbf(
+                            navigator_mbfid,
+                            &nav_msg,
+                            sizeof(NAVIGATOR_MESSAGE),
+                            TMO_POL
+                        );
+
+                        if (er < E_OK) {
+                            tm_printf((UB *)"[IMU] Failed to send telemetry: %d\n", er);
+                        }
+                    }
                 }
                 break;
             }
