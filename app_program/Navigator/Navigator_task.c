@@ -128,8 +128,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    tm_printf("W_W\n");
-
                                 } else if (curr_state == STATE_W_B) {
                                     // Car veering left, adjust right
                                     mot_cmd.target_speed_left =     50;
@@ -138,9 +136,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-
-                                    tm_printf("W_B\n");
-
                                 } else if (curr_state == STATE_B_W) {
                                     // Car veering right, adjust left
                                     mot_cmd.target_speed_left =     35;
@@ -149,9 +144,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     mot_cmd.turn_ticks_right =       0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-
-                                    tm_printf("B_W\n");
-
                                 } else if (curr_state == STATE_B_B) {
                                     // Car at instersection
                                     mot_cmd.target_speed_left =      0;
@@ -163,9 +155,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     
                                     m_mode = MODE_DECISION_MAKING_ADVANCE;
                                     // m_mode = MODE_DECISION_MAKING_TURN;
-
-                                    tm_printf("B_B\n");
-
                                 } else {
                                     // Errorneous state
 
@@ -316,7 +305,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     num_rotations--;
                                 }
                                 
-                                if (num_rotations <= 0) {tm_printf("--==  STOP  ==--");
+                                if (num_rotations <= 0) {
 
                                     mot_cmd.target_speed_left =     0;
                                     mot_cmd.target_speed_right =    0;

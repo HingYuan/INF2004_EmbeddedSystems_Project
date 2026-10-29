@@ -173,7 +173,6 @@ EXPORT void ir_barcode_task(INT stacd, void *exinf)
                 previous_state,
                 (current_time - previous_time) / 100,
             };
-            tm_printf("%d", current_time - previous_time);
             
             // Push to message buffer
             tk_snd_mbf(barcode_mbfid, (void *)&br, sizeof(BAR_RECORD), TMO_FEVR);
