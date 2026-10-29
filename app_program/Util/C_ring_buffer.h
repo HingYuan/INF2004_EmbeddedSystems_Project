@@ -3,10 +3,10 @@
 
 #include <tk/tkernel.h>
 
-#define QUEUE_SIZE 15
+#define QUEUE_SIZE 20
 
 typedef struct {
-    B data[QUEUE_SIZE];
+    UB data[QUEUE_SIZE];
     INT head;
     INT tail;
     INT count;
@@ -18,7 +18,7 @@ static inline void crb_init(C_RING_BUFFER *q) {
     q->count = 0;
 }
 
-static inline BOOL crb_push(C_RING_BUFFER *q, B c) {
+static inline BOOL crb_push(C_RING_BUFFER *q, UB c) {
     if (q->count >= QUEUE_SIZE) {
         return 0;
     }
@@ -28,7 +28,7 @@ static inline BOOL crb_push(C_RING_BUFFER *q, B c) {
     return 1;
 }
 
-static inline BOOL crb_pop(C_RING_BUFFER *q, B *c) {
+static inline BOOL crb_pop(C_RING_BUFFER *q, UB *c) {
     if (q->count == 0) {
         return 0;
     }

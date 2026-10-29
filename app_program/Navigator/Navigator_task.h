@@ -103,7 +103,11 @@ typedef struct {
 =========================================
 */
 
+#define NUMBER_OF_COMMANDS 4
+
 typedef enum {
+    MODE_BARCODE_SCANNING,          // Slow speed barcode scanning
+    MODE_WIFI_SEND_COMMS,           // Wifi sending command mappings over to navigator
     MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
     MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
     MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
@@ -119,9 +123,11 @@ typedef enum {
     DIR_BACK,
     DIR_LEFT,
     DIR_RIGHT,
+    DIR_INVALID,
 } DIRECTION;
 
 typedef enum {
+    MSG_WIFI_BARCODE_MAPPING,   // Wifi sends navigator a command mapping (example 'A' = turn left)
     MSG_IR_UPDATE,              // Line following sensor update, car veering off
     MSG_BARCODE_DECODED,        // Barcode scanning sensor decoded letter
     MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
@@ -142,6 +148,7 @@ typedef struct {
         OBSTACLE_PROFILE obstacle_profile;
         SONAR_PROBE_RESULT sonar_probe;
         IMU_TELEMETRY_MSG imu_telemetry_msg;
+        UH packed_command_mapping;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
 

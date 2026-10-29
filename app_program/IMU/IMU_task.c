@@ -355,7 +355,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
         }
 
         // 100 Hz sampling period (10 ms)
-        tk_dly_tsk(10);
+        tk_dly_tsk(100);
     }
 }
 

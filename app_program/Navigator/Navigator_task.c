@@ -21,6 +21,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     NAVIGATOR_MESSAGE n_msg;
     INT message_size;
     MOTOR_COMMAND mot_cmd;
+    // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
+    // MOVEMENT_MODE prev_m_mode = MODE_BARCODE_SCANNING;
     MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
     MOVEMENT_MODE prev_m_mode = MODE_LINE_FOLLOWING;
 
@@ -28,11 +30,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     IR_STATE prev_ir_state = STATE_NULL;
 
     // Barcode decoding
-    C_RING_BUFFER barcode_characters;                                           // initialize circular ring buffer to store decoded characters
-    crb_init(&barcode_characters);
-    INT instruction_idx = 0;
-    DIRECTION instructions_fake[50] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
+    UB instruction_idx = 0;
+    B barcode_characters[NUMBER_OF_COMMANDS] = {};
+    DIRECTION instructions[NUMBER_OF_COMMANDS] = {};
+    for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;
+    // REMOVE BELOW 
+    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
+    // REMOVE ABOVE
     INT instructions_count = sizeof(instructions_fake) / sizeof(DIRECTION);
+    B barcode_count = 0;
 
     // Decision making
     B num_rotations = 0;
@@ -50,6 +56,64 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         if (message_size == sizeof(NAVIGATOR_MESSAGE)) {
             switch (m_mode) {
+                case MODE_BARCODE_SCANNING:
+                    mot_cmd.target_speed_left =     28;
+                    mot_cmd.target_speed_right =   -28;
+                    mot_cmd.turn_ticks_left =        0;
+                    mot_cmd.turn_ticks_right =       0;
+
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                    switch (n_msg.type) {
+                        case MSG_BARCODE_DECODED:
+
+                            barcode_characters[instruction_idx] = n_msg.data.decoded_char;
+                            instruction_idx++;
+
+                            barcode_count++;
+
+                            // Next mode after reading all 4 barcodes
+                            if (barcode_count >= NUMBER_OF_COMMANDS) m_mode = MODE_WIFI_SEND_COMMS;
+
+                            break;
+                    }
+
+                    break;
+                case MODE_WIFI_SEND_COMMS:
+                    instruction_idx = 0;
+
+                    // Stop car after scanning barcodes
+                    mot_cmd.target_speed_left =      0;
+                    mot_cmd.target_speed_right =     0;
+                    mot_cmd.turn_ticks_left =        0;
+                    mot_cmd.turn_ticks_right =       0;
+
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                    switch (n_msg.type) {
+                        case MSG_WIFI_BARCODE_MAPPING:      // Note for bryan & future self: packed data must look like 0bxxxx xxxx yyyy yyyy, where x is direction and y is character.
+                            DIRECTION direction = n_msg.data.packed_command_mapping >> 8;      // Cast int to enum
+                            B code39_char = n_msg.data.packed_command_mapping & 0x00ff;         // bitwise & mask to get least-significant 8 bits
+
+                            for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                if (barcode_characters[i] == code39_char) {
+                                    instructions[i] = direction;
+                                }
+                            }
+
+                            // Stay in current mode if not all commands filled out (MQTT has not transmitted all the command mappings yet)
+                            m_mode = MODE_LINE_FOLLOWING;
+                            for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                if (instructions[i] == DIR_INVALID) m_mode = MODE_WIFI_SEND_COMMS;
+                            }
+
+                            break;
+                        default:
+                            
+                            break;
+                    }
+
+                    break;
                 case MODE_LINE_FOLLOWING:
                     switch (n_msg.type) {
                         case MSG_IR_UPDATE:
@@ -58,8 +122,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             if (curr_state != prev_ir_state) {
 
                                 if (curr_state == STATE_W_W) {
-                                    mot_cmd.target_speed_left =     50;
-                                    mot_cmd.target_speed_right =   -50;
+                                    mot_cmd.target_speed_left =     40;
+                                    mot_cmd.target_speed_right =   -40;
                                     mot_cmd.turn_ticks_left =        0;
                                     mot_cmd.turn_ticks_right =       0;
 
@@ -68,7 +132,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 } else if (curr_state == STATE_W_B) {
                                     // Car veering left, adjust right
-                                    mot_cmd.target_speed_left =     55;
+                                    mot_cmd.target_speed_left =     50;
                                     mot_cmd.target_speed_right =   -35;
                                     mot_cmd.turn_ticks_left =        0;
                                     mot_cmd.turn_ticks_right =       0;
@@ -80,7 +144,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 } else if (curr_state == STATE_B_W) {
                                     // Car veering right, adjust left
                                     mot_cmd.target_speed_left =     35;
-                                    mot_cmd.target_speed_right =   -55;
+                                    mot_cmd.target_speed_right =   -50;
                                     mot_cmd.turn_ticks_left =        0;
                                     mot_cmd.turn_ticks_right =       0;
 
@@ -112,11 +176,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             }
 
                             break;
-                        case MSG_BARCODE_DECODED:
-
-                            crb_push(&barcode_characters, n_msg.data.decoded_char);
-
-                            break;
                         case MSG_OBSTACLE_DETECTED:
                             // Ultrasonic has already requested a stop
                             motor_estop = TRUE;
@@ -143,8 +202,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                 case MODE_DECISION_MAKING_ADVANCE:
                     tk_dly_tsk(500);
 
-                    mot_cmd.target_speed_left =     50;
-                    mot_cmd.target_speed_right =   -50;
+                    mot_cmd.target_speed_left =     45;
+                    mot_cmd.target_speed_right =   -45;
                     mot_cmd.turn_ticks_left =        0;
                     mot_cmd.turn_ticks_right =       0;
 
@@ -175,6 +234,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         case MSG_IR_UPDATE:
 
                             IR_STATE curr_ir_state = n_msg.data.ir_state;
+                            // DIRECTION curr_decision = instructions[instruction_idx];
                             DIRECTION curr_decision = instructions_fake[instruction_idx];
 
                             if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
@@ -186,17 +246,17 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case DIR_BACK:
                                         num_rotations = 2;
 
-                                        mot_cmd.target_speed_left =    -60;
-                                        mot_cmd.target_speed_right =   -60;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        // mot_cmd.target_speed_left =    -50;
+                                        // mot_cmd.target_speed_right =   -50;
+                                        // mot_cmd.turn_ticks_left =        0;
+                                        // mot_cmd.turn_ticks_right =       0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        tk_dly_tsk(800);
+                                        // tk_dly_tsk(800);
 
-                                        mot_cmd.target_speed_left =    -30;
-                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.target_speed_left =    -28;
+                                        mot_cmd.target_speed_right =   -28;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -206,17 +266,17 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case DIR_LEFT:
                                         num_rotations = 1;
 
-                                        mot_cmd.target_speed_left =    -50;
-                                        mot_cmd.target_speed_right =   -50;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        // mot_cmd.target_speed_left =    -50;
+                                        // mot_cmd.target_speed_right =   -50;
+                                        // mot_cmd.turn_ticks_left =        0;
+                                        // mot_cmd.turn_ticks_right =       0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        tk_dly_tsk(400);
+                                        // tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =    -30;
-                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.target_speed_left =    -27;
+                                        mot_cmd.target_speed_right =   -27;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -226,17 +286,17 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case DIR_RIGHT:
                                         num_rotations = 1;
 
-                                        mot_cmd.target_speed_left =     50;
-                                        mot_cmd.target_speed_right =    50;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        // mot_cmd.target_speed_left =     50;
+                                        // mot_cmd.target_speed_right =    50;
+                                        // mot_cmd.turn_ticks_left =        0;
+                                        // mot_cmd.turn_ticks_right =       0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        tk_dly_tsk(400);
+                                        // tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =     32;     // right motor weak
-                                        mot_cmd.target_speed_right =    32;
+                                        mot_cmd.target_speed_left =     27;     // right motor weak
+                                        mot_cmd.target_speed_right =    27;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -431,6 +491,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
         }   
         prev_m_mode = m_mode;
 
+        tk_dly_tsk(10);
     }
 }
 
