@@ -17,6 +17,8 @@ typedef enum {
     STATE_NULL,
 } IR_STATE;
 
+#define TURNING_RAMPUP_LIMIT 20
+
 /* 
 =========================================
 |               Ultrasonic              |

@@ -28,6 +28,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
     // Line following
     IR_STATE prev_ir_state = STATE_NULL;
+    UH turning_rampup_count = 0;
 
     // Barcode decoding
     UB instruction_idx = 0;
@@ -57,14 +58,39 @@ EXPORT void navigator_task(INT stacd, void *exinf)
         if (message_size == sizeof(NAVIGATOR_MESSAGE)) {
             switch (m_mode) {
                 case MODE_BARCODE_SCANNING:
-                    mot_cmd.target_speed_left =     28;
-                    mot_cmd.target_speed_right =   -28;
-                    mot_cmd.turn_ticks_left =        0;
-                    mot_cmd.turn_ticks_right =       0;
-
-                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-
                     switch (n_msg.type) {
+                        case MSG_IR_UPDATE:
+                            switch (n_msg.data.ir_state) {
+                                case STATE_W_B:
+                                    mot_cmd.target_speed_left =     40;
+                                    mot_cmd.target_speed_right =   -28;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    break;
+                                case STATE_B_W:
+                                    mot_cmd.target_speed_left =     28;
+                                    mot_cmd.target_speed_right =   -40;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    break;
+                                default:
+                                    mot_cmd.target_speed_left =     30;
+                                    mot_cmd.target_speed_right =   -30;
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    break;
+                            }
+
+                            break;
                         case MSG_BARCODE_DECODED:
 
                             barcode_characters[instruction_idx] = n_msg.data.decoded_char;
@@ -122,6 +148,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             if (curr_state != prev_ir_state) {
 
                                 if (curr_state == STATE_W_W) {
+                                    turning_rampup_count = 0;
+
                                     mot_cmd.target_speed_left =     40;
                                     mot_cmd.target_speed_right =   -40;
                                     mot_cmd.turn_ticks_left =        0;
@@ -145,6 +173,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                 } else if (curr_state == STATE_B_B) {
+                                    turning_rampup_count = 0;
+
                                     // Car at instersection
                                     mot_cmd.target_speed_left =      0;
                                     mot_cmd.target_speed_right =    -0;
@@ -154,7 +184,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     
                                     m_mode = MODE_DECISION_MAKING_ADVANCE;
-                                    // m_mode = MODE_DECISION_MAKING_TURN;
                                 } else {
                                     // Errorneous state
 
@@ -162,6 +191,30 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 // Update previous IR state
                                 prev_ir_state = curr_state;
+                            } else {
+                                // Ramp up turning if stuck on turning
+                                if (curr_state == STATE_B_W || curr_state == STATE_W_B) {
+                                    if (turning_rampup_count < TURNING_RAMPUP_LIMIT) {
+                                        turning_rampup_count++;
+                                    }
+
+                                    if (turning_rampup_count == TURNING_RAMPUP_LIMIT) {
+                                        turning_rampup_count++;     
+
+                                        mot_cmd.turn_ticks_left =        0;
+                                        mot_cmd.turn_ticks_right =       0;
+                                        
+                                        if (curr_state == STATE_B_W) {
+                                            mot_cmd.target_speed_left =     35;
+                                            mot_cmd.target_speed_right =   -60;
+                                        } else if (curr_state == STATE_W_B) {
+                                            mot_cmd.target_speed_left =     60;
+                                            mot_cmd.target_speed_right =   -35;
+                                        }
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    }                                    
+                                }
                             }
 
                             break;
@@ -176,6 +229,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             motor_stop_ack_requested = TRUE;
 
                             tm_printf((UB *)"[nav] Obstacle detected\n");
+
                             break;
                         case MSG_IMU_UPDATE:
                             tm_printf("[IMU] PITCH: %d, ROLL: %d\n", n_msg.data.imu_telemetry_msg.pitch_deg, n_msg.data.imu_telemetry_msg.roll_deg);
@@ -189,16 +243,16 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     break;
 
                 case MODE_DECISION_MAKING_ADVANCE:
-                    tk_dly_tsk(500);
+                    tk_dly_tsk(250);
 
-                    mot_cmd.target_speed_left =     45;
-                    mot_cmd.target_speed_right =   -45;
+                    mot_cmd.target_speed_left =     35;
+                    mot_cmd.target_speed_right =   -35;
                     mot_cmd.turn_ticks_left =        0;
                     mot_cmd.turn_ticks_right =       0;
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                    tk_dly_tsk(500);
+                    tk_dly_tsk(700);
 
                     mot_cmd.target_speed_left =      0;
                     mot_cmd.target_speed_right =    -0;
@@ -207,12 +261,12 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                    tk_dly_tsk(500);
+                    tk_dly_tsk(250);
 
                     m_mode = MODE_DECISION_MAKING_TURN;
                     clear_navigator_mbf();
 
-                    tk_dly_tsk(11);     // wait for next IR update
+                    tk_dly_tsk(30);     // wait for next IR update
 
                     break;
 
@@ -244,8 +298,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         // tk_dly_tsk(800);
 
-                                        mot_cmd.target_speed_left =    -28;
-                                        mot_cmd.target_speed_right =   -28;
+                                        mot_cmd.target_speed_left =    -36;
+                                        mot_cmd.target_speed_right =   -36;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -264,8 +318,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         // tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =    -27;
-                                        mot_cmd.target_speed_right =   -27;
+                                        mot_cmd.target_speed_left =    -36;
+                                        mot_cmd.target_speed_right =   -36;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -284,12 +338,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         // tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =     27;     // right motor weak
-                                        mot_cmd.target_speed_right =    27;
+                                        mot_cmd.target_speed_left =     36;     // right motor weak
+                                        mot_cmd.target_speed_right =    36;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        tm_printf("MESSGE SENT TO MOTOR \n");
 
                                         break;
                                     default:
@@ -472,13 +527,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         }
 
+        tm_printf("MODE: %d\n", m_mode);
 
         // Add code to send m_mode to wifi driver
         if (m_mode != prev_m_mode) {
             // Send telemetry
 
         }   
-        prev_m_mode = m_mode;
 
         tk_dly_tsk(10);
     }
