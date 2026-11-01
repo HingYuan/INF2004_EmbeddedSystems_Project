@@ -141,7 +141,13 @@ typedef enum {
     MSG_MOTOR_MOVE_DONE,
     MSG_IMU_UPDATE,
     MSG_REMOTE_CMD,             // Remote motor command from MQTT
+    MSG_SONAR_DISTANCE
 } MESSAGE_TYPE;
+
+typedef struct {
+    UW distance_cm;
+    BOOL valid;
+} SONAR_DISTANCE_MSG;
 
 typedef struct {
     MESSAGE_TYPE type;
@@ -151,7 +157,9 @@ typedef struct {
         UW obstacle_distance_cm;
         OBSTACLE_PROFILE obstacle_profile;
         SONAR_PROBE_RESULT sonar_probe;
+        SONAR_DISTANCE_MSG sonar_distance;
         IMU_TELEMETRY_MSG imu_telemetry_msg;
+        MOTOR_COMMAND remote_cmd;
         UH packed_command_mapping;
     } data;                     // Union data type for variable message data, update as project expands.
 } NAVIGATOR_MESSAGE;
@@ -181,6 +189,7 @@ typedef struct {
 
     // Sensor Specific: Ultrasonic
     uint32_t obstacle_distance_cm; // Direct front obstacle distance
+    uint8_t  obstacle_distance_valid; // 1 = valid reading, 0 = no valid echo
     uint32_t closest_cm;        // Closest obstacle distance from scan
     int32_t  closest_angle_deg; // Closest obstacle angle
     uint32_t estimated_width_cm;// Obstacle estimated width

@@ -404,6 +404,25 @@ LOCAL BOOL send_to_navigator(
         TMO_FEVR) >= E_OK;
 }
 
+// Send live front distance without blocking the sonar task
+LOCAL void send_sonar_distance(UW distance_cm, BOOL valid)
+{
+    NAVIGATOR_MESSAGE sonar_msg = {0};
+
+    sonar_msg.type = MSG_SONAR_DISTANCE;
+    sonar_msg.data.sonar_distance.distance_cm = distance_cm;
+    sonar_msg.data.sonar_distance.valid = valid;
+
+    // Drop this telemetry update if the message buffer is full.
+    // Never block the safety-monitoring loop for dashboard telemetry.
+    (void)tk_snd_mbf(
+        navigator_mbfid,
+        (void *)&sonar_msg,
+        sizeof(sonar_msg),
+        TMO_POL
+    );
+}
+
 // Perform one requested stationary measurement
 LOCAL BOOL handle_probe(UINT flags)
 {
@@ -495,6 +514,10 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
         // Forward monitoring during line following
         BOOL valid = read_distance_cm(&front_cm);
 
+        // Send live distance to Navigator on every measurement
+        send_sonar_distance(front_cm, valid);
+
+        // Preserve existing obstacle confirmation logic
         if (valid && front_cm <= OBSTACLE_TRIGGER_CM)
             confirmations++;
         else

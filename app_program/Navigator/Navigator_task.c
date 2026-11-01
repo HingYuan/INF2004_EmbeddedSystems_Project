@@ -68,11 +68,24 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     // Motion tracking for telemetry
     INT curr_speed_left = 0;
     INT curr_speed_right = 0;
+    UW live_sonar_distance_cm = 0;
+    BOOL live_sonar_distance_valid = FALSE;
 
     while (1) {
         message_size = tk_rcv_mbf(navigator_mbfid, (void *)&n_msg, TMO_FEVR); // Set as timeout forever (TMO_FEVR) as IR is continuously sending updates, so no timeout needed.
 
         if (message_size == sizeof(NAVIGATOR_MESSAGE)) {
+            if (n_msg.type == MSG_REMOTE_CMD) {
+                mot_cmd = n_msg.data.remote_cmd;
+                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                curr_speed_left = mot_cmd.target_speed_left;
+                curr_speed_right = mot_cmd.target_speed_right;
+            } else if (n_msg.type == MSG_SONAR_DISTANCE) {
+                live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
+                if (live_sonar_distance_valid) {
+                    live_sonar_distance_cm = n_msg.data.sonar_distance.distance_cm;
+                }
+            } else {
             switch (m_mode) {
                 case MODE_BARCODE_SCANNING:
                     switch (n_msg.type) {
@@ -111,6 +124,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         case MSG_BARCODE_DECODED:
 
                             barcode_characters[instruction_idx] = n_msg.data.decoded_char;
+                            last_decoded_char = (char)n_msg.data.decoded_char;
                             instruction_idx++;
 
                             barcode_count++;
@@ -543,6 +557,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     break;
                 }
             }
+            }
 
             // Update shared telemetry snapshot
             telemetry_snapshot.speed_left = curr_speed_left;
@@ -562,6 +577,12 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             telemetry_snapshot.roll_deg = last_roll_deg;
             telemetry_snapshot.imu_event = last_imu_event;
             telemetry_snapshot.seq++;
+            telemetry_snapshot.obstacle_distance_valid = live_sonar_distance_valid;
+            if (live_sonar_distance_valid) {
+                telemetry_snapshot.obstacle_distance_cm = live_sonar_distance_cm;
+            } else {
+                telemetry_snapshot.obstacle_distance_cm = last_obstacle_dist_cm;
+            }
 
         // Unexpected behaviour.
         } else {
@@ -581,4 +602,3 @@ EXPORT void navigator_task(INT stacd, void *exinf)
         tk_dly_tsk(10);
     }
 }
-
