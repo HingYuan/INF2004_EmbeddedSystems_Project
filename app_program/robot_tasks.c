@@ -102,12 +102,11 @@ EXPORT ER robot_tasks_start(void)
 	const INT packed_stacd_ultrasonic = (SONAR_TRIG_PIN << 16) | (SONAR_ECHO_PIN << 8);
 
 	static const TASK_START tasks[] = {
-		// { servo_task, 0, "servo" },
-		{ ultrasonic_task, 2, packed_stacd_ultrasonic, TP_PRC1, "Ultrasonic" },
-		{ ir_sensor_task, 2, packed_stacd_ir, TP_PRC1, "IR line sensors" },             // IR line following sensors
-		{ ir_barcode_task, 2, IR_LEFT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
-		{ ir_barcode_decoder_task, 2, 0, TP_PRC1, "IR barcode decoder" },			// Barcode decoder
-		{ motor_task, 2, 0, TP_PRC1, "Motors" },										// Motors
+		{ ultrasonic_task, 2, packed_stacd_ultrasonic, TP_PRC1, "Ultrasonic" },     // Ultrasonic sensor + servo motor
+		{ ir_sensor_task, 2, packed_stacd_ir, TP_PRC1, "IR line sensors" },         // IR line following sensors
+		{ ir_barcode_task, 1, IR_LEFT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
+		{ ir_barcode_decoder_task, 1, 0, TP_PRC1, "IR barcode decoder" },			// Barcode decoder
+		{ motor_task, 2, 0, TP_PRC1, "Motors" },                                    // Motors
 		{ imu_task, 2, 0, TP_PRC1, "IMU" },											// IMU
 		{ navigator_task, 1, 0, TP_PRC1, "Navigator" },								// Navigator (brain)
 

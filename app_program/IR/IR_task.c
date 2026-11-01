@@ -6,62 +6,63 @@
 #include "IR_task.h"
 #include "../Navigator/Navigator_task.h"
 #include "../robot_tasks.h"
+#include "../Util/code39.h"
 
-typedef struct {
-    UH pattern;
-    B character;
-} CODE_39_ENTRY;
+// typedef struct {
+//     UH pattern;
+//     B character;
+// } CODE_39_ENTRY;
 
-static const CODE_39_ENTRY code39_dict[] = {
-// Letters
-    {0b100001001, 'A'},
-    {0b001001001, 'B'},
-    {0b101001000, 'C'},
-    {0b000011001, 'D'},
-    {0b100011000, 'E'},
-    {0b001011000, 'F'},
-    {0b000001101, 'G'},
-    {0b100001100, 'H'},
-    {0b001001100, 'I'},
-    {0b000011100, 'J'},
-    {0b100000011, 'K'},
-    {0b001000011, 'L'},
-    {0b101000010, 'M'},
-    {0b000010011, 'N'},
-    {0b100010010, 'O'},
-    {0b001010010, 'P'},
-    {0b000000111, 'Q'},
-    {0b100000110, 'R'},
-    {0b001000110, 'S'},
-    {0b000010110, 'T'},
-    {0b110000001, 'U'},
-    {0b011000001, 'V'},
-    {0b111000000, 'W'},
-    {0b010010001, 'X'},
-    {0b110010000, 'Y'},
-    {0b011010000, 'Z'},
-// Numbers
-    {0b000110100, '0'},
-    {0b100100001, '1'},
-    {0b001100001, '2'},
-    {0b101100000, '3'},
-    {0b000110001, '4'},
-    {0b100110000, '5'},
-    {0b001110000, '6'},
-    {0b000100101, '7'},
-    {0b100100100, '8'},
-    {0b001100100, '9'},
-// Symbols
-    {0b010000101, '-'},
-    {0b110000100, '.'},
-    {0b011000100, ' '},
-    {0b010101000, '$'},
-    {0b010100010, '/'},
-    {0b010001010, '+'},
-    {0b000101010, '%'},
-// Asterisk
-    {0b010010100, '*'}
-};
+// static const CODE_39_ENTRY code39_dict[] = {
+// // Letters
+//     {0b100001001, 'A'},
+//     {0b001001001, 'B'},
+//     {0b101001000, 'C'},
+//     {0b000011001, 'D'},
+//     {0b100011000, 'E'},
+//     {0b001011000, 'F'},
+//     {0b000001101, 'G'},
+//     {0b100001100, 'H'},
+//     {0b001001100, 'I'},
+//     {0b000011100, 'J'},
+//     {0b100000011, 'K'},
+//     {0b001000011, 'L'},
+//     {0b101000010, 'M'},
+//     {0b000010011, 'N'},
+//     {0b100010010, 'O'},
+//     {0b001010010, 'P'},
+//     {0b000000111, 'Q'},
+//     {0b100000110, 'R'},
+//     {0b001000110, 'S'},
+//     {0b000010110, 'T'},
+//     {0b110000001, 'U'},
+//     {0b011000001, 'V'},
+//     {0b111000000, 'W'},
+//     {0b010010001, 'X'},
+//     {0b110010000, 'Y'},
+//     {0b011010000, 'Z'},
+// // Numbers
+//     {0b000110100, '0'},
+//     {0b100100001, '1'},
+//     {0b001100001, '2'},
+//     {0b101100000, '3'},
+//     {0b000110001, '4'},
+//     {0b100110000, '5'},
+//     {0b001110000, '6'},
+//     {0b000100101, '7'},
+//     {0b100100100, '8'},
+//     {0b001100100, '9'},
+// // Symbols
+//     {0b010000101, '-'},
+//     {0b110000100, '.'},
+//     {0b011000100, ' '},
+//     {0b010101000, '$'},
+//     {0b010100010, '/'},
+//     {0b010001010, '+'},
+//     {0b000101010, '%'},
+// // Asterisk
+//     {0b010010100, '*'}
+// };
 
 #define CODE39_DICT_SIZE (sizeof(code39_dict) / sizeof(code39_dict[0]))
   
@@ -170,7 +171,7 @@ EXPORT void ir_barcode_task(INT stacd, void *exinf)
             // Record state
             BAR_RECORD br = {
                 previous_state,
-                current_time - previous_time,
+                (current_time - previous_time) / 100,
             };
             
             // Push to message buffer
@@ -182,7 +183,7 @@ EXPORT void ir_barcode_task(INT stacd, void *exinf)
 			previous_state = current_state;
             previous_time = current_time;
 		}
-		tk_dly_tsk(5);
+		tk_dly_tsk(10);
 	}
 }
 
@@ -195,7 +196,6 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
 
 	(void)stacd;
 	(void)exinf;
-	tm_printf((UB *)"[decoder] Task started, waiting for bars...\n");
 
 	while(1) {
 		// Wait asleep until a message arrives in the buffer
@@ -211,11 +211,19 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
             if (bar_count >= BARS_PER_CHAR) {
                 UH current_pattern = 0;
 
-                // Skip first white bar,
-                // Create bit-shifted binary value based on detected Code39 character.
+                UW sum = 0;
+                UW average = 0;
+
+                // Find average duration of all bars
+                for (INT i=1; i<BARS_PER_CHAR; i++) {
+                    sum += bar_arr[i].duration;
+                }
+                average = sum / (BARS_PER_CHAR - 1); // find average duration of the 9 bars
+
+                // Create bit-shifted binary value based on detected Code39 character. Use average as threshold between thin and thick
                 for (INT i=1; i<BARS_PER_CHAR; i++) {
                     // Detect wide bars
-                    if (bar_arr[i].duration > BAR_THRESHOLD) {
+                    if (bar_arr[i].duration > average) {
                         current_pattern |= (1 << (BARS_PER_CHAR-1-i)); // -1 for leading whitespace, -i for digit offset (which includes the -1 for bitshift traversal as loop starts from 1, not 0)
                     }
                     // if thin bar, do nothing
@@ -248,5 +256,7 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
                 bar_count -= BARS_PER_CHAR;
             }
 		}
+
+        tk_dly_tsk(10);
 	}
 }
