@@ -18,6 +18,12 @@
 #if TM_WIFI_NETIF && TM_WEB_SERVER
 #include "web_server.h"
 #endif
+#ifdef B
+#undef B
+#endif
+#ifdef _B
+#undef _B
+#endif
 #if TM_MQTT
 #include "mqtt_client.h"
 #endif
@@ -65,7 +71,6 @@ _Static_assert(UTK_WIFI_AUTH == CYW43_AUTH_OPEN
 
 extern volatile uint32_t cyw43_utk_poll_requested;
 #include "smp_compat.h"
-extern int32_t tk_dly_tsk(uint32_t delay);
 extern void mp_memory_barrir(void);
 extern uint64_t time_us_64(void);
 

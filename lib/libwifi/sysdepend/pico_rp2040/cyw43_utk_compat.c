@@ -24,7 +24,7 @@
 
 #include "smp_compat.h"
 
-extern int32_t tk_dly_tsk(uint32_t delay);
+extern int tk_dly_tsk(unsigned long delay);
 
 volatile uint32_t cyw43_utk_poll_requested;
 

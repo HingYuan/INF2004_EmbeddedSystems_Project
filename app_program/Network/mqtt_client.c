@@ -461,6 +461,18 @@ void json_text(char *output, SZ capacity, SZ *length,
     }
 }
 
+static void json_quoted_text(char *output, SZ capacity, SZ *length,
+                             const char *text)
+{
+    while (*text != '\0') {
+        char value = *text++;
+        if (value == '"' || value == '\\') {
+            json_char(output, capacity, length, '\\');
+        }
+        json_char(output, capacity, length, value);
+    }
+}
+
 void json_number(char *output, SZ capacity, SZ *length,
                         uint32_t value)
 {
@@ -488,9 +500,9 @@ SZ mqtt_dashboard_json(char *output, SZ capacity)
     json_text(output, capacity, &length, ",\"messages\":");
     json_number(output, capacity, &length, mqtt_message_count);
     json_text(output, capacity, &length, ",\"topic\":\"");
-    json_text(output, capacity, &length, mqtt_topic);
+    json_quoted_text(output, capacity, &length, mqtt_topic);
     json_text(output, capacity, &length, "\",\"payload\":\"");
-    json_text(output, capacity, &length, mqtt_payload);
+    json_quoted_text(output, capacity, &length, mqtt_payload);
     json_text(output, capacity, &length, "\",\"error\":");
     json_number(output, capacity, &length, (uint32_t)mqtt_last_error);
     json_text(output, capacity, &length, ",\"mapping\":{");
