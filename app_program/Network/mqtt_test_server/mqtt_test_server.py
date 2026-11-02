@@ -1,4 +1,4 @@
-"""Publish repeatable test messages for the Pico W MQTT dashboard.
+"""Publish repeatable test messages and retained movement mapping.
 
 This is a test publisher, not a broker. Run it against Mosquitto, EMQX,
 or another MQTT broker that the Pico W can reach.
@@ -21,6 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", required=True, help="MQTT broker IPv4 address or hostname")
     parser.add_argument("--port", type=int, default=1883)
     parser.add_argument("--topic", default="dashboard/test")
+    parser.add_argument("--movement-topic", default="robot/config/movement")
+    parser.add_argument(
+        "--movement-config",
+        default='{"a":"MOVE_FORWARD","b":"MOVE_BACKWARD","c":"TURN_LEFT","d":"TURN_RIGHT","e":"STOP"}',
+        help="JSON movement mapping to publish retained",
+    )
     parser.add_argument("--interval", type=float, default=2.0)
     parser.add_argument("--username")
     parser.add_argument("--password")
@@ -40,6 +46,25 @@ def main() -> int:
         return 1
 
     client.loop_start()
+    try:
+        movement_config = json.loads(arguments.movement_config)
+        if not isinstance(movement_config, dict):
+            raise ValueError("movement config must be a JSON object")
+        result = client.publish(
+            arguments.movement_topic,
+            json.dumps(movement_config, separators=(",", ":")),
+            qos=1,
+            retain=True,
+        )
+        result.wait_for_publish()
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            print(f"Movement mapping publish failed: {mqtt.error_string(result.rc)}", file=sys.stderr)
+            return 1
+        print(f"Published retained movement mapping to {arguments.movement_topic}")
+    except (ValueError, json.JSONDecodeError) as error:
+        print(f"Invalid movement mapping: {error}", file=sys.stderr)
+        return 2
+
     sequence = 0
     print(f"Publishing to {arguments.host}:{arguments.port}/{arguments.topic}")
     try:

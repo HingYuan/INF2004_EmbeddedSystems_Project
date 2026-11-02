@@ -12,6 +12,7 @@
 #define MQTT_BROKER_PORT      1883
 #define MQTT_CLIENT_ID        "utk-picow"
 #define MQTT_SUBSCRIBE_TOPIC  "robot/command"
+#define MQTT_MOVEMENT_CONFIG_TOPIC "robot/config/movement"
 #define MQTT_PUBLISH_TOPIC    "robot/telemetry"
 #define MQTT_USERNAME         ""
 #define MQTT_PASSWORD         ""

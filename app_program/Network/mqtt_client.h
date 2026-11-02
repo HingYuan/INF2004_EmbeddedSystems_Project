@@ -1,18 +1,21 @@
 #ifndef UTK_MQTT_CLIENT_H
 #define UTK_MQTT_CLIENT_H
 
-#include <stddef.h>
-#include <stdint.h>
+#ifndef PROHIBIT_DEF_SIZE_T
+#define PROHIBIT_DEF_SIZE_T
+#endif
 
+#include "../Motor/Motor_task.h"
 struct netif;
 
 void mqtt_dashboard_poll(struct netif *netif);
-size_t mqtt_dashboard_json(char *output, size_t capacity);
-size_t telemetry_json(char *output, size_t capacity);
+SZ mqtt_dashboard_json(char *output, SZ capacity);
+SZ telemetry_json(char *output, SZ capacity);
+BOOL mqtt_get_movement_for_barcode(char barcode, MOTOR_COMMAND *command);
 
 /* JSON helpers used by telemetry_json / mqtt_dashboard_json */
-void json_char(char *output, size_t capacity, size_t *length, char value);
-void json_text(char *output, size_t capacity, size_t *length, const char *text);
-void json_number(char *output, size_t capacity, size_t *length, uint32_t value);
+void json_char(char *output, SZ capacity, SZ *length, char value);
+void json_text(char *output, SZ capacity, SZ *length, const char *text);
+void json_number(char *output, SZ capacity, SZ *length, uint32_t value);
 
 #endif

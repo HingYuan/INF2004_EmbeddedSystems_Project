@@ -1,8 +1,8 @@
-#include "mqtt_client.h"
-
 /* Prevent syslib.h from redefining size_t so stddef.h (unsigned int) wins */
 #define PROHIBIT_DEF_SIZE_T
 
+#include <stddef.h>
+#include "mqtt_client.h"
 #include <string.h>
 
 #include <tm/tmonitor.h>
@@ -23,19 +23,146 @@ extern uint64_t time_us_64(void);
 #define MQTT_RETRY_MS       5000U
 #define MQTT_TOPIC_MAX      96U
 #define MQTT_PAYLOAD_MAX    256U
+#define MQTT_MOVEMENT_CONFIG_TOPIC_DEFAULT "robot/config/movement"
 
 static mqtt_client_t *mqtt_client;
 static ip_addr_t mqtt_broker;
 static struct mqtt_connect_client_info_t mqtt_info;
 static char mqtt_topic[MQTT_TOPIC_MAX];
 static char mqtt_payload[MQTT_PAYLOAD_MAX];
-static size_t mqtt_payload_length;
+static SZ mqtt_payload_length;
 static uint32_t mqtt_message_count;
 static uint32_t mqtt_next_retry_ms;
 static uint8_t mqtt_configured;
 static uint8_t mqtt_connect_pending;
 static uint8_t mqtt_connected;
 static int mqtt_last_error;
+static MOTOR_COMMAND movement_commands[2][128];
+static uint8_t movement_valid[2][128];
+static volatile uint8_t movement_active;
+
+#ifndef MQTT_MOVEMENT_CONFIG_TOPIC
+#define MQTT_MOVEMENT_CONFIG_TOPIC MQTT_MOVEMENT_CONFIG_TOPIC_DEFAULT
+#endif
+
+static const char *skip_json_space(const char *text)
+{
+    while(*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') text++;
+    return text;
+}
+
+static BOOL json_string(const char **cursor, char *output, SZ capacity)
+{
+    const char *text = *cursor;
+    SZ length = 0U;
+
+    if(*text++ != '"') return FALSE;
+    while(*text != '\0' && *text != '"') {
+        if(*text == '\\' || length + 1U >= capacity) return FALSE;
+        output[length++] = *text++;
+    }
+    if(*text != '"') return FALSE;
+    output[length] = '\0';
+    *cursor = text + 1;
+    return TRUE;
+}
+
+static BOOL movement_command(const char *name, MOTOR_COMMAND *command)
+{
+    command->turn_ticks_left = 0;
+    command->turn_ticks_right = 0;
+    if(strcmp(name, "MOVE_FORWARD") == 0) {
+        command->target_speed_left = 40;
+        command->target_speed_right = -40;
+    } else if(strcmp(name, "MOVE_BACKWARD") == 0) {
+        command->target_speed_left = -40;
+        command->target_speed_right = 40;
+    } else if(strcmp(name, "TURN_LEFT") == 0) {
+        command->target_speed_left = -40;
+        command->target_speed_right = -40;
+    } else if(strcmp(name, "TURN_RIGHT") == 0) {
+        command->target_speed_left = 40;
+        command->target_speed_right = 40;
+    } else if(strcmp(name, "STOP") == 0) {
+        command->target_speed_left = 0;
+        command->target_speed_right = 0;
+    } else {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static const char *movement_name(const MOTOR_COMMAND *command)
+{
+    if(command->target_speed_left == 40 &&
+       command->target_speed_right == -40) return "MOVE_FORWARD";
+    if(command->target_speed_left == -40 &&
+       command->target_speed_right == 40) return "MOVE_BACKWARD";
+    if(command->target_speed_left == -40 &&
+       command->target_speed_right == -40) return "TURN_LEFT";
+    if(command->target_speed_left == 40 &&
+       command->target_speed_right == 40) return "TURN_RIGHT";
+    if(command->target_speed_left == 0 &&
+       command->target_speed_right == 0) return "STOP";
+    return "UNKNOWN";
+}
+
+static BOOL update_movement_mapping(const char *payload)
+{
+    const char *cursor = skip_json_space(payload);
+    uint8_t next = (uint8_t)(movement_active ^ 1U);
+    uint8_t count = 0U;
+    SZ key_length;
+    char key[8];
+    char value[24];
+
+    memset(movement_valid[next], 0, sizeof(movement_valid[next]));
+    if(*cursor++ != '{') return FALSE;
+    cursor = skip_json_space(cursor);
+    if(*cursor == '}') return FALSE;
+
+    while(1) {
+        cursor = skip_json_space(cursor);
+        if(!json_string(&cursor, key, sizeof(key))) return FALSE;
+        if(key[0] >= 'a' && key[0] <= 'z') key[0] = (char)(key[0] - 'a' + 'A');
+        key_length = strlen(key);
+        if(key_length != 1U || (unsigned char)key[0] < 33U ||
+           (unsigned char)key[0] > 126U || key[0] == '"' || key[0] == '\\') {
+            return FALSE;
+        }
+        cursor = skip_json_space(cursor);
+        if(*cursor++ != ':') return FALSE;
+        cursor = skip_json_space(cursor);
+        if(!json_string(&cursor, value, sizeof(value)) ||
+           !movement_command(value, &movement_commands[next][(unsigned char)key[0]]) ||
+           movement_valid[next][(unsigned char)key[0]]) {
+            return FALSE;
+        }
+        movement_valid[next][(unsigned char)key[0]] = 1U;
+        count++;
+        cursor = skip_json_space(cursor);
+        if(*cursor == '}') {
+            cursor = skip_json_space(cursor + 1);
+            if(*cursor != '\0' || count == 0U) return FALSE;
+            movement_active = next;
+            return TRUE;
+        }
+        if(*cursor++ != ',') return FALSE;
+    }
+}
+
+BOOL mqtt_get_movement_for_barcode(char barcode, MOTOR_COMMAND *command)
+{
+    uint8_t active;
+    unsigned char index = (unsigned char)barcode;
+
+    if(index >= 'a' && index <= 'z') index = (unsigned char)(index - 'a' + 'A');
+    if(command == NULL || index < 33U || index > 126U) return FALSE;
+    active = movement_active;
+    if(!movement_valid[active][index]) return FALSE;
+    *command = movement_commands[active][index];
+    return TRUE;
+}
 
 static uint32_t mqtt_now_ms(void)
 {
@@ -50,12 +177,12 @@ static void mqtt_request_done(void *arg, err_t error)
 
 static void mqtt_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
 {
-    size_t available;
+    SZ available;
 
     (void)arg;
     available = MQTT_PAYLOAD_MAX - 1U - mqtt_payload_length;
     if(data != NULL && length > 0U && available > 0U) {
-        if((size_t)length > available) length = (u16_t)available;
+        if((SZ)length > available) length = (u16_t)available;
         memcpy(&mqtt_payload[mqtt_payload_length], data, length);
         mqtt_payload_length += length;
     }
@@ -66,7 +193,15 @@ static void mqtt_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
         tm_printf((UB *)"[mqtt] #%u %s: %s\n",
                   mqtt_message_count, mqtt_topic, mqtt_payload);
 
+        if(strcmp(mqtt_topic, MQTT_MOVEMENT_CONFIG_TOPIC) == 0) {
+            if(!update_movement_mapping(mqtt_payload)) {
+                tm_printf((UB *)"[mqtt] invalid movement mapping ignored\n");
+            }
+            return;
+        }
+
         /* If message is a command for the robot, parse L,R,T and send to navigator */
+        if(strcmp(mqtt_topic, MQTT_SUBSCRIBE_TOPIC) != 0) return;
         int l = 0, r = 0, t = 0;
         char *p = mqtt_payload;
         int sign = 1, val = 0;
@@ -111,7 +246,7 @@ static void mqtt_data(void *arg, const u8_t *data, u16_t length, u8_t flags)
 static void mqtt_incoming_publish(void *arg, const char *topic,
                                   u32_t total_length)
 {
-    size_t length;
+    SZ length;
 
     (void)arg;
     length = strlen(topic != NULL ? topic : "");
@@ -134,6 +269,10 @@ static void mqtt_connection(mqtt_client_t *client, void *arg,
         mqtt_last_error = 0;
         tm_printf((UB *)"[mqtt] connected to " MQTT_BROKER_IP "\n");
         if(mqtt_subscribe(mqtt_client, MQTT_SUBSCRIBE_TOPIC, MQTT_QOS,
+                          mqtt_request_done, NULL) != ERR_OK) {
+            mqtt_last_error = ERR_CONN;
+        }
+        if(mqtt_subscribe(mqtt_client, MQTT_MOVEMENT_CONFIG_TOPIC, MQTT_QOS,
                           mqtt_request_done, NULL) != ERR_OK) {
             mqtt_last_error = ERR_CONN;
         }
@@ -188,7 +327,7 @@ static void mqtt_begin(void)
 #define MQTT_TELEMETRY_INTERVAL_MS 500U
 static uint32_t mqtt_next_telemetry_ms;
 
-static void json_signed_number(char *output, size_t capacity, size_t *length,
+static void json_signed_number(char *output, SZ capacity, SZ *length,
                                int32_t value)
 {
     if(value < 0) {
@@ -198,7 +337,7 @@ static void json_signed_number(char *output, size_t capacity, size_t *length,
     json_number(output, capacity, length, (uint32_t)value);
 }
 
-static void json_float(char *output, size_t capacity, size_t *length, float value)
+static void json_float(char *output, SZ capacity, SZ *length, float value)
 {
     if(value < 0.0f) {
         json_char(output, capacity, length, '-');
@@ -212,9 +351,9 @@ static void json_float(char *output, size_t capacity, size_t *length, float valu
     json_number(output, capacity, length, (uint32_t)frac);
 }
 
-size_t telemetry_json(char *output, size_t capacity)
+SZ telemetry_json(char *output, SZ capacity)
 {
-    size_t length = 0U;
+    SZ length = 0U;
 
     if(capacity == 0U) return 0U;
     json_char(output, capacity, &length, '{');
@@ -249,6 +388,8 @@ size_t telemetry_json(char *output, size_t capacity)
     // Sensor Specific: Ultrasonic
     json_text(output, capacity, &length, ",\"obs_dist\":");
     json_number(output, capacity, &length, telemetry_snapshot.obstacle_distance_cm);
+    json_text(output, capacity, &length, ",\"obs_dist_valid\":");
+    json_number(output, capacity, &length, telemetry_snapshot.obstacle_distance_valid);
     json_text(output, capacity, &length, ",\"closest_cm\":");
     json_number(output, capacity, &length, telemetry_snapshot.closest_cm);
     json_text(output, capacity, &length, ",\"closest_deg\":");
@@ -291,7 +432,7 @@ void mqtt_dashboard_poll(struct netif *netif)
     if(mqtt_connected) {
         if((int32_t)(now - mqtt_next_telemetry_ms) >= 0) {
             char telem_buf[320];
-            size_t len = telemetry_json(telem_buf, sizeof(telem_buf));
+            SZ len = telemetry_json(telem_buf, sizeof(telem_buf));
             if(len > 0) {
 #ifdef MQTT_PUBLISH_TOPIC
                 mqtt_publish(mqtt_client, MQTT_PUBLISH_TOPIC, telem_buf, (u16_t)len,
@@ -306,13 +447,13 @@ void mqtt_dashboard_poll(struct netif *netif)
     }
 }
 
-void json_char(char *output, size_t capacity, size_t *length, char value)
+void json_char(char *output, SZ capacity, SZ *length, char value)
 {
     if(*length + 1U < capacity) output[*length] = value;
     (*length)++;
 }
 
-void json_text(char *output, size_t capacity, size_t *length,
+void json_text(char *output, SZ capacity, SZ *length,
                const char *text)
 {
     while (*text != '\0') {
@@ -320,11 +461,11 @@ void json_text(char *output, size_t capacity, size_t *length,
     }
 }
 
-void json_number(char *output, size_t capacity, size_t *length,
+void json_number(char *output, SZ capacity, SZ *length,
                         uint32_t value)
 {
     char digits[11];
-    size_t count = 0U;
+    SZ count = 0U;
 
     do {
         digits[count++] = (char)('0' + (value % 10U));
@@ -333,9 +474,12 @@ void json_number(char *output, size_t capacity, size_t *length,
     while(count > 0U) json_char(output, capacity, length, digits[--count]);
 }
 
-size_t mqtt_dashboard_json(char *output, size_t capacity)
+SZ mqtt_dashboard_json(char *output, SZ capacity)
 {
-    size_t length = 0U;
+    SZ length = 0U;
+    uint8_t active = movement_active;
+    unsigned int i;
+    BOOL first = TRUE;
 
     if(capacity == 0U) return 0U;
     json_char(output, capacity, &length, '{');
@@ -349,6 +493,20 @@ size_t mqtt_dashboard_json(char *output, size_t capacity)
     json_text(output, capacity, &length, mqtt_payload);
     json_text(output, capacity, &length, "\",\"error\":");
     json_number(output, capacity, &length, (uint32_t)mqtt_last_error);
+    json_text(output, capacity, &length, ",\"mapping\":{");
+    for(i = 33U; i <= 126U; i++) {
+        if(movement_valid[active][i]) {
+            if(!first) json_char(output, capacity, &length, ',');
+            json_char(output, capacity, &length, '"');
+            json_char(output, capacity, &length, (char)i);
+            json_text(output, capacity, &length, "\":\"");
+            json_text(output, capacity, &length,
+                      movement_name(&movement_commands[active][i]));
+            json_char(output, capacity, &length, '"');
+            first = FALSE;
+        }
+    }
+    json_char(output, capacity, &length, '}');
     json_char(output, capacity, &length, '}');
 
     if(length >= capacity) length = capacity - 1U;
@@ -363,12 +521,12 @@ void mqtt_dashboard_poll(struct netif *netif)
     (void)netif;
 }
 
-size_t mqtt_dashboard_json(char *output, size_t capacity)
+SZ mqtt_dashboard_json(char *output, SZ capacity)
 {
     static const char disabled[] =
         "{\"enabled\":false,\"connected\":false,\"messages\":0,"\
-        "\"topic\":\"\",\"payload\":\"\",\"error\":0}";
-    size_t length = sizeof(disabled) - 1U;
+        "\"topic\":\"\",\"payload\":\"\",\"error\":0,\"mapping\":{}}";
+    SZ length = sizeof(disabled) - 1U;
 
     if(capacity == 0U) return 0U;
     if(length >= capacity) length = capacity - 1U;
@@ -377,16 +535,23 @@ size_t mqtt_dashboard_json(char *output, size_t capacity)
     return length;
 }
 
-size_t telemetry_json(char *output, size_t capacity)
+SZ telemetry_json(char *output, SZ capacity)
 {
     static const char empty[] = "{}";
-    size_t length = sizeof(empty) - 1U;
+    SZ length = sizeof(empty) - 1U;
 
     if(capacity == 0U) return 0U;
     if(length >= capacity) length = capacity - 1U;
     memcpy(output, empty, length);
     output[length] = '\0';
     return length;
+}
+
+BOOL mqtt_get_movement_for_barcode(char barcode, MOTOR_COMMAND *command)
+{
+    (void)barcode;
+    (void)command;
+    return FALSE;
 }
 
 #endif

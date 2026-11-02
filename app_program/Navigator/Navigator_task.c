@@ -9,6 +9,7 @@
 #include "../Motor/Motor_task.h"
 #include "../Ultrasonic/Ultrasonic_task.h"
 #include "../IMU/IMU_task.h"
+#include "../Network/mqtt_client.h"
 
 // Shared telemetry snapshot instance owned by Navigator
 EXPORT volatile TELEMETRY_SNAPSHOT telemetry_snapshot = {0};
@@ -16,6 +17,20 @@ EXPORT volatile TELEMETRY_SNAPSHOT telemetry_snapshot = {0};
 void clear_navigator_mbf() {
     NAVIGATOR_MESSAGE discard_msg;
     while (tk_rcv_mbf(navigator_mbfid, &discard_msg, TMO_POL) >= 0) { }
+}
+
+static BOOL execute_mapped_barcode(B barcode, MOTOR_COMMAND *command)
+{
+    if(!mqtt_get_movement_for_barcode((char)barcode, command)) {
+        tm_printf((UB *)"[nav] unmapped barcode: %c\n", barcode);
+        return FALSE;
+    }
+    if(tk_snd_mbf(motor_mbfid, (void *)command, sizeof(MOTOR_COMMAND),
+                  TMO_FEVR) < E_OK) {
+        tm_printf((UB *)"[nav] failed to send mapped barcode\n");
+        return FALSE;
+    }
+    return TRUE;
 }
 
 EXPORT void navigator_task(INT stacd, void *exinf) 
@@ -76,10 +91,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         if (message_size == sizeof(NAVIGATOR_MESSAGE)) {
             if (n_msg.type == MSG_REMOTE_CMD) {
-                mot_cmd = n_msg.data.remote_cmd;
-                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                curr_speed_left = mot_cmd.target_speed_left;
-                curr_speed_right = mot_cmd.target_speed_right;
+                if(!motor_estop && m_mode != MODE_WALL_HUGGING &&
+                   m_mode != MODE_SAFE_STOP) {
+                    mot_cmd = n_msg.data.remote_cmd;
+                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    curr_speed_left = mot_cmd.target_speed_left;
+                    curr_speed_right = mot_cmd.target_speed_right;
+                }
             } else if (n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
                 if (live_sonar_distance_valid) {
@@ -122,15 +140,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             break;
                         case MSG_BARCODE_DECODED:
-
-                            barcode_characters[instruction_idx] = n_msg.data.decoded_char;
                             last_decoded_char = (char)n_msg.data.decoded_char;
-                            instruction_idx++;
-
-                            barcode_count++;
-
-                            // Next mode after reading all 4 barcodes
-                            if (barcode_count >= NUMBER_OF_COMMANDS) m_mode = MODE_WIFI_SEND_COMMS;
+                            if(execute_mapped_barcode(n_msg.data.decoded_char, &mot_cmd)) {
+                                curr_speed_left = mot_cmd.target_speed_left;
+                                curr_speed_right = mot_cmd.target_speed_right;
+                                if(mot_cmd.target_speed_left == 0 &&
+                                   mot_cmd.target_speed_right == 0) {
+                                    m_mode = MODE_SAFE_STOP;
+                                }
+                            }
 
                             break;
                     }
@@ -173,6 +191,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     break;
                 case MODE_LINE_FOLLOWING:
                     switch (n_msg.type) {
+                        case MSG_BARCODE_DECODED:
+                            last_decoded_char = (char)n_msg.data.decoded_char;
+                            if(execute_mapped_barcode(n_msg.data.decoded_char, &mot_cmd)) {
+                                curr_speed_left = mot_cmd.target_speed_left;
+                                curr_speed_right = mot_cmd.target_speed_right;
+                                if(mot_cmd.target_speed_left == 0 &&
+                                   mot_cmd.target_speed_right == 0) {
+                                    m_mode = MODE_SAFE_STOP;
+                                }
+                            }
+
+                            break;
                         case MSG_IR_UPDATE:
                             IR_STATE curr_state = n_msg.data.ir_state;
 
@@ -256,7 +286,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         case MSG_OBSTACLE_DETECTED:
 
                             last_obstacle_dist_cm = n_msg.data.obstacle_distance_cm;
-                            m_mode = MODE_WALL_HUGGING;
+                            motor_stop_ack_requested = TRUE;
+                            m_mode = MODE_OBSTACLE_ASSESS;
 
                             tm_printf((UB *)"[nav] Obstacle detected\n");
 
@@ -557,7 +588,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     break;
                 }
             }
-            }
 
             // Update shared telemetry snapshot
             telemetry_snapshot.speed_left = curr_speed_left;
@@ -573,9 +603,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             telemetry_snapshot.closest_cm = last_closest_cm;
             telemetry_snapshot.closest_angle_deg = (int32_t)last_closest_angle_deg;
             telemetry_snapshot.estimated_width_cm = last_estimated_width_cm;
-            telemetry_snapshot.pitch_deg = last_pitch_deg;
-            telemetry_snapshot.roll_deg = last_roll_deg;
-            telemetry_snapshot.imu_event = last_imu_event;
             telemetry_snapshot.seq++;
             telemetry_snapshot.obstacle_distance_valid = live_sonar_distance_valid;
             if (live_sonar_distance_valid) {
@@ -591,14 +618,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         }
 
-        tm_printf("MODE: %d\n", m_mode);
-
         // Add code to send m_mode to wifi driver
         if (m_mode != prev_m_mode) {
             // Send telemetry
 
         }   
 
-        tk_dly_tsk(10);
     }
 }

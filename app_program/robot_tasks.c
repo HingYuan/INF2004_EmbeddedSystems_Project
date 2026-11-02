@@ -131,7 +131,7 @@ EXPORT ER robot_tasks_start(void)
 	cmbf.mbfatr = TA_TFIFO; // First-In, First-Out queue
 
 	LOCAL UW barcode_mbf_buf[(20 * sizeof(BAR_RECORD)) / sizeof(UW) + 20 * 4];
-	LOCAL UW navigator_mbf_buf[(20 * sizeof(NAVIGATOR_MESSAGE)) / sizeof(UW) + 20 * 4];
+	LOCAL UW navigator_mbf_buf[(64 * sizeof(NAVIGATOR_MESSAGE)) / sizeof(UW) + 64 * 4];
 	LOCAL UW motor_mbf_buf[(10 * sizeof(MOTOR_COMMAND)) / sizeof(UW) + 10 * 4];
 
 	// Barcode scanner mbf
@@ -147,7 +147,7 @@ EXPORT ER robot_tasks_start(void)
 
 	// navigator task mbf
     cmbf.maxmsz = sizeof(NAVIGATOR_MESSAGE);
-	cmbf.bufsz = sizeof(NAVIGATOR_MESSAGE) * 20;
+	cmbf.bufsz = sizeof(NAVIGATOR_MESSAGE) * 64;
 	cmbf.bufptr = navigator_mbf_buf;
 
 	navigator_mbfid = tk_cre_mbf(&cmbf);

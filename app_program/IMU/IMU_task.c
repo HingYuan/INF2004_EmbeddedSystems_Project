@@ -147,6 +147,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     imu_dd = tk_opn_dev((const UB *)IMU_I2C_DEVNAME, TD_UPDATE);
                     if (imu_dd <= E_OK) {
                         imu_dd = 0;
+                        tm_printf((UB *)"[IMU] I2C device open failed\n");
                         tk_dly_tsk(1000);
                         break;
                     }
@@ -238,6 +239,15 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     };
 
                     if (navigator_mbfid > E_OK) {
+                        /*
+                         * Keep live telemetry independent of Navigator's
+                         * navigation queue. Navigator can block while
+                         * executing a motor maneuver.
+                         */
+                        telemetry_snapshot.pitch_deg = pitch;
+                        telemetry_snapshot.roll_deg = roll;
+                        telemetry_snapshot.imu_event = IMU_MSG_NONE;
+
                         NAVIGATOR_MESSAGE nav_msg = {
                             .type = MSG_IMU_UPDATE,
                             .data.imu_telemetry_msg = msg
@@ -253,6 +263,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         if (er < E_OK) {
                             tm_printf((UB *)"[IMU] Failed to send telemetry: %d\n", er);
                         }
+                    }
                     
                     // // Only compute expensive trigonometry twice a second
                     // float total_g = imu_sqrtf(total_g_sq);
@@ -279,8 +290,10 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     .peak_g = total_g
                 };
                 if (navigator_mbfid > E_OK) {
+                    telemetry_snapshot.pitch_deg = pitch;
+                    telemetry_snapshot.imu_event = IMU_MSG_TILT_WARNING;
                     NAVIGATOR_MESSAGE nav_msg = { .type = MSG_IMU_UPDATE, .data.imu_telemetry_msg = msg };
-                    tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL); 
+                    (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
                 }
 
                 if (fabsf(pitch) < (SAFE_TILT_LIMIT_DEG - 5.0f)) {
@@ -305,8 +318,9 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         .estimated_height_cm = hump_peak_height
                     };
                     if (navigator_mbfid > E_OK) {
+                        telemetry_snapshot.imu_event = IMU_MSG_HUMP_INTEGRATING;
                         NAVIGATOR_MESSAGE nav_msg = { .type = MSG_IMU_UPDATE, .data.imu_telemetry_msg = msg };
-                        tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL); 
+                        (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
                     }
                     state = STATE_MONITORING;
                 }
@@ -319,8 +333,9 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     .peak_g = SHOCK_THRESHOLD_G
                 };
                 if (navigator_mbfid > E_OK) {
+                    telemetry_snapshot.imu_event = IMU_MSG_SHOCK_DETECTED;
                     NAVIGATOR_MESSAGE nav_msg = { .type = MSG_IMU_UPDATE, .data.imu_telemetry_msg = msg };
-                    tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL); 
+                    (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
                 }
                 while (1) tk_dly_tsk(1000);
                 break;

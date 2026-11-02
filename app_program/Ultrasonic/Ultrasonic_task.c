@@ -397,11 +397,16 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
 LOCAL BOOL send_to_navigator(
     const NAVIGATOR_MESSAGE *message)
 {
-    return tk_snd_mbf(
+    ER er = tk_snd_mbf(
         navigator_mbfid,
         (void *)message,
         sizeof(*message),
-        TMO_FEVR) >= E_OK;
+        TMO_FEVR);
+    if (er < E_OK) {
+        tm_printf((UB *)"[sonar] Failed to send Navigator event: %d\n", er);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 // Send live front distance without blocking the sonar task
@@ -412,6 +417,11 @@ LOCAL void send_sonar_distance(UW distance_cm, BOOL valid)
     sonar_msg.type = MSG_SONAR_DISTANCE;
     sonar_msg.data.sonar_distance.distance_cm = distance_cm;
     sonar_msg.data.sonar_distance.valid = valid;
+
+    telemetry_snapshot.obstacle_distance_valid = valid;
+    if (valid) {
+        telemetry_snapshot.obstacle_distance_cm = distance_cm;
+    }
 
     // Drop this telemetry update if the message buffer is full.
     // Never block the safety-monitoring loop for dashboard telemetry.
