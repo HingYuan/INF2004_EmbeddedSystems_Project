@@ -458,6 +458,7 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
     bool was_scanning;
 #if TM_WIFI_JOIN
     uint64_t join_started_us = 0;
+    uint8_t reconnect_pending = 0;
 #endif
 
     (void)stacd;
@@ -596,6 +597,16 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
                 (void)cyw43_wifi_get_rssi(&cyw43_state,
                                           (int32_t *)&radio_status.link_rssi);
                 radio_status.join_result = 0;
+#if TM_WIFI_DHCP
+                if(reconnect_pending) {
+                    radio_status.dhcp_result =
+                            dhcp_start(&cyw43_state.netif[CYW43_ITF_STA]);
+                    radio_status.dhcp_complete = 0;
+                    dhcp_started_us = time_us_64();
+                    dhcp_ipv4_adopted = 0;
+                }
+#endif
+                reconnect_pending = 0;
                 mp_memory_barrir();
                 radio_status.join_complete = 1;
             } else if(link < CYW43_LINK_DOWN) {
@@ -611,12 +622,13 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #endif
 #if TM_WIFI_JOIN
         /* Auto-reconnect on link drop after successful join */
-        if(radio_status.join_complete && radio_status.join_result == 0
-           && !radio_status.link_up) {
+        if(radio_status.join_complete && !radio_status.link_up
+           && (radio_status.join_result == 0 || reconnect_pending)) {
             static uint64_t reconnect_backoff_us;
             uint64_t now_rc = time_us_64();
             if(now_rc - reconnect_backoff_us >= 5000000ULL) {
                 reconnect_backoff_us = now_rc;
+                reconnect_pending = 1;
                 join_started_us = now_rc;
                 radio_status.join_complete = 0;
 #if TM_WIFI_DHCP
@@ -624,11 +636,17 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
                 dhcp_started_us = 0;
                 dhcp_ipv4_adopted = 0;
 #endif
-                (void)cyw43_wifi_join(&cyw43_state,
-                                      sizeof(wifi_ssid) - 1, wifi_ssid,
-                                      sizeof(wifi_password) - 1, wifi_password,
-                                      UTK_WIFI_AUTH, NULL,
-                                      CYW43_CHANNEL_NONE);
+                result = cyw43_wifi_join(&cyw43_state,
+                                         sizeof(wifi_ssid) - 1, wifi_ssid,
+                                         sizeof(wifi_password) - 1, wifi_password,
+                                         UTK_WIFI_AUTH, NULL,
+                                         CYW43_CHANNEL_NONE);
+                radio_status.join_request_result = result;
+                if(result != 0) {
+                    radio_status.join_result = result;
+                    mp_memory_barrir();
+                    radio_status.join_complete = 1;
+                }
             }
         }
 #endif
