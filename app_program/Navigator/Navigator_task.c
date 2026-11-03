@@ -423,8 +423,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         // tk_dly_tsk(800);
 
-                                        mot_cmd.target_speed_left =    -36;
-                                        mot_cmd.target_speed_right =   -36;
+                                        mot_cmd.target_speed_left =    -25;
+                                        mot_cmd.target_speed_right =   -25;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -445,8 +445,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         // tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =    -36;
-                                        mot_cmd.target_speed_right =   -36;
+                                        mot_cmd.target_speed_left =    -25;
+                                        mot_cmd.target_speed_right =   -25;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -467,8 +467,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         // tk_dly_tsk(400);
 
-                                        mot_cmd.target_speed_left =     36;     // right motor weak
-                                        mot_cmd.target_speed_right =    36;
+                                        mot_cmd.target_speed_left =     25;     // right motor weak
+                                        mot_cmd.target_speed_right =    25;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
