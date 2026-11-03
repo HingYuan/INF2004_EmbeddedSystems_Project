@@ -41,7 +41,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     MOTOR_COMMAND mot_cmd;
     // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
     // MOVEMENT_MODE prev_m_mode = MODE_BARCODE_SCANNING;
-    MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
     MOVEMENT_MODE prev_m_mode = MODE_LINE_FOLLOWING;
 
     // Sensor specific telemetry cache
@@ -63,10 +63,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     B barcode_characters[NUMBER_OF_COMMANDS] = {};
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;
-    // REMOVE BELOW 
-    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT };       // Initialize instructions (fake for now)
-    // REMOVE ABOVE
-    INT instructions_count = sizeof(instructions_fake) / sizeof(DIRECTION);
+    INT instructions_count = 0;
     B barcode_count = 0;
 
     // Decision making
@@ -174,17 +171,31 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         case MSG_WIFI_BARCODE_MAPPING:      // Note for bryan & future self: packed data must look like 0bxxxx xxxx yyyy yyyy, where x is direction and y is character.
                             DIRECTION direction = n_msg.data.packed_command_mapping >> 8;      // Cast int to enum
                             B code39_char = n_msg.data.packed_command_mapping & 0x00ff;         // bitwise & mask to get least-significant 8 bits
+                                //Sends temp log for debugging purposes, can be removed later ~ Bryan
+                                tm_printf((UB *)"[nav] mapping received: %c -> %d\n",code39_char,direction);
 
                             for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
                                 if (barcode_characters[i] == code39_char) {
                                     instructions[i] = direction;
+                                    break;
+                                }
+                                if (barcode_characters[i] == 0) {
+                                    barcode_characters[i] = code39_char;
+                                    instructions[i] = direction;
+                                    if (instructions_count < NUMBER_OF_COMMANDS) {
+                                        instructions_count++;
+                                    }
+                                    break;
                                 }
                             }
 
                             // Stay in current mode if not all commands filled out (MQTT has not transmitted all the command mappings yet)
                             m_mode = MODE_LINE_FOLLOWING;
                             for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
-                                if (instructions[i] == DIR_INVALID) m_mode = MODE_WIFI_SEND_COMMS;
+                                if (barcode_characters[i] == 0 ||
+                                    instructions[i] == DIR_INVALID) {
+                                    m_mode = MODE_WIFI_SEND_COMMS;
+                                }
                             }
 
                             break;
@@ -403,7 +414,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             IR_STATE curr_ir_state = n_msg.data.ir_state;
                             // DIRECTION curr_decision = instructions[instruction_idx];
-                            DIRECTION curr_decision = instructions_fake[instruction_idx];
+                            DIRECTION curr_decision = instructions[instruction_idx];
 
                             if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                 switch (curr_decision) {

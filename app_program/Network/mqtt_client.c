@@ -107,6 +107,19 @@ static const char *movement_name(const MOTOR_COMMAND *command)
     return "UNKNOWN";
 }
 
+static DIRECTION movement_direction(const MOTOR_COMMAND *command)
+{
+    if(command->target_speed_left == 40 &&
+       command->target_speed_right == -40) return DIR_FRONT;
+    if(command->target_speed_left == -40 &&
+       command->target_speed_right == 40) return DIR_BACK;
+    if(command->target_speed_left == -40 &&
+       command->target_speed_right == -40) return DIR_LEFT;
+    if(command->target_speed_left == 40 &&
+       command->target_speed_right == 40) return DIR_RIGHT;
+    return DIR_INVALID;
+}
+
 static BOOL update_movement_mapping(const char *payload)
 {
     const char *cursor = skip_json_space(payload);
@@ -145,6 +158,21 @@ static BOOL update_movement_mapping(const char *payload)
             cursor = skip_json_space(cursor + 1);
             if(*cursor != '\0' || count == 0U) return FALSE;
             movement_active = next;
+            for(SZ key = 33U; key <= 126U; key++) {
+                if(movement_valid[next][key]) {
+                    NAVIGATOR_MESSAGE message = {0};
+                    DIRECTION direction =
+                        movement_direction(&movement_commands[next][key]);
+                    if(direction == DIR_INVALID) return FALSE;
+                    message.type = MSG_WIFI_BARCODE_MAPPING;
+                    message.data.packed_command_mapping =
+                        (UH)(((UH)direction << 8) | (UH)key);
+                    if(tk_snd_mbf(navigator_mbfid, &message,
+                                  sizeof(message), TMO_POL) < E_OK) {
+                        tm_printf((UB *)"[mqtt] mapping message dropped\n");
+                    }
+                }
+            }
             return TRUE;
         }
         if(*cursor++ != ',') return FALSE;
