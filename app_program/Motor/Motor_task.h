@@ -65,10 +65,11 @@ IMPORT volatile W enc_l_ticks;
 IMPORT volatile W enc_r_ticks;
 
 // Odometry constants
-// Wheel diameter = 65mm, 20 slots/rev -> ~10.2 mm per tick
-#define WHEEL_DIAMETER_MM    65
+// Wheel diameter = 60mm, 20 slots/rev -> ~9.4 mm per tick
+#define WHEEL_DIAMETER_MM    60
 #define ENCODER_SLOTS        20
-#define MM_PER_TICK_X10      102   // 10.2 mm per tick stored as fixed-point (x10)
+#define MM_PER_TICK_X10      94    // 9.4 mm per tick stored as fixed-point (x10)
+#define WHEELBASE_MM         100   // 100mm track width between wheels
 
 // Helper functions to get physical distance and speed
 IMPORT INT motor_get_left_dist_mm(void);
