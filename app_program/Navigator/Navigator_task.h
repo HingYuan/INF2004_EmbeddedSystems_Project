@@ -87,9 +87,10 @@ typedef struct {
 
 typedef enum {
     IMU_MSG_NONE,
+    IMU_MSG_NO_HUMP,
+    IMU_MSG_HUMP_DETECTED,
     IMU_MSG_TILT_WARNING,
     IMU_MSG_SHOCK_DETECTED,
-    IMU_MSG_HUMP_INTEGRATING
 } IMU_EVENT_TYPE;
 
 typedef struct {
@@ -112,6 +113,7 @@ typedef enum {
     MODE_BARCODE_SCANNING,          // Slow speed barcode scanning
     MODE_WIFI_SEND_COMMS,           // Wifi sending command mappings over to navigator
     MODE_LINE_FOLLOWING,            // IR is aware of line and navigator is following it
+    MODE_GOING_OVER_HUMP,           // Traversing over hump
     MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
     MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
     MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it

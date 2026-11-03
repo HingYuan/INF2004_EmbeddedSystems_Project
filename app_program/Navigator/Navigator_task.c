@@ -72,6 +72,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     // Decision making
     B num_rotations = 0;
 
+    // Hump
+    BOOL hump_pop = 0;
+    UH spam_mitigation = 0;
+    UH spam_mitigation_threshold = 10;
+
     // Obstacle
     BOOL scan_requested = FALSE;
     BYPASS_PHASE bypass_phase = BYPASS_TURN_OUT;
@@ -293,11 +298,65 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             break;
                         case MSG_IMU_UPDATE:
-                            last_pitch_deg = n_msg.data.imu_telemetry_msg.pitch_deg;
-                            last_roll_deg = n_msg.data.imu_telemetry_msg.roll_deg;
-                            break;
+                            if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_HUMP_DETECTED) {
+                                m_mode = MODE_GOING_OVER_HUMP;
+                            }
 
-                            // Ignore other states
+                            break;
+                        default:
+
+                            break;
+                    }
+
+                    break;
+
+                case MODE_GOING_OVER_HUMP:
+                    VB left_speed = 40;
+                    VB right_speed = -40;
+
+                    VB pitch = n_msg.data.imu_telemetry_msg.pitch_deg;
+                    VB roll = n_msg.data.imu_telemetry_msg.roll_deg;
+
+                    switch (n_msg.data.imu_telemetry_msg.event) {
+                        case IMU_MSG_HUMP_DETECTED:
+                            if (pitch < 0) {
+                                mot_cmd.target_speed_left =  (left_speed + pitch) > 10 ? left_speed + pitch : 10;
+                                mot_cmd.target_speed_right = -40;
+                            } else {
+                                mot_cmd.target_speed_left =  40;
+                                mot_cmd.target_speed_right = (right_speed + pitch) < -10 ? right_speed + pitch : -10;
+                            }
+
+                            if (roll < -10 && hump_pop != 1) {
+                                hump_pop = 1;
+                            } else if (roll > 10 && hump_pop != 0) {
+                                hump_pop = 0;
+                            }
+
+                            tm_printf("left: %d, right: %d\n", mot_cmd.target_speed_left, mot_cmd.target_speed_right);
+                            
+                            mot_cmd.turn_ticks_left =        0;
+                            mot_cmd.turn_ticks_right =       0;
+
+                            spam_mitigation++;
+                            if (spam_mitigation > spam_mitigation_threshold) {
+                                tm_printf("SENT\n\n");
+                                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                spam_mitigation = 0;
+                            }
+
+                            break;
+                        case IMU_MSG_NO_HUMP:
+                            tm_printf("NO HUMP RECEIVED\n");
+                            if (hump_pop == 0) {
+                                tm_printf("RECOVERED\n");
+                                m_mode = MODE_LINE_FOLLOWING;
+                            } else {
+                                mot_cmd.turn_ticks_left =        0;
+                                mot_cmd.turn_ticks_right =       0;
+
+                                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                            }
 
                             break;
                     }
@@ -414,7 +473,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         mot_cmd.turn_ticks_right =       0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        tm_printf("MESSGE SENT TO MOTOR \n");
 
                                         break;
                                     default:
@@ -589,6 +647,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                 }
             }
 
+            // tm_printf("%d ", m_mode);
+
             // Update shared telemetry snapshot
             telemetry_snapshot.speed_left = curr_speed_left;
             telemetry_snapshot.speed_right = curr_speed_right;
@@ -617,12 +677,5 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             // Fatal RTOS error occurred (e.g., buffer was deleted or ID is invalid)
 
         }
-
-        // Add code to send m_mode to wifi driver
-        if (m_mode != prev_m_mode) {
-            // Send telemetry
-
-        }   
-
     }
 }
