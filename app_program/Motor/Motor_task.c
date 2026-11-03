@@ -153,13 +153,15 @@ EXPORT void motor_task(INT stacd, void *exinf)
 		}
 	}
 
-	// Set up Encoder Pins (inputs)
+	// Set up Encoder Pins (inputs with pull-up & Schmitt trigger)
 	for(i = 0; i < 4; i++) {
 		if(gpio_set_pin(encoder_pins[i], GPIO_MODE_IN) < E_OK) {
 			tm_printf((UB *)"[motors] encoder GPIO setup failed on GP%d\n",
 				  encoder_pins[i]);
 			tk_ext_tsk();
 		}
+		// Enable pull-up and Schmitt trigger (vital for ADC pins GP26/GP27)
+		set_w(GPIO(encoder_pins[i]), GPIO_IE | GPIO_PUE | GPIO_SHEMITT);
 	}
 
 	left_state = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
@@ -171,23 +173,17 @@ EXPORT void motor_task(INT stacd, void *exinf)
 		UINT next_left = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
 		UINT next_right = read_encoder_state(MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B);
 
-		// When motor is powered, count Channel A edges in driven direction
-		// so simultaneous A/B flips (00->11) or high-speed aliasing never drop or subtract ticks.
-		if (out_l != 0) {
-			if ((left_state ^ next_left) & 2U) {
-				enc_l_ticks += (out_l > 0) ? 1 : -1;
-			}
-		} else {
-			enc_l_ticks += quadrature_delta(left_state, next_left);
+		// Count ticks: detects rising edge on either Channel A (bit 1) or Channel B (bit 0)
+		// Works reliably even if optical sensor wire is on pin A or pin B
+		UINT diff_l = left_state ^ next_left;
+		if (diff_l & next_left) {
+			enc_l_ticks += (out_l > 0) ? 1 : (out_l < 0 ? -1 : 1);
 		}
 
-		// Right motor is mirrored on chassis: negative PWM drives forward (+1), positive drives backward (-1)
-		if (out_r != 0) {
-			if ((right_state ^ next_right) & 2U) {
-				enc_r_ticks += (out_r < 0) ? 1 : -1;
-			}
-		} else {
-			enc_r_ticks -= quadrature_delta(right_state, next_right);
+		UINT diff_r = right_state ^ next_right;
+		if (diff_r & next_right) {
+			// Right motor mirrored: negative PWM is forward (+1), positive is backward (-1)
+			enc_r_ticks += (out_r < 0) ? 1 : (out_r > 0 ? -1 : 1);
 		}
 
 		left_state = next_left;
@@ -393,6 +389,27 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					(turn_goal_r == 0) ||
 					(iabs((INT)(enc_r_ticks - turn_start_r)) >= turn_goal_r);
 
+				// Symmetrical in-place turn: stop both when turn angle reached (prevents one wheel running away)
+				BOOL turn_finished = (turn_goal_l > 0 && turn_goal_r > 0) ?
+					(left_done || right_done) : (left_done && right_done);
+
+				if (turn_finished) {
+					out_l = 0;
+					out_r = 0;
+					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
+					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
+
+					turn_goal_l = 0;
+					turn_goal_r = 0;
+
+					// Report completion after braking
+					move_done_pending = TRUE;
+					move_stable_periods = 0;
+
+					SET_STATE(MS_BRAKE);
+					break;
+				}
+
 				// Stop each wheel individually at its target
 				out_l = left_done ? 0 : tgt_l;
 				out_r = right_done ? 0 : tgt_r;
@@ -412,18 +429,6 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
 				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
-
-				// Both wheels have reached their targets
-				if (left_done && right_done) {
-					turn_goal_l = 0;
-					turn_goal_r = 0;
-
-					// Report completion after braking
-					move_done_pending = TRUE;
-					move_stable_periods = 0;
-
-					SET_STATE(MS_BRAKE);
-				}
 
 				break;
 			}

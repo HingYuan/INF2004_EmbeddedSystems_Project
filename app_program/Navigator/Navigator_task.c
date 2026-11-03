@@ -428,8 +428,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         mot_cmd.target_speed_left =    -36;
                                         mot_cmd.target_speed_right =   -36;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.turn_ticks_left =        20;
+                                        mot_cmd.turn_ticks_right =       20;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                         curr_speed_left = mot_cmd.target_speed_left;
