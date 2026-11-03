@@ -264,7 +264,19 @@ EXPORT void motor_task(INT stacd, void *exinf)
 						integ_l = integ_r = 0;
 						stall_cnt = 0;
 
-						SET_STATE(MS_ACCEL);
+						// SET_STATE(MS_ACCEL);
+						out_l = tgt_l;
+						out_r = tgt_r;
+						set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
+						set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
+
+						if (turn_goal_l != 0 || turn_goal_r != 0) {
+							turn_start_l = enc_l_ticks;
+							turn_start_r = enc_r_ticks;
+							SET_STATE(MS_TURN);
+						} else {
+							SET_STATE(MS_CRUISE);
+						}
 					}
 					break;
 
@@ -397,7 +409,20 @@ EXPORT void motor_task(INT stacd, void *exinf)
 						stall_cnt = 0;
 						move_done_pending = FALSE; // Cancel any prior turn completion
 						
-						SET_STATE(MS_ACCEL);
+						// SET_STATE(MS_ACCEL);
+						// break;
+						out_l = tgt_l;
+						out_r = tgt_r;
+						set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
+						set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
+
+						if (turn_goal_l != 0 || turn_goal_r != 0) {
+							turn_start_l = enc_l_ticks;
+							turn_start_r = enc_r_ticks;
+							SET_STATE(MS_TURN);
+						} else {
+							SET_STATE(MS_CRUISE);
+						}
 						break;
 					}
 					
