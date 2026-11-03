@@ -408,7 +408,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             // DIRECTION curr_decision = instructions[instruction_idx];
                             DIRECTION curr_decision = instructions_fake[instruction_idx];
 
-                            if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
+                            if (prev_ir_state == STATE_B_B && num_rotations == 0) {       // start turn once per junction
                                 switch (curr_decision) {
                                     case DIR_FRONT:
                                         m_mode = MODE_LINE_FOLLOWING;
@@ -517,6 +517,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                             break;
                         }
+                        case MSG_MOTOR_MOVE_DONE:
+                            curr_speed_left = 0;
+                            curr_speed_right = 0;
+
+                            tk_dly_tsk(250);
+
+                            if (++instruction_idx > instructions_count) { instruction_idx--; }
+
+                            num_rotations = 0;
+                            prev_ir_state = STATE_NULL;
+                            m_mode = MODE_LINE_FOLLOWING;
+                            break;
                         default:
                             
                             break;

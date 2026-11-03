@@ -10,17 +10,12 @@
 // #define MOTOR_PWM_WRAP  6249U
 #define MOTOR_PWM_WRAP  3124U		// halved the PWM wrap. Below I also maintained the PWM duty cycle. Testing stuff
 
-#define CTRL_PERIOD_MS          8   /* state machine / PI period */
-#define RAMP_STEP_PCT           200  /* ACCEL: +20% per period. Increased from 5% */
-#define BRAKE_STEP_PCT          200  /* BRAKE: -20% per period, increased from 10% */
-#define TICKS_PER_PERIOD_AT_100 2   /* TUNE: encoder ticks per 20 ms at 100% */
-#define KP                      1    /* TUNE */
-#define KI                      1    /* TUNE */
-#define INTEG_MAX               30
+#define CTRL_PERIOD_MS          8   /* state machine period */
+#define BRAKE_STEP_PCT          200  /* BRAKE: immediate stop */
 #define STALL_MIN_PCT           10   /* only check stall above this power */
-#define STALL_PERIODS           50   /* 25 x 20 ms = 0.5 s with no ticks = stall */
+#define STALL_PERIODS           125  /* 125 x 8 ms = 1.0 s with no ticks = stall */
 
-typedef enum { MS_IDLE, MS_ACCEL, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
+typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 
 #define SET_STATE(s) do { state = (s); tm_printf((UB *)"[motors] state=%d\n", (INT)(s)); } while(0)
 
@@ -89,39 +84,12 @@ EXPORT INT motor_get_avg_dist_mm(void)
 
 LOCAL INT iabs(INT v) { return v < 0 ? -v : v; }
 
-LOCAL INT clamp(INT v, INT lo, INT hi)
-{
-	return v < lo ? lo : (v > hi ? hi : v);
-}
-
 /* Move cur toward target by at most step */
 LOCAL INT ramp(INT cur, INT target, INT step)
 {
 	if(cur < target) return (target - cur < step) ? target : cur + step;
 	if(cur > target) return (cur - target < step) ? target : cur - step;
 	return cur;
-}
-
-/* PI speed loop: target is feed-forward, encoder error corrects it. */
-LOCAL INT pi_speed(INT target_pct, W measured, INT *integ)
-{
-	if(target_pct == 0) {
-		*integ = 0;
-		return 0;
-	}
-	
-	INT target_mag = iabs(target_pct);
-	INT measured_mag = iabs((INT)measured);
-	INT want_ticks_x10 = (target_mag * TICKS_PER_PERIOD_AT_100 * 10) / 100;
-	INT measured_ticks_x10 = measured_mag * 10;
-	INT err_x10 = want_ticks_x10 - measured_ticks_x10;
-
-	*integ = clamp(*integ + (err_x10 / 10), -INTEG_MAX, INTEG_MAX);
-	INT effort = target_mag + (KP * err_x10) / 10 + KI * (*integ);
-	effort = clamp(effort, 0, 100);
-
-	// Return output with the original direction sign
-	return (target_pct < 0) ? -effort : effort;
 }
 
 /* TRUE when a wheel is powered but its encoder has not moved for STALL_PERIODS */
@@ -150,8 +118,6 @@ EXPORT void motor_task(INT stacd, void *exinf)
 	MOTOR_STATE state = MS_IDLE;
 	INT tgt_l = 0, tgt_r = 0;       /* target % from Navigator */
 	INT out_l = 0, out_r = 0;       /* % actually sent to PWM */
-	INT integ_l = 0, integ_r = 0;
-	INT trim_bias = 0;             /* dual-motor balancing trim (Section 6.3) */
 	W prev_l = 0, prev_r = 0;
 
 	W turn_start_l = 0;
@@ -205,9 +171,25 @@ EXPORT void motor_task(INT stacd, void *exinf)
 		UINT next_left = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
 		UINT next_right = read_encoder_state(MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B);
 
-		enc_l_ticks += quadrature_delta(left_state, next_left);
-		// Right motor/encoder is mirrored on chassis: invert delta so forward roll counts up on both
-		enc_r_ticks -= quadrature_delta(right_state, next_right);
+		// When motor is powered, count Channel A edges in driven direction
+		// so simultaneous A/B flips (00->11) or high-speed aliasing never drop or subtract ticks.
+		if (out_l != 0) {
+			if ((left_state ^ next_left) & 2U) {
+				enc_l_ticks += (out_l > 0) ? 1 : -1;
+			}
+		} else {
+			enc_l_ticks += quadrature_delta(left_state, next_left);
+		}
+
+		// Right motor is mirrored on chassis: negative PWM drives forward (+1), positive drives backward (-1)
+		if (out_r != 0) {
+			if ((right_state ^ next_right) & 2U) {
+				enc_r_ticks += (out_r < 0) ? 1 : -1;
+			}
+		} else {
+			enc_r_ticks -= quadrature_delta(right_state, next_right);
+		}
+
 		left_state = next_left;
 		right_state = next_right;
 
@@ -308,39 +290,19 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 					turn_goal_l = cmd.turn_ticks_left;
 					turn_goal_r = cmd.turn_ticks_right;
+					turn_start_l = enc_l_ticks;
+					turn_start_r = enc_r_ticks;
 
-					integ_l = integ_r = 0;
 					stall_cnt = 0;
+					out_l = tgt_l;
+					out_r = tgt_r;
 
-					SET_STATE(MS_ACCEL);
-				}
-				break;
+					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
+					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
 
-			case MS_ACCEL:
-				if(new_cmd) {
-					tgt_l = cmd.target_speed_left;
-					tgt_r = cmd.target_speed_right;
-
-					turn_goal_l = cmd.turn_ticks_left;
-					turn_goal_r = cmd.turn_ticks_right;
-					
-					if(tgt_l == 0 && tgt_r == 0) { SET_STATE(MS_BRAKE); break; }
-				}
-
-				out_l = ramp(out_l, tgt_l, RAMP_STEP_PCT);
-				out_r = ramp(out_r, tgt_r, RAMP_STEP_PCT);
-
-				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
-				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
-
-				if(out_l == tgt_l && out_r == tgt_r) {
-					if(turn_goal_l != 0 || turn_goal_r != 0) {
-						turn_start_l = enc_l_ticks;
-						turn_start_r = enc_r_ticks;
-
+					if (turn_goal_l != 0 || turn_goal_r != 0) {
 						SET_STATE(MS_TURN);
-					}
-					else {
+					} else {
 						SET_STATE(MS_CRUISE);
 					}
 				}
@@ -353,14 +315,17 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 					if(tgt_l == 0 && tgt_r == 0) { SET_STATE(MS_BRAKE); break; }
 
-					integ_l = integ_r = 0;
-
 					if(cmd.turn_ticks_left != 0 || cmd.turn_ticks_right != 0) {
 						turn_goal_l = cmd.turn_ticks_left;
 						turn_goal_r = cmd.turn_ticks_right;
 
 						turn_start_l = enc_l_ticks;
 						turn_start_r = enc_r_ticks;
+
+						out_l = tgt_l;
+						out_r = tgt_r;
+						set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
+						set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
 						
 						SET_STATE(MS_TURN);
 						break;
@@ -368,8 +333,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					/* else: steering adjustment, new targets, stay in CRUISE */
 				}
 
-				out_l = pi_speed(tgt_l, dl, &integ_l);
-				out_r = pi_speed(tgt_r, dr, &integ_r);
+				out_l = tgt_l;
+				out_r = tgt_r;
 
 				// Driving straight forward means opposite signs (e.g. +50 left, -50 right)
 				if(tgt_l == -tgt_r && tgt_l != 0) {
@@ -378,18 +343,6 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					   (dr == 0 && iabs((INT)dl) > 1)) {
 						encoder_degraded = TRUE;
 						motor_fault_word |= FAULT_BIT_ENCODER; // Set Bit 1 (Sensor failed)
-						out_l = (tgt_l > 0) ? 20 : -20;
-						out_r = (tgt_r > 0) ? 20 : -20;
-					}
-
-					// Dual-motor balancing trim when driving straight (Section 6.3)
-					if(!encoder_degraded) {
-						INT diff = iabs((INT)dl) - iabs((INT)dr);
-						if(diff > 0 && trim_bias > -15) trim_bias--;      // Left faster: reduce left
-						else if(diff < 0 && trim_bias < 15) trim_bias++;  // Right faster: boost left
-
-						out_l = clamp(out_l + trim_bias, -100, 100);
-						out_r = clamp(out_r + trim_bias, -100, 100);
 					}
 				}
 
@@ -412,21 +365,24 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 			case MS_TURN: {
 				if(new_cmd){
-					tgt_l = cmd.target_speed_left;
-					tgt_r = cmd.target_speed_right;
-
 					// If Navigator says stop, abort turn immediately
-					if(tgt_l == 0 && tgt_r == 0) {
+					if(cmd.target_speed_left == 0 && cmd.target_speed_right == 0) {
+						tgt_l = tgt_r = 0;
 						turn_goal_l = turn_goal_r = 0;
 						move_done_pending = FALSE;
 						SET_STATE(MS_BRAKE);
 						break;
 					}
-					// If Navigator sent new turn goals, update starting ticks
-					turn_goal_l = cmd.turn_ticks_left;
-					turn_goal_r = cmd.turn_ticks_right;
-					turn_start_l = enc_l_ticks;
-					turn_start_r = enc_r_ticks;
+					// Only reset turn_start if command parameters actually changed
+					if(cmd.target_speed_left != tgt_l || cmd.target_speed_right != tgt_r ||
+					   cmd.turn_ticks_left != turn_goal_l || cmd.turn_ticks_right != turn_goal_r) {
+						tgt_l = cmd.target_speed_left;
+						tgt_r = cmd.target_speed_right;
+						turn_goal_l = cmd.turn_ticks_left;
+						turn_goal_r = cmd.turn_ticks_right;
+						turn_start_l = enc_l_ticks;
+						turn_start_r = enc_r_ticks;
+					}
 				}
 				// Check each wheel's encoder target
 				BOOL left_done =
@@ -478,12 +434,22 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					tgt_r = cmd.target_speed_right;
 					turn_goal_l = cmd.turn_ticks_left;
 					turn_goal_r = cmd.turn_ticks_right;
+					turn_start_l = enc_l_ticks;
+					turn_start_r = enc_r_ticks;
 					
-					integ_l = integ_r = 0;
 					stall_cnt = 0;
 					move_done_pending = FALSE; // Cancel any prior turn completion
+					out_l = tgt_l;
+					out_r = tgt_r;
+
+					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
+					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
 					
-					SET_STATE(MS_ACCEL);
+					if (turn_goal_l != 0 || turn_goal_r != 0) {
+						SET_STATE(MS_TURN);
+					} else {
+						SET_STATE(MS_CRUISE);
+					}
 					break;
 				}
 
