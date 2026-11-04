@@ -127,20 +127,31 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
 		return;
 	}
 
+    IR_STATE prev_ir_sent = STATE_NULL;
+    INT keepalive = 0;
+
     while(1) {
 		INT left_state = (INT)gpio_get_val((UINT)pin_left);
         INT right_state = (INT)gpio_get_val((UINT)pin_right);
 
-        NAVIGATOR_MESSAGE nm;
-        nm.type = MSG_IR_UPDATE;
-        if (left_state == 1 && right_state == 1) nm.data.ir_state = STATE_B_B;          // Black-black
-        else if (left_state == 0 && right_state == 0) nm.data.ir_state = STATE_W_W;     // White-white
-        else if (left_state == 1 && right_state == 0) nm.data.ir_state = STATE_B_W;     // Black-white
-        else nm.data.ir_state = STATE_W_B;                                              // White-black
+        IR_STATE current_ir;
+        if (left_state == 1 && right_state == 1) current_ir = STATE_B_B;          // Black-black
+        else if (left_state == 0 && right_state == 0) current_ir = STATE_W_W;     // White-white
+        else if (left_state == 1 && right_state == 0) current_ir = STATE_B_W;     // Black-white
+        else current_ir = STATE_W_B;                                              // White-black
         
-        tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+        // Dispatch immediately on state transition or every 50ms keepalive
+        if (current_ir != prev_ir_sent || ++keepalive >= 5) {
+            NAVIGATOR_MESSAGE nm;
+            nm.type = MSG_IR_UPDATE;
+            nm.data.ir_state = current_ir;
+            tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
+            prev_ir_sent = current_ir;
+            keepalive = 0;
+        }
 
-        tk_dly_tsk(10);
+        // 10ms sampling (100Hz) catches thin black tape instantly
+        tk_dly_tsk(1);
     }
 }
 
