@@ -42,16 +42,20 @@ curr_speed_right = mot_cmd.target_speed_right;
 }
 */
 
+/*
+CHANGE m_mode
+CHANGE instruction_count
+CHANGE from instructions_fake to instructions
+*/
+
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
     // General
     NAVIGATOR_MESSAGE n_msg;
     INT message_size;
     MOTOR_COMMAND mot_cmd;
-    // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
-    // MOVEMENT_MODE prev_m_mode = MODE_BARCODE_SCANNING;
     MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    MOVEMENT_MODE prev_m_mode = MODE_LINE_FOLLOWING;
+    // MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
 
     // Sensor specific telemetry cache
     char last_decoded_char = 0;
@@ -68,13 +72,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     UH turning_rampup_count = 0;
 
     // Barcode decoding
-    UB instruction_idx = 0;                                                     // Iterate through instructions for each intersection
+    B instruction_idx = 0;                                                     // Iterate through instructions for each intersection
     B barcode_characters[NUMBER_OF_COMMANDS] = {};                              // Character key, sent from wifi
     DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                    // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                    // 
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
+    // DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT };
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;     // Preset all instructions as DIR_INVALID
     B instructions_count = 0;
+    // B instructions_count = 4;
     // B barcode_count = 0;
 
     // Decision making
@@ -143,6 +149,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 barcode_characters[mapping_increment] = code39_char;
                                 barcode_instructions[mapping_increment] = direction;
                                 mapping_increment++;
+                                instructions_count++;
 
                                 if (mapping_increment >= NUMBER_OF_COMMANDS) m_mode = MODE_BARCODE_SCANNING;
 
@@ -236,7 +243,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         switch (n_msg.type) {
                             case MSG_IR_UPDATE:
                                 IR_STATE curr_state = n_msg.data.ir_state;
-                                tm_printf("%d\n", curr_state);
 
                                     if (curr_state != prev_ir_state) {
 
@@ -395,7 +401,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                        tk_dly_tsk(750);
+                        tk_dly_tsk(400);
 
                         mot_cmd.target_speed_left =     0;
                         mot_cmd.target_speed_right =   -0;
@@ -420,8 +426,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE:
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
-                                // DIRECTION curr_decision = instructions[instruction_idx];
                                 DIRECTION curr_decision = instructions[instruction_idx];
+                                // DIRECTION curr_decision = instructions_fake[instruction_idx];
 
                                 if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                     switch (curr_decision) {
@@ -462,6 +468,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                             break;
+                                        case DIR_STOP:
+                                            num_rotations = 0;
+                                           
                                         default:
                                             m_mode = MODE_LINE_FOLLOWING;
 
@@ -486,8 +495,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         tk_dly_tsk(250);
 
-                                        if (++instruction_idx > instructions_count) { instruction_idx--; }      // Linger on last instruction on overflow
+                                        if (++instruction_idx >= instructions_count) { instruction_idx--; }      // Linger on last instruction on overflow
 
+                                        tm_printf("INSTRUCTIONS: %d %d\n", instruction_idx, instructions_count);
                                         // Reset variables
                                         num_rotations = 0;
                                         prev_ir_state = STATE_NULL;
