@@ -230,6 +230,8 @@ typedef struct {
     // Sensor Specific: IMU
     float    pitch_deg;         // Vehicle pitch
     float    roll_deg;          // Vehicle roll
+    uint8_t  imu_state;             // IMU_FSM_STATE enum
+    float    estimated_height_cm;   // Peak/current hump height in cm
     uint8_t  imu_event;         // IMU_EVENT_TYPE enum
 } TELEMETRY_SNAPSHOT;
 
