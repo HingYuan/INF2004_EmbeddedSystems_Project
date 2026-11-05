@@ -510,6 +510,6 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			}
 		}
 
-		tk_dly_tsk(1);
+		tk_dly_tsk(2);
 	}
 }

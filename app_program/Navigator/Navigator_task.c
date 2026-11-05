@@ -19,6 +19,9 @@ void clear_navigator_mbf() {
     while (tk_rcv_mbf(navigator_mbfid, &discard_msg, TMO_POL) >= 0) { }
 }
 
+/*
+Note for Bryan, rmb to remove mqtt_get_movement_for_barcode function from network code
+
 static BOOL execute_mapped_barcode(B barcode, MOTOR_COMMAND *command)
 {
     if(!mqtt_get_movement_for_barcode((char)barcode, command)) {
@@ -31,7 +34,13 @@ static BOOL execute_mapped_barcode(B barcode, MOTOR_COMMAND *command)
         return FALSE;
     }
     return TRUE;
+
+
+In case you need it
+curr_speed_left = mot_cmd.target_speed_left;
+curr_speed_right = mot_cmd.target_speed_right;
 }
+*/
 
 EXPORT void navigator_task(INT stacd, void *exinf) 
 {
@@ -59,12 +68,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     UH turning_rampup_count = 0;
 
     // Barcode decoding
-    UB instruction_idx = 0;
-    B barcode_characters[NUMBER_OF_COMMANDS] = {};
-    DIRECTION instructions[NUMBER_OF_COMMANDS] = {};
-    for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;
-    INT instructions_count = 0;
-    B barcode_count = 0;
+    UB instruction_idx = 0;                                                     // Iterate through instructions for each intersection
+    B barcode_characters[NUMBER_OF_COMMANDS] = {};                              // Character key, sent from wifi
+    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                    // Instruction mapping, sent from wifi
+    B mapping_increment = 0;                                                    // 
+    DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
+    for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;     // Preset all instructions as DIR_INVALID
+    B instructions_count = 0;
+    // B barcode_count = 0;
 
     // Decision making
     B num_rotations = 0;
@@ -98,9 +109,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     mot_cmd = n_msg.data.remote_cmd;
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-
-                    // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                    // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
                 }
             } else if (n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
@@ -114,8 +122,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         instruction_idx = 0;
 
                         // Stop car
-                        mot_cmd.target_speed_left =      0;
-                        mot_cmd.target_speed_right =     0;
+                        mot_cmd.target_speed_left =      STOP_SPEED;
+                        mot_cmd.target_speed_right =     STOP_SPEED;
                         mot_cmd.turn_ticks_left =        0;
                         mot_cmd.turn_ticks_right =       0;
 
@@ -125,33 +133,42 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_WIFI_BARCODE_MAPPING:      // Note for bryan & future self: packed data must look like 0bxxxx xxxx yyyy yyyy, where x is direction and y is character.
                                 DIRECTION direction = n_msg.data.packed_command_mapping >> 8;      // Cast int to enum
                                 B code39_char = n_msg.data.packed_command_mapping & 0x00ff;        // bitwise & mask to get least-significant 8 bits
+
+                                // Capitalize lowercase characters
+                                if (code39_char >= 'a' && code39_char <= 'z') code39_char = code39_char - 32;
                                 
                                 //Sends temp log for debugging purposes, can be removed later ~ Bryan
                                 tm_printf((UB *)"[nav] mapping received: %c -> %d\n",code39_char,direction);
 
-                                for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
-                                    if (barcode_characters[i] == code39_char) {
-                                        instructions[i] = direction;
-                                        break;
-                                    }
-                                    if (barcode_characters[i] == 0) {
-                                        barcode_characters[i] = code39_char;
-                                        instructions[i] = direction;
-                                        if (instructions_count < NUMBER_OF_COMMANDS) {
-                                            instructions_count++;
-                                        }
-                                        break;
-                                    }
-                                }
+                                barcode_characters[mapping_increment] = code39_char;
+                                barcode_instructions[mapping_increment] = direction;
+                                mapping_increment++;
 
-                                // Stay in current mode if not all commands filled out (MQTT has not transmitted all the command mappings yet)
-                                m_mode = MODE_BARCODE_SCANNING;
-                                for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
-                                    if (barcode_characters[i] == 0 ||
-                                        instructions[i] == DIR_INVALID) {
-                                        m_mode = MODE_WIFI_SEND_COMMS;
-                                    }
-                                }
+                                if (mapping_increment >= NUMBER_OF_COMMANDS) m_mode = MODE_BARCODE_SCANNING;
+
+                                // for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                //     if (barcode_characters[i] == code39_char) {
+                                //         instructions[i] = direction;
+                                //         break;
+                                //     }
+                                //     if (barcode_characters[i] == 0) {
+                                //         barcode_characters[i] = code39_char;
+                                //         instructions[i] = direction;
+                                //         if (instructions_count < NUMBER_OF_COMMANDS) {
+                                //             instructions_count++;
+                                //         }
+                                //         break;
+                                //     }
+                                // }
+
+                                // // Stay in current mode if not all commands filled out (MQTT has not transmitted all the command mappings yet)
+                                // m_mode = MODE_BARCODE_SCANNING;
+                                // for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                //     if (barcode_characters[i] == 0 ||
+                                //         instructions[i] == DIR_INVALID) {
+                                //         m_mode = MODE_WIFI_SEND_COMMS;
+                                //     }
+                                // }
 
                                 break;
                             default:
@@ -165,8 +182,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE:
                                 switch (n_msg.data.ir_state) {
                                     case STATE_W_B:
-                                        mot_cmd.target_speed_left =     40;
-                                        mot_cmd.target_speed_right =   -28;
+                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BASE;
+                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BASE;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -174,8 +191,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         break;
                                     case STATE_B_W:
-                                        mot_cmd.target_speed_left =     28;
-                                        mot_cmd.target_speed_right =   -40;
+                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BASE;
+                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BASE;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -183,8 +200,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         break;
                                     default:
-                                        mot_cmd.target_speed_left =     30;
-                                        mot_cmd.target_speed_right =   -30;
+                                        mot_cmd.target_speed_left =     FORWARD_SPEED_BARCODE;
+                                        mot_cmd.target_speed_right =   -FORWARD_SPEED_BARCODE;
                                         mot_cmd.turn_ticks_left =        0;
                                         mot_cmd.turn_ticks_right =       0;
 
@@ -196,12 +213,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
                             case MSG_BARCODE_DECODED:
                                 last_decoded_char = (char)n_msg.data.decoded_char;
-                                if(execute_mapped_barcode(n_msg.data.decoded_char, &mot_cmd)) {
-                                    // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                                    // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
-                                    if(mot_cmd.target_speed_left == 0 &&
-                                    mot_cmd.target_speed_right == 0) {
-                                        m_mode = MODE_SAFE_STOP;
+
+                                // Map detected character to instruction, then add to instruction array
+                                for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                    if (last_decoded_char == barcode_characters[i]) {
+                                        instructions[instruction_idx] = barcode_instructions[i];
+                                        instruction_idx++;
+                                    }
+
+                                    // If max instructions recorded
+                                    if (instruction_idx > NUMBER_OF_COMMANDS) {
+                                        m_mode = MODE_LINE_FOLLOWING;
+                                        instruction_idx = 0;
                                     }
                                 }
 
@@ -211,19 +234,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         break;
                     case MODE_LINE_FOLLOWING:
                         switch (n_msg.type) {
-                            // BRYAN WE NEED TO TALK
-                            // case MSG_BARCODE_DECODED:
-                            //     last_decoded_char = (char)n_msg.data.decoded_char;
-                            //     if(execute_mapped_barcode(n_msg.data.decoded_char, &mot_cmd)) {
-                            //         curr_speed_left = mot_cmd.target_speed_left;
-                            //         curr_speed_right = mot_cmd.target_speed_right;
-                            //         if(mot_cmd.target_speed_left == 0 &&
-                            //         mot_cmd.target_speed_right == 0) {
-                            //             m_mode = MODE_SAFE_STOP;
-                            //         }
-                            //     }
-
-                            //     break;
                             case MSG_IR_UPDATE:
                                 IR_STATE curr_state = n_msg.data.ir_state;
                                 tm_printf("%d\n", curr_state);
@@ -233,41 +243,39 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     if (curr_state == STATE_W_W) {
                                         turning_rampup_count = 0;
 
-                                        mot_cmd.target_speed_left =     30;
-                                        mot_cmd.target_speed_right =   -30;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     FORWARD_SPEED;
+                                        mot_cmd.target_speed_right =   -FORWARD_SPEED;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     } else if (curr_state == STATE_W_B) {
                                         // Car veering left, adjust right
-                                        mot_cmd.target_speed_left =     40;
-                                        mot_cmd.target_speed_right =   -25;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BASE;
+                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BASE;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     } else if (curr_state == STATE_B_W) {
                                         // Car veering right, adjust left
-                                        mot_cmd.target_speed_left =     25;
-                                        mot_cmd.target_speed_right =   -40;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BASE;
+                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BASE;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     } else if (curr_state == STATE_B_B) {
                                         turning_rampup_count = 0;
 
                                         // Car at instersection
-                                        mot_cmd.target_speed_left =      0;
-                                        mot_cmd.target_speed_right =    -0;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     STOP_SPEED;
+                                        mot_cmd.target_speed_right =   -STOP_SPEED;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                                        // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
-                                        
+
                                         m_mode = MODE_DECISION_MAKING_ADVANCE;
                                     } else {
                                         // Errorneous state
@@ -286,15 +294,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         if (turning_rampup_count == TURNING_RAMPUP_LIMIT) {
                                             turning_rampup_count++;     
 
-                                            mot_cmd.turn_ticks_left =        0;
-                                            mot_cmd.turn_ticks_right =       0;
+                                            mot_cmd.turn_ticks_left =   0;
+                                            mot_cmd.turn_ticks_right =  0;
                                             
                                             if (curr_state == STATE_B_W) {
-                                                mot_cmd.target_speed_left =     25;
-                                                mot_cmd.target_speed_right =   -50;
+                                                mot_cmd.target_speed_left =     LEFT_TURN_L_RAMP;
+                                                mot_cmd.target_speed_right =   -LEFT_TURN_R_RAMP;
                                             } else if (curr_state == STATE_W_B) {
-                                                mot_cmd.target_speed_left =     50;
-                                                mot_cmd.target_speed_right =   -25;
+                                                mot_cmd.target_speed_left =     RIGHT_TURN_L_RAMP;
+                                                mot_cmd.target_speed_right =   -RIGHT_TURN_R_RAMP;
                                             }
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
@@ -326,8 +334,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         break;
 
                     case MODE_GOING_OVER_HUMP:
-                        VB left_speed = 40;
-                        VB right_speed = -40;
+                        VB left_speed =     FORWARD_SPEED;
+                        VB right_speed =   -FORWARD_SPEED;
 
                         VB pitch = n_msg.data.imu_telemetry_msg.pitch_deg;
                         VB roll = n_msg.data.imu_telemetry_msg.roll_deg;
@@ -336,10 +344,10 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case IMU_MSG_HUMP_DETECTED:
                                 if (pitch < 0) {
                                     mot_cmd.target_speed_left =  (left_speed + pitch) > 10 ? left_speed + pitch : 10;
-                                    mot_cmd.target_speed_right = -40;
+                                    mot_cmd.target_speed_right = -right_speed;
                                 } else {
-                                    mot_cmd.target_speed_left =  40;
-                                    mot_cmd.target_speed_right = (right_speed + pitch) < -10 ? right_speed + pitch : -10;
+                                    mot_cmd.target_speed_left =  left_speed;
+                                    mot_cmd.target_speed_right = -((right_speed - pitch) < -10 ? right_speed - pitch : -10);
                                 }
 
                                 if (roll < -10 && hump_pop != 1) {
@@ -355,7 +363,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 spam_mitigation++;
                                 if (spam_mitigation > spam_mitigation_threshold) {
-                                    // tm_printf("SENT\n\n");
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                     spam_mitigation = 0;
                                 }
@@ -381,25 +388,21 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     case MODE_DECISION_MAKING_ADVANCE:
                         tk_dly_tsk(250);
 
-                        mot_cmd.target_speed_left =     35;
-                        mot_cmd.target_speed_right =   -35;
-                        mot_cmd.turn_ticks_left =        0;
-                        mot_cmd.turn_ticks_right =       0;
+                        mot_cmd.target_speed_left =     FORWARD_SPEED;
+                        mot_cmd.target_speed_right =   -FORWARD_SPEED;
+                        mot_cmd.turn_ticks_left =       0;
+                        mot_cmd.turn_ticks_right =      0;
 
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                        // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                        // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
 
-                        tk_dly_tsk(700);
+                        tk_dly_tsk(750);
 
-                        mot_cmd.target_speed_left =      0;
-                        mot_cmd.target_speed_right =    -0;
-                        mot_cmd.turn_ticks_left =        0;
-                        mot_cmd.turn_ticks_right =       0;
+                        mot_cmd.target_speed_left =     0;
+                        mot_cmd.target_speed_right =   -0;
+                        mot_cmd.turn_ticks_left =       0;
+                        mot_cmd.turn_ticks_right =      0;
 
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                        // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                        // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
 
                         tk_dly_tsk(250);
 
@@ -429,36 +432,32 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         case DIR_BACK:
                                             num_rotations = 2;
 
-                                            mot_cmd.target_speed_left =    -35;
-                                            mot_cmd.target_speed_right =   -35;
-                                            mot_cmd.turn_ticks_left =        0;
-                                            mot_cmd.turn_ticks_right =       0;
+                                            mot_cmd.target_speed_left =    -LEFT_PIVOT_L;
+                                            mot_cmd.target_speed_right =   -RIGHT_PIVOT_R;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                            // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                                            // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
 
                                             break;
                                         case DIR_LEFT:
                                             num_rotations = 1;
 
-                                            mot_cmd.target_speed_left =    -35;
-                                            mot_cmd.target_speed_right =   -35;
-                                            mot_cmd.turn_ticks_left =        0;
-                                            mot_cmd.turn_ticks_right =       0;
+                                            mot_cmd.target_speed_left =    -LEFT_PIVOT_L;
+                                            mot_cmd.target_speed_right =   -LEFT_PIVOT_R;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                            // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                                            // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
 
                                             break;
                                         case DIR_RIGHT:
                                             num_rotations = 1;
 
-                                            mot_cmd.target_speed_left =     35;     // right motor weak
-                                            mot_cmd.target_speed_right =    35;
-                                            mot_cmd.turn_ticks_left =        0;
-                                            mot_cmd.turn_ticks_right =       0;
+                                            mot_cmd.target_speed_left =     RIGHT_PIVOT_L;
+                                            mot_cmd.target_speed_right =    RIGHT_PIVOT_R;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
@@ -478,14 +477,12 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     
                                     if (num_rotations <= 0) {
 
-                                        mot_cmd.target_speed_left =     0;
-                                        mot_cmd.target_speed_right =    0;
+                                        mot_cmd.target_speed_left =     STOP_SPEED;
+                                        mot_cmd.target_speed_right =    STOP_SPEED;
                                         mot_cmd.turn_ticks_left =       0;
                                         mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        // curr_speed_left = mot_cmd.target_speed_left;     // BRYAN WHAT IS THIS
-                                        // curr_speed_right = mot_cmd.target_speed_right;   // BRYAN WHAT IS THIS
 
                                         tk_dly_tsk(250);
 
@@ -636,8 +633,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                 
             }
-
-            // tm_printf("%d ", m_mode);
 
             // Update shared telemetry snapshot
             // telemetry_snapshot.speed_left = curr_speed_left;
