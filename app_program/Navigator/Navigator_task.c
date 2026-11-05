@@ -151,7 +151,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 mapping_increment++;
                                 instructions_count++;
 
-                                if (mapping_increment >= NUMBER_OF_COMMANDS) m_mode = MODE_BARCODE_SCANNING;
+                                if (mapping_increment > NUMBER_OF_COMMANDS) m_mode = MODE_BARCODE_SCANNING;
 
                                 // for (int i=0; i<NUMBER_OF_COMMANDS; i++) {
                                 //     if (barcode_characters[i] == code39_char) {
