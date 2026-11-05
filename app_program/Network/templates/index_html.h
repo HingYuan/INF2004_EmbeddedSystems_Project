@@ -39,7 +39,7 @@ static const char web_index_html[] =
 "Est Width: <span id=ow class=v>-</span> cm</div>"
 "<div class=c><h3>&#x2696; IMU & Safety</h3>"
 "Pitch: <span id=pi class=v>0.0</span>&deg; | Roll: <span id=ro class=v>0.0</span>&deg;<br>"
-"Height: <span id=ht class=v>0.0</span> cm<br>"
+"Height: <span id=ht class=v>0</span> mm<br>"
 "State: <span id=is class=\"v tag\">-</span> | Event: <span id=ie class=\"v tag\">-</span></div></div>"
 "<h3 style=\"margin:.7rem 0 .2rem\">Active Barcode Mapping</h3><div id=map class=c>Waiting for mapping...</div>"
 "<h3 style=\"margin:.7rem 0 .2rem\">Last MQTT Command / Payload</h3><div id=log></div>"
@@ -63,7 +63,7 @@ static const char web_index_html[] =
 "s('sl',t.speed_l);s('sr',t.speed_r);s('el',t.enc_l);s('er',t.enc_r);"
 "s('od',t.obs_dist||0);s('ov',t.obs_dist_valid?'Valid':'Invalid');s('cd',t.closest_cm||0);s('ca',t.closest_deg||0);s('ow',t.obs_width||0);"
 "s('pi',t.pitch!=null?t.pitch.toFixed(1):'0.0');s('ro',t.roll!=null?t.roll.toFixed(1):'0.0');"
-"s('ht',t.height_cm!=null?t.height_cm.toFixed(1):'0.0');s('is',IMU_STATES[t.imu_state]||t.imu_state);s('ie',IMU_EVENTS[t.imu_event]||t.imu_event);s('sq',t.seq);"
+"s('ht',t.height_mm!=null?t.height_mm.toFixed(0):'0');s('is',IMU_STATES[t.imu_state]||t.imu_state);s('ie',IMU_EVENTS[t.imu_event]||t.imu_event);s('sq',t.seq);"
 "}catch(e){s('st','Offline')}}"
 "r();setInterval(r,1000)</script></body></html>";
 

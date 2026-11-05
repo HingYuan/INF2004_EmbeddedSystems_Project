@@ -430,8 +430,8 @@ SZ telemetry_json(char *output, SZ capacity)
     json_float(output, capacity, &length, telemetry_snapshot.pitch_deg);
     json_text(output, capacity, &length, ",\"roll\":");
     json_float(output, capacity, &length, telemetry_snapshot.roll_deg);
-    json_text(output, capacity, &length, ",\"height_cm\":");
-    json_float(output, capacity, &length, telemetry_snapshot.estimated_height_cm);
+    json_text(output, capacity, &length, ",\"height_mm\":");
+    json_float(output, capacity, &length, telemetry_snapshot.estimated_height_mm);
     json_text(output, capacity, &length, ",\"imu_state\":");
     json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.imu_state);
     json_text(output, capacity, &length, ",\"imu_event\":");

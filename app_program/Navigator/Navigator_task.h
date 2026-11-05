@@ -129,7 +129,7 @@ typedef struct {
     float pitch_deg;
     float roll_deg;
     float peak_g;
-    float estimated_height_cm;
+    float estimated_height_mm;
 } IMU_TELEMETRY_MSG;
 
 /* 
@@ -231,7 +231,7 @@ typedef struct {
     float    pitch_deg;         // Vehicle pitch
     float    roll_deg;          // Vehicle roll
     uint8_t  imu_state;             // IMU_FSM_STATE enum
-    float    estimated_height_cm;   // Peak/current hump height in cm
+    float    estimated_height_mm;   // Peak/current hump height in mm
     uint8_t  imu_event;         // IMU_EVENT_TYPE enum
 } TELEMETRY_SNAPSHOT;
 
