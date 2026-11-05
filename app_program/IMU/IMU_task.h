@@ -26,6 +26,7 @@
 #define SAFE_TILT_LIMIT_DEG   30.0f   // >30 deg triggers Tilt Warning
 #define SHOCK_THRESHOLD_G     2.5f    // >2.5g total acceleration triggers E-Stop
 #define HUMP_THRESHOLD_G      0.35f   // Z-axis deviation threshold for hump detection
+#define HUMP_CHASSIS_SCALE_MM 150.0f  // Effective chassis wheelbase/lever arm for height (mm)
 
 /* 
 =========================================

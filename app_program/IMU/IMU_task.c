@@ -261,19 +261,19 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     float gx, gy, gz;
                     imu_read_accel_g(&gx, &gy, &gz);
 
-                    // Numerical integration: dt = 0.1s for 100ms loop period
-                    float net_accel_mps2 = (gz - baseline_z) * 9.80665f;
-                    vertical_velocity += net_accel_mps2 * 0.10f;
-                    
-                    // Height in millimeters (mm)
-                    float current_height_mm = SQ(vertical_velocity) / (2.0f * 9.80665f) * 1000.0f;
-                    if (current_height_mm > hump_peak_height) hump_peak_height = current_height_mm;
+                    // Instantaneous geometric height: h = L * sin(tilt)
+                    // Does NOT integrate time, so it never drifts when resting on the peak.
+                    float sin_tilt = imu_sqrtf(SQ(gx) + SQ(gy)) / (total_g > 0.01f ? total_g : 1.0f);
+                    float current_height_mm = HUMP_CHASSIS_SCALE_MM * sin_tilt;
+                    if (current_height_mm > hump_peak_height) {
+                        hump_peak_height = current_height_mm;
+                    }
 
                     IMU_TELEMETRY_MSG msg = {
                         .event = IMU_MSG_HUMP_DETECTED,
                         .pitch_deg = pitch,
                         .roll_deg = roll,
-                        .estimated_height_mm = hump_peak_height,
+                        .estimated_height_mm = current_height_mm,
                     };
 
                     NAVIGATOR_MESSAGE n_msg = {
@@ -282,7 +282,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     };
 
                     tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
-                    telemetry_snapshot.estimated_height_mm = hump_peak_height;
+                    telemetry_snapshot.estimated_height_mm = current_height_mm;
                     telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
 
                     if (no_hump_sent) no_hump_sent = 0;
@@ -290,6 +290,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     if (!no_hump_sent) {
                         IMU_TELEMETRY_MSG msg = {
                             .event = IMU_MSG_NO_HUMP,
+                            .estimated_height_mm = 0.0f,
                         };
 
                         NAVIGATOR_MESSAGE n_msg = {
