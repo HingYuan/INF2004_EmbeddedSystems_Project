@@ -117,6 +117,8 @@ static DIRECTION movement_direction(const MOTOR_COMMAND *command)
        command->target_speed_right == -40) return DIR_LEFT;
     if(command->target_speed_left == 40 &&
        command->target_speed_right == 40) return DIR_RIGHT;
+    if(command->target_speed_left == 0 &&
+       command->target_speed_right == 0) return DIR_STOP;
     return DIR_INVALID;
 }
 
