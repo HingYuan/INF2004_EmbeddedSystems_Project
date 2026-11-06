@@ -98,7 +98,7 @@ LOCAL ER start_task(PERIPHERAL_TASK entry, INT priority, INT stacd, UW assprc, c
 EXPORT ER robot_tasks_start(void)
 {
 	// pack pin values for IR sensor task
-	const INT packed_stacd_ir = (IR_CENTER_PIN << 16) | (IR_RIGHT_PIN << 8);
+	const UH packed_stacd_ir = (IR_CENTER_PIN << 8) | IR_RIGHT_PIN;
 	const INT packed_stacd_ultrasonic = (SONAR_TRIG_PIN << 16) | (SONAR_ECHO_PIN << 8);
 
 	static const TASK_START tasks[] = {
