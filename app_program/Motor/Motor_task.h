@@ -11,8 +11,8 @@
 #define MOTOR_RIGHT_B      11
 
 // Optical Wheel Encoder Pins
-#define MOTOR_LEFT_ENC_A   26
-#define MOTOR_LEFT_ENC_B   27
+#define MOTOR_LEFT_ENC_A   16
+#define MOTOR_LEFT_ENC_B   17
 #define MOTOR_RIGHT_ENC_A   2
 #define MOTOR_RIGHT_ENC_B   3
 

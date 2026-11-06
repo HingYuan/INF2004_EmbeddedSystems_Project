@@ -7,77 +7,19 @@
 #include "../Navigator/Navigator_task.h"
 #include "../robot_tasks.h"
 #include "../Util/code39.h"
-
-// typedef struct {
-//     UH pattern;
-//     B character;
-// } CODE_39_ENTRY;
-
-// static const CODE_39_ENTRY code39_dict[] = {
-// // Letters
-//     {0b100001001, 'A'},
-//     {0b001001001, 'B'},
-//     {0b101001000, 'C'},
-//     {0b000011001, 'D'},
-//     {0b100011000, 'E'},
-//     {0b001011000, 'F'},
-//     {0b000001101, 'G'},
-//     {0b100001100, 'H'},
-//     {0b001001100, 'I'},
-//     {0b000011100, 'J'},
-//     {0b100000011, 'K'},
-//     {0b001000011, 'L'},
-//     {0b101000010, 'M'},
-//     {0b000010011, 'N'},
-//     {0b100010010, 'O'},
-//     {0b001010010, 'P'},
-//     {0b000000111, 'Q'},
-//     {0b100000110, 'R'},
-//     {0b001000110, 'S'},
-//     {0b000010110, 'T'},
-//     {0b110000001, 'U'},
-//     {0b011000001, 'V'},
-//     {0b111000000, 'W'},
-//     {0b010010001, 'X'},
-//     {0b110010000, 'Y'},
-//     {0b011010000, 'Z'},
-// // Numbers
-//     {0b000110100, '0'},
-//     {0b100100001, '1'},
-//     {0b001100001, '2'},
-//     {0b101100000, '3'},
-//     {0b000110001, '4'},
-//     {0b100110000, '5'},
-//     {0b001110000, '6'},
-//     {0b000100101, '7'},
-//     {0b100100100, '8'},
-//     {0b001100100, '9'},
-// // Symbols
-//     {0b010000101, '-'},
-//     {0b110000100, '.'},
-//     {0b011000100, ' '},
-//     {0b010101000, '$'},
-//     {0b010100010, '/'},
-//     {0b010001010, '+'},
-//     {0b000101010, '%'},
-// // Asterisk
-//     {0b010010100, '*'}
-// };
-
-#define CODE39_DICT_SIZE (sizeof(code39_dict) / sizeof(code39_dict[0]))
   
-#define BARS_PER_CHAR      10
-#define BAR_THRESHOLD    2000
-#define DEBOUNCE_TICKS      5
+#define BARS_PER_CHAR      10   // Includes whitespace before the first bar (1 + 9 Code39 bars)
 
-EXPORT void ir_sensor_zeroing(INT stacd, void *exinf) 
+EXPORT void ir_sensor_zeroing(INT stacd, void *exinf)
 {
     // unpack packed pin numbers
     INT pin_left = (stacd >> 16) & 0xFF;
     INT pin_right = (stacd >> 8) & 0xFF;
+    INT pin_barcode = 7;
 
     INT left_state;
     INT right_state;
+    INT barcode_state;
 
     // Set up left IR
 	(void)exinf;
@@ -93,50 +35,77 @@ EXPORT void ir_sensor_zeroing(INT stacd, void *exinf)
 		return;
 	}
 
+    ID adc_dd = tk_opn_dev((const UB *)"adca", TD_READ);
+    if (adc_dd < E_OK) {
+        tm_printf((UB *)"[ir] opening ADC failed: %d\n", adc_dd);
+        return;
+    }
+
     while(1) {
 		INT left_state = (INT)gpio_get_val((UINT)pin_left);
         INT right_state = (INT)gpio_get_val((UINT)pin_right);
 
+        UW barcode_raw;
+        SZ actual;
+        ER err;
+
+        err = tk_srea_dev(adc_dd, 0, &barcode_raw, 1, &actual);
+        if (err != E_OK) {
+            tm_printf((UB *)"[ir] ADC read failed: %d\n", err);
+            return;
+        }
+
+        INT barcode_mv = (INT)((barcode_raw * 3300U) / 4095U);
+
         tm_printf("[IR left] %d\t", left_state);
         tm_printf("[IR right] %d\n", right_state);
+        tm_printf("[IR barcode] %d\n", barcode_mv);
 
-        tk_dly_tsk(1000);
+        tk_dly_tsk(20);
     }
 }
 
 EXPORT void ir_sensor_task(INT stacd, void *exinf)
 {
     // unpack packed pin numbers
-    INT pin_left = (stacd >> 16) & 0xFF;
-    INT pin_right = (stacd >> 8) & 0xFF;
+    UB pin_left = (stacd >> 8) & 0xFF;
+    UB pin_right = stacd & 0xFF;
 
-    INT left_state;
-    INT right_state;
+    tm_printf("%d\n", pin_left);
+    tm_printf("%d\n", pin_right);
 
-    // Set up left IR
-	(void)exinf;
-	if(gpio_set_pin((UINT)pin_left, GPIO_MODE_IN) < E_OK) {
-		tm_printf((UB *)"[ir] GP%d input setup failed\n", pin_left);
-		return;
-	}
-
-    // Set up right IR
-    (void)exinf;
-	if(gpio_set_pin((UINT)pin_right, GPIO_MODE_IN) < E_OK) {
-		tm_printf((UB *)"[ir] GP%d input setup failed\n", pin_right);
-		return;
-	}
+    ID adc_dd = tk_opn_dev((const UB *)"adca", TD_READ);
+    if (adc_dd < E_OK) {
+        tm_printf((UB *)"[ir] opening ADC failed: %d\n", adc_dd);
+        return;
+    }
 
     while(1) {
-		INT left_state = (INT)gpio_get_val((UINT)pin_left);
-        INT right_state = (INT)gpio_get_val((UINT)pin_right);
+        UW raw_left, raw_right;
+        SZ actual;
+        ER err;
+
+        err = tk_srea_dev(adc_dd, 0, &raw_right, 1, &actual);
+        if (err != E_OK) {
+            tm_printf((UB *)"[ir] GP26 ADC read failed: %d\n", err);
+            return;
+        }
+
+        err = tk_srea_dev(adc_dd, 2, &raw_left, 1, &actual);
+        if (err != E_OK) {
+            tm_printf((UB *)"[ir] GP27 ADC read failed: %d\n", err);
+            return;
+        }
+
+        UH right_state = (UH)((raw_right * 3300U) / 4095U);
+        UH left_state = (UH)((raw_left * 3300U) / 4095U);
 
         NAVIGATOR_MESSAGE nm;
         nm.type = MSG_IR_UPDATE;
-        if (left_state == 1 && right_state == 1) nm.data.ir_state = STATE_B_B;          // Black-black
-        else if (left_state == 0 && right_state == 0) nm.data.ir_state = STATE_W_W;     // White-white
-        else if (left_state == 1 && right_state == 0) nm.data.ir_state = STATE_B_W;     // Black-white
-        else nm.data.ir_state = STATE_W_B;                                              // White-black
+        if (left_state >= ADC_IR_THRESHOLD && right_state >= ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_B;        // Black-black
+        else if (left_state < ADC_IR_THRESHOLD && right_state < ADC_IR_THRESHOLD) nm.data.ir_state = STATE_W_W;     // White-white
+        else if (left_state >= ADC_IR_THRESHOLD && right_state < ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_W;    // Black-white
+        else nm.data.ir_state = STATE_W_B;                                                                          // White-black
         
         tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
 
@@ -176,8 +145,6 @@ EXPORT void ir_barcode_task(INT stacd, void *exinf)
             
             // Push to message buffer
             tk_snd_mbf(barcode_mbfid, (void *)&br, sizeof(BAR_RECORD), TMO_FEVR);
-
-            tm_printf((UB *)"[ir] GP%d %s %u %u\n", stacd, current_state ? "HIGH" : "LOW", current_time-previous_time, (current_time-previous_time)>=BAR_THRESHOLD ? 1 : 0);
 
             // reset state
 			previous_state = current_state;

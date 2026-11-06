@@ -5,8 +5,8 @@
 
 // Hardware pins
 #define SERVO_PIN          15
-#define SONAR_TRIG_PIN     28
-#define SONAR_ECHO_PIN      7
+#define SONAR_TRIG_PIN      5
+#define SONAR_ECHO_PIN      4
 
 // Event flags shared with Navigator
 #define SONAR_RESUME_FLAG       (1U << 0)

@@ -59,4 +59,6 @@ static const CODE_39_ENTRY code39_dict[] = {
     {0b010010100, '*'}
 };
 
+#define CODE39_DICT_SIZE (sizeof(code39_dict) / sizeof(code39_dict[0]))
+
 #endif
