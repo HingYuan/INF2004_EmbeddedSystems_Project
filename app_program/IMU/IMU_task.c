@@ -39,14 +39,14 @@ LOCAL float imu_atan2f(float y, float x)
     return (y < 0.0f) ? -r : r;
 }
 
-// Swapped and inverted for physical IMU mounting:
-// Pitch is along sensor Y (inverted), Roll is along sensor X (inverted)
+// Swapped for physical IMU mounting orientation:
+// Sensor Y maps to robot Pitch, Sensor X maps to robot Roll
 LOCAL void imu_compute_pitch_roll(float gx, float gy, float gz, float *pitch, float *roll)
 {
     float den = imu_sqrtf(SQ(gx) + SQ(gz));
     if (den < 0.001f) den = 0.001f;
-    *pitch = -imu_atan2f(gy, den) * 180.0f / 3.14159265f;
-    *roll  = -imu_atan2f(gx, gz) * 180.0f / 3.14159265f;
+    *pitch = imu_atan2f(gy, den) * 180.0f / 3.14159265f;
+    *roll  = imu_atan2f(gx, gz) * 180.0f / 3.14159265f;
 }
 
 #if (IMU_SDA_PIN % 4) != 0 || IMU_SDA_PIN > 20 || IMU_SCL_PIN != (IMU_SDA_PIN + 1)
@@ -102,6 +102,8 @@ LOCAL ER imu_write_reg(uint8_t addr, uint8_t reg, uint8_t val)
 
 LOCAL UW active_accel_addr = LSM303_ACCEL_ADDR;
 
+LOCAL INT read_err_count = 0;
+
 LOCAL bool imu_read_accel_raw(int16_t *x, int16_t *y, int16_t *z)
 {
     UB data[6];
@@ -119,9 +121,20 @@ LOCAL bool imu_read_accel_raw(int16_t *x, int16_t *y, int16_t *z)
 
     ER er = tk_swri_dev(imu_dd, TDN_I2C_EXEC, &exec, sizeof(T_I2C_EXEC), &asz);
     if (er < E_OK) {
-        // Fallback to byte-by-byte reads
-        for (int i = 0; i < 6; i++) {
-            if (i2c_read_reg(imu_dd, active_accel_addr, (UW)(0xA8 + i), &data[i]) < E_OK) return false;
+        // Fallback 1: burst write + burst read
+        (void)tk_swri_dev(imu_dd, active_accel_addr, &reg, 1, &asz);
+        er = tk_srea_dev(imu_dd, active_accel_addr, data, 6, &asz);
+        if (er < E_OK) {
+            // Fallback 2: byte-by-byte
+            for (int i = 0; i < 6; i++) {
+                er = i2c_read_reg(imu_dd, active_accel_addr, (UW)(0xA8 + i), &data[i]);
+                if (er < E_OK) {
+                    if (++read_err_count % 50 == 1) {
+                        tm_printf((UB *)"[IMU READ ERR] Accel raw read failed (er=%d)\n", er);
+                    }
+                    return false;
+                }
+            }
         }
     }
 
@@ -187,14 +200,21 @@ LOCAL int16_t imu_get_heading_deg(void)
 
 LOCAL void imu_scan_bus(void)
 {
-    tm_printf((UB *)"[IMU] Scanning I2C bus on GP%d(SDA), GP%d(SCL)...\n", IMU_SDA_PIN, IMU_SCL_PIN);
+    tm_printf((UB *)"[IMU SCAN] Probing I2C bus on GP%d(SDA), GP%d(SCL)...\n", IMU_SDA_PIN, IMU_SCL_PIN);
     INT found = 0;
     for(UW addr = 0x08; addr <= 0x77; addr++) {
         UB dummy = 0;
         ER er = i2c_read_reg(imu_dd, addr, 0x0F, &dummy);
-        if(er >= E_OK) found++;
+        if(er >= E_OK) {
+            found++;
+            tm_printf((UB *)"[IMU SCAN] -> Responding I2C device at 0x%02X\n", (UINT)addr);
+        }
     }
-    if(found == 0) tm_printf((UB *)"[IMU SCAN] No devices responded.\n");
+    if(found == 0) {
+        tm_printf((UB *)"[IMU SCAN] WARNING: No I2C devices responded on GP%d/GP%d!\n", IMU_SDA_PIN, IMU_SCL_PIN);
+    } else {
+        tm_printf((UB *)"[IMU SCAN] Bus scan complete: %d device(s) found.\n", found);
+    }
 }
 
 LOCAL INT iabs(INT v) { return v < 0 ? -v : v; }
@@ -254,11 +274,13 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                 if (er1 >= E_OK && er2 >= E_OK) {
                     active_accel_addr = accel_addr;
-                    tm_printf((UB *)"[IMU STATUS] CONNECTED! Accel at 0x%02x\n", (UINT)active_accel_addr);
+                    tm_printf((UB *)"[IMU INIT] SUCCESS: Connected to LSM303 Accel at 0x%02X! Calibration starting...\n",
+                              (UINT)active_accel_addr);
                     state = STATE_CALIBRATING;
                     telemetry_snapshot.imu_state = (uint8_t)STATE_CALIBRATING;
                 } else {
-                    tm_printf((UB *)"[IMU STATUS] Device not ready (er1=%d, er2=%d). Retrying...\n", er1, er2);
+                    tm_printf((UB *)"[IMU INIT] NOT CONNECTED! No response at 0x19 or 0x18 (er1=%d, er2=%d). Retrying in 1s...\n",
+                              er1, er2);
                     tk_dly_tsk(1000);
                 }
                 break;
@@ -266,6 +288,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
             case STATE_CALIBRATING: {
                 telemetry_snapshot.imu_state = (uint8_t)STATE_CALIBRATING;
+                tm_printf((UB *)"[IMU CALIB] Calibrating 1g flat ground baseline (50 samples)...\n");
                 float sum_z = 0.0f;
                 float sum_pitch = 0.0f;
                 float sum_roll = 0.0f;
@@ -287,9 +310,9 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 baseline_pitch = sum_pitch / (float)SAMPLES;
                 baseline_roll = sum_roll / (float)SAMPLES;
 
-                tm_printf((UB *)"[IMU CALIB] Zero offsets: Pitch=%d deg, Roll=%d deg, Z=%d.%02d g\n",
-                          (INT)baseline_pitch, (INT)baseline_roll,
-                          (INT)baseline_z, (INT)(fabsf(baseline_z * 100.0f)) % 100);
+                tm_printf((UB *)"[IMU CALIB] Done: Baseline Z=%d.%02d g, PitchOffset=%d deg, RollOffset=%d deg\n",
+                          (INT)baseline_z, (INT)(fabsf(baseline_z * 100.0f)) % 100,
+                          (INT)baseline_pitch, (INT)baseline_roll);
 
                 state = STATE_MONITORING;
                 telemetry_snapshot.imu_state = (uint8_t)STATE_MONITORING;
@@ -319,6 +342,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 (void)heading;
 
                 BOOL is_tilted = (fabsf(roll) >= HUMP_TILT_THRESHOLD_DEG || fabsf(pitch) >= HUMP_TILT_THRESHOLD_DEG);
+                float current_height_mm = 0.0f;
 
                 if (is_tilted) {
                     // Geometric height:
@@ -327,7 +351,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     const float DEG_TO_RAD = 3.14159265f / 180.0f;
                     float h_roll = HUMP_TRACK_WIDTH_MM * (fabsf(roll) * DEG_TO_RAD);
                     float h_pitch = HUMP_CHASSIS_SCALE_MM * (fabsf(pitch) * DEG_TO_RAD);
-                    float current_height_mm = (h_roll > h_pitch) ? h_roll : h_pitch;
+                    current_height_mm = (h_roll > h_pitch) ? h_roll : h_pitch;
 
                     if (current_height_mm > hump_peak_height) {
                         hump_peak_height = current_height_mm;
@@ -386,15 +410,33 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     }
                 }
 
-                // Record telemetry every 500ms
+                // Record telemetry and print live diagnostics every 500ms
                 if (++telemetry_timer >= 5) {
                     telemetry_timer = 0;
                     telemetry_snapshot.pitch_deg = pitch;
                     telemetry_snapshot.roll_deg = roll;
+                    telemetry_snapshot.estimated_height_mm = is_tilted ? hump_peak_height : 0.0f;
                     telemetry_snapshot.imu_state = (uint8_t)state;
                     if (!is_tilted) {
                         telemetry_snapshot.imu_event = IMU_MSG_NONE;
                     }
+
+                    INT gx_i = (INT)gx, gx_d = (INT)(fabsf(gx * 100.0f)) % 100;
+                    INT gy_i = (INT)gy, gy_d = (INT)(fabsf(gy * 100.0f)) % 100;
+                    INT gz_i = (INT)gz, gz_d = (INT)(fabsf(gz * 100.0f)) % 100;
+                    INT tot_i = (INT)total_g, tot_d = (INT)(fabsf(total_g * 100.0f)) % 100;
+
+                    tm_printf((UB *)"[IMU LOG] Accel: X=%d.%02d Y=%d.%02d Z=%d.%02d g | Tot=%d.%02d g | Pitch=%4d deg | Roll=%4d deg | Height=%3d mm | State=%d\n",
+                              gx_i, gx_d, gy_i, gy_d, gz_i, gz_d, tot_i, tot_d,
+                              (INT)pitch, (INT)roll, (INT)current_height_mm, (INT)state);
+
+                    tm_printf((UB *)"[IMU TELEMETRY] Snapshot: pitch=%d roll=%d ht=%d mm imu_state=%d event=%d seq=%u\n",
+                              (INT)telemetry_snapshot.pitch_deg,
+                              (INT)telemetry_snapshot.roll_deg,
+                              (INT)telemetry_snapshot.estimated_height_mm,
+                              (INT)telemetry_snapshot.imu_state,
+                              (INT)telemetry_snapshot.imu_event,
+                              (unsigned int)telemetry_snapshot.seq);
                 }
 
                 // Priority 1: Shock Detection 
