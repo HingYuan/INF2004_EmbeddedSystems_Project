@@ -72,6 +72,9 @@ typedef enum {
 typedef struct {
     UW closest_cm;
     W closest_angle_deg;       // Positive angle is left
+    UW front_cm;              // Measured centre ray before the outward pivot.
+    UW left_scan_cm;          // Outer +45-degree ray; zero means unavailable, not clearance.
+    UW right_scan_cm;         // Outer -45-degree ray; only used to choose a search direction.
 
     W left_edge_deg;
     W right_edge_deg;
@@ -94,20 +97,25 @@ typedef struct {
     BOOL profile_valid;        // Basic scan quality, not a safe route
 } OBSTACLE_PROFILE;
 
-// Starting estimates for bench testing: tune at speed 30 / pivot speed 35.
+// Starting estimates: calibrate at FORWARD_SPEED_BARCODE and the LEFT/RIGHT_PIVOT speeds above.
 // shortcut: timed travel varies with battery and grip, recalibrate before course runs.
 #define BYPASS_MS_PER_CM            80U  // Time per cm at speed 30; increase if travel is too short, decrease if too far.
 #define BYPASS_LEFT_90_MS          700U  // Left 90-degree pivot time; increase if under-turning, decrease if over-turning.
 #define BYPASS_RIGHT_90_MS         700U  // Right 90-degree pivot time; tune separately from the left turn.
-#define BYPASS_STOP_DISTANCE_CM      3U  // Must cover measured forward travel after requesting a stop (cm).
+#define BYPASS_STOP_DISTANCE_CM      1U  // Must cover measured forward travel after requesting a stop (cm).
 #define BYPASS_PIVOT_FROM_FRONT_CM  10U  // Front of car to midpoint between driven wheels (cm); measure on your car.
 #define BYPASS_PEEK_DEG              5U  // Small stationary pivot to look around a corner; allowed range is 1..5 degrees.
-#define BYPASS_SEARCH_STEP_CM        5U  // Maximum forward distance per timed corner-search step (cm).
+#define BYPASS_SEARCH_STEP_CM        10U  // Maximum forward distance per timed wall-acquisition or corner-search step (cm).
+#define BYPASS_ACQUIRE_MAX_CM       30U  // Maximum initial forward search for the side wall; each step needs fresh front clearance.
+#define BYPASS_NO_ECHO_STEP_CM       5U  // Estimated forward travel per no-echo check; no echo is not a measured clearance.
+#define BYPASS_REVERSE_STEP_CM       5U  // Estimated distance per reverse recovery; rear space is not sensed.
+#define BYPASS_REVERSE_MAX_CM       15U  // Total reverse allowance per bypass, including repeated recovery attempts.
+#define BYPASS_REVERSE_MS_PER_CM    80U  // Starting estimate at reverse speed 30; calibrate separately from forward travel.
 #define BYPASS_FRONT_INTERVAL_MS   500U  // Maximum driving time between stopped front-distance checks (ms).
 #define BYPASS_RESPONSE_MS        1000U  // Maximum wait for a motor-stop acknowledgement or a probe/tracking reply (ms).
 #define BYPASS_TRACK_STALE_MS      300U  // Stop if the latest wall-tracking reading is this old (ms).
 #define BYPASS_SCAN_MS           10000U  // Maximum wait for the initial obstacle profile (ms).
-#define BYPASS_TOTAL_MS          60000U  // Whole bypass timeout, including initial scanning and scan stops (ms).
+#define BYPASS_TOTAL_MS         120000U  // Whole bypass timeout; allows front-face search plus side following (ms).
 #define BYPASS_RETURN_MS         12000U  // Line-search timeout after turning inward, including scan stops (ms).
 #define BYPASS_SCAN_ATTEMPTS         3U  // Probe attempts per check before corner search or a safe stop.
 #define BYPASS_WALL_TARGET_CM (((ROBOT_HALF_WIDTH_CM + WALL_BODY_GAP_CM) * 1414U + 999U) / 1000U) // Calculated 45-degree sonar target (~16 cm); adjust WALL_BODY_GAP_CM instead.
@@ -135,7 +143,10 @@ typedef enum {
     BYPASS_ABORT,
     BYPASS_PEEK_OUT,
     BYPASS_CHECK_PEEK,
-    BYPASS_PEEK_BACK
+    BYPASS_PEEK_BACK,
+    BYPASS_CHECK_ACQUIRE,
+    BYPASS_ACQUIRE_WALL,
+    BYPASS_REVERSE
 } BYPASS_PHASE;
 
 typedef enum {
@@ -145,6 +156,7 @@ typedef enum {
 
 typedef struct {
     BYPASS_PHASE phase;
+    BYPASS_PHASE reverse_resume;
     BYPASS_WAIT wait;
     MOTOR_COMMAND command;
     INT side;                    // +1: pass left, obstacle on right; -1: mirrored
@@ -155,22 +167,27 @@ typedef struct {
     UW return_started_us;
     UW last_ir_us;
     UW shift_remaining_ms;
+    UW acquire_remaining_ms;      // Initial wall search only; never used to infer that a corner is clear.
     UW corner_remaining_ms;
     UW segment_ms;
     UW front_budget_ms;
     UW wall_cm;
+    UW front_wall_target_cm;     // Derived from the pre-pivot centre ray and pivot position.
+    UW reverse_remaining_cm;
     UW attempts;
     UW black_count;
     UINT probe_flag;
     W probe_angle;
     BOOL wall_seen;
     BOOL corner_active;
+    BOOL front_face;             // First corner leads along the side; the next corner leads toward the line.
 } BYPASS_CONTEXT;
 
 typedef struct {
     UW distance_cm;
     W angle_deg;
     BOOL valid;
+    SONAR_STATUS status;
 } SONAR_PROBE_RESULT;
 
 /* 

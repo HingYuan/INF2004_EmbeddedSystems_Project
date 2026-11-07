@@ -15,6 +15,7 @@
 
 // Ultrasonic settings
 #define SONAR_TIMEOUT_US        26000U
+#define SONAR_ECHO_END_US       60000U  // Allow a long pulse to finish; a permanently HIGH echo is a fault.
 #define SONAR_PING_DELAY_MS        60U
 #define OBSTACLE_TRIGGER_CM        30U
 #define OBSTACLE_CONFIRM_COUNT      2U
@@ -29,44 +30,54 @@ static const W coarse_angles[COARSE_COUNT] = {
     -45, -30, -15, 0, 15, 30, 45
 };
 
+static const char *const sonar_status_names[] = {
+    "invalid", "ok", "no-echo", "too-close", "sensor-fault", "servo-fault", "unstable"
+};
+
 // Measure one ultrasonic echo
-LOCAL BOOL read_distance_cm(UW *distance_cm)
+LOCAL SONAR_STATUS read_distance_cm(UW *distance_cm)
 {
     UW start, pulse_us, measured_cm;
+    *distance_cm = 0;
 
     if (gpio_get_val(SONAR_ECHO_PIN) != 0)
-        return FALSE;
+        return SONAR_SENSOR_FAULT;
 
-    gpio_set_val(SONAR_TRIG_PIN, 0);
+    if (gpio_set_val(SONAR_TRIG_PIN, 0) < E_OK)
+        return SONAR_SENSOR_FAULT;
     delay_us(2);
-    gpio_set_val(SONAR_TRIG_PIN, 1);
+    if (gpio_set_val(SONAR_TRIG_PIN, 1) < E_OK)
+        return SONAR_SENSOR_FAULT;
     delay_us(10);
-    gpio_set_val(SONAR_TRIG_PIN, 0);
+    if (gpio_set_val(SONAR_TRIG_PIN, 0) < E_OK)
+        return SONAR_SENSOR_FAULT;
 
     // Wait for echo to start
     start = time_us();
 
     while (gpio_get_val(SONAR_ECHO_PIN) == 0) {
         if ((UW)(time_us() - start) >= SONAR_TIMEOUT_US)
-            return FALSE;
+            return SONAR_NO_ECHO;
     }
 
     // Measure echo HIGH duration
     start = time_us();
 
     while (gpio_get_val(SONAR_ECHO_PIN) != 0) {
-        if ((UW)(time_us() - start) >= SONAR_TIMEOUT_US)
-            return FALSE;
+        if ((UW)(time_us() - start) >= SONAR_ECHO_END_US)
+            return SONAR_SENSOR_FAULT;
     }
 
     pulse_us = (UW)(time_us() - start);
     measured_cm = (pulse_us + 29U) / 58U;
 
-    if (measured_cm < 2U || measured_cm > 400U)
-        return FALSE;
+    if (measured_cm < 2U)
+        return SONAR_TOO_CLOSE;
+    if (measured_cm > 400U)
+        return SONAR_NO_ECHO;
 
     *distance_cm = measured_cm;
-    return TRUE;
+    return SONAR_OK;
 }
 
 // Convert -45 to +45 degrees into servo pulse width
@@ -81,15 +92,17 @@ LOCAL UW servo_pulse_from_angle(W angle)
 }
 
 // Move servo and obtain a stable distance measurement
-LOCAL BOOL scan_angle(W angle, UW *distance_cm)
+LOCAL SONAR_STATUS scan_angle(W angle, UW *distance_cm)
 {
     UW readings[3];
     INT count = 0;
+    INT no_echo_count = 0;
+    *distance_cm = 0;
 
     if (pwm_set_cc(
             SERVO_PIN,
             servo_pulse_from_angle(angle)) < E_OK)
-        return FALSE;
+        return SONAR_SERVO_FAULT;
 
     tk_dly_tsk(SERVO_SETTLE_MS);
 
@@ -99,12 +112,19 @@ LOCAL BOOL scan_angle(W angle, UW *distance_cm)
         if (i > 0)
             tk_dly_tsk(SONAR_PING_DELAY_MS);
 
-        if (read_distance_cm(&cm))
+        SONAR_STATUS status = read_distance_cm(&cm);
+        if (status == SONAR_OK)
             readings[count++] = cm;
+        else if (status == SONAR_NO_ECHO)
+            no_echo_count++;
+        else
+            return status;
     }
 
+    if (no_echo_count == 3)
+        return SONAR_NO_ECHO;
     if (count < 2)
-        return FALSE;
+        return SONAR_UNSTABLE;
 
     if (count == 2) {
         UW gap = readings[0] > readings[1]
@@ -112,10 +132,10 @@ LOCAL BOOL scan_angle(W angle, UW *distance_cm)
             : readings[1] - readings[0];
 
         if (gap > 15U)
-            return FALSE;
+            return SONAR_UNSTABLE;
 
         *distance_cm = (readings[0] + readings[1]) / 2U;
-        return TRUE;
+        return SONAR_OK;
     }
 
     // Sort three samples and select median
@@ -130,7 +150,7 @@ LOCAL BOOL scan_angle(W angle, UW *distance_cm)
     }
 
     *distance_cm = readings[1];
-    return TRUE;
+    return SONAR_OK;
 }
 
 // Keep the closest observed point
@@ -196,7 +216,7 @@ LOCAL BOOL refine_edge(
         if (middle == near_angle || middle == far_angle)
             return FALSE;
 
-        if (!scan_angle(middle, &cm))
+        if (scan_angle(middle, &cm) != SONAR_OK)
             return FALSE;
 
         update_closest(profile, middle, cm);
@@ -236,13 +256,13 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
     // Coarse scan: 7 directions, 15 degrees apart
     for (INT i = 0; i < COARSE_COUNT; i++) {
 
-        valid[i] = scan_angle(coarse_angles[i], &cm[i]);
+        valid[i] = scan_angle(coarse_angles[i], &cm[i]) == SONAR_OK;
 
         // Retry an invalid coarse angle once
         if (!valid[i]) {
             tk_dly_tsk(SONAR_PING_DELAY_MS);
             valid[i] = scan_angle(
-                coarse_angles[i], &cm[i]);
+                coarse_angles[i], &cm[i]) == SONAR_OK;
         }
 
         if (valid[i]) {
@@ -257,6 +277,9 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
 
     center_ok = valid[3] &&
                 cm[3] <= OBSTACLE_TRIGGER_CM + 20U;
+    profile->front_cm = valid[3] ? cm[3] : 0U;
+    profile->left_scan_cm = valid[COARSE_COUNT - 1] ? cm[COARSE_COUNT - 1] : 0U;
+    profile->right_scan_cm = valid[0] ? cm[0] : 0U;
 
     if (center_ok) {
 
@@ -446,8 +469,9 @@ LOCAL BOOL handle_probe(UINT flags)
                   SONAR_PROBE_RIGHT_FLAG;
     BOOL valid = motor_estop && (flags & probes) != 0U &&
                  (flags & ~probes) == 0U && (flags & (flags - 1U)) == 0U;
+    SONAR_STATUS status = SONAR_INVALID;
     if (valid)
-        valid = scan_angle(angle, &cm);
+        status = scan_angle(angle, &cm);
     else
         motor_estop = TRUE;
 
@@ -457,11 +481,12 @@ LOCAL BOOL handle_probe(UINT flags)
         SERVO_PIN, SERVO_CENTER_US);
 
     if (er < E_OK)
-        valid = FALSE;
+        status = SONAR_SERVO_FAULT;
     else
         tk_dly_tsk(SERVO_SETTLE_MS);
 
     NAVIGATOR_MESSAGE message = {0};
+    valid = status == SONAR_OK;
     message.type = MSG_SONAR_PROBED;
     message.sampled_at_us = sampled_at;
 
@@ -469,12 +494,13 @@ LOCAL BOOL handle_probe(UINT flags)
     message.data.sonar_probe.distance_cm =
         valid ? cm : 0U;
     message.data.sonar_probe.valid = valid;
+    message.data.sonar_probe.status = status;
 
     tm_printf(
-        (UB *)"[sonar] probe %d: %u cm valid=%d\n",
+        (UB *)"[sonar] probe %d: %u cm valid=%d status=%s\n",
         angle,
         message.data.sonar_probe.distance_cm,
-        valid);
+        valid, sonar_status_names[status]);
 
     return send_to_navigator(&message);
 }
@@ -526,7 +552,7 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
     while (1) {
 
         // Forward monitoring during line following
-        BOOL valid = read_distance_cm(&front_cm);
+        BOOL valid = read_distance_cm(&front_cm) == SONAR_OK;
 
         // Send live distance to Navigator on every measurement
         send_sonar_distance(front_cm, valid);
@@ -582,6 +608,7 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
         while (1) {
             UINT requests =
                 SONAR_RESUME_FLAG |
+                SONAR_SCAN_REQUEST |
                 SONAR_PROBE_FRONT_FLAG |
                 SONAR_PROBE_LEFT_FLAG |
                 SONAR_PROBE_RIGHT_FLAG |
@@ -600,7 +627,8 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
                 UW cm = 0;
                 message = (NAVIGATOR_MESSAGE){0};
                 message.type = MSG_TRACKING_OBSTACLE;
-                message.data.sonar_probe.valid = read_distance_cm(&cm);
+                message.data.sonar_probe.status = read_distance_cm(&cm);
+                message.data.sonar_probe.valid = message.data.sonar_probe.status == SONAR_OK;
                 message.sampled_at_us = time_us();
                 message.data.sonar_probe.angle_deg = tracking_angle;
                 message.data.sonar_probe.distance_cm = cm;
@@ -634,14 +662,28 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
             if (pattern == SONAR_PAUSE_FLAG)
                 continue;
 
+            if (pattern == SONAR_SCAN_REQUEST) {
+                message = (NAVIGATOR_MESSAGE){0};
+                message.type = MSG_OBSTACLE_PROFILED;
+                if (motor_estop)
+                    scan_obstacle(&message.data.obstacle_profile);
+                else
+                    motor_estop = TRUE;
+                message.sampled_at_us = time_us();
+                if (!send_to_navigator(&message))
+                    return;
+                continue;
+            }
+
             if (pattern == SONAR_TRACK_LEFT_FLAG ||
                 pattern == SONAR_TRACK_RIGHT_FLAG) {
                 UW cm = 0;
                 tracking_angle = pattern == SONAR_TRACK_LEFT_FLAG ? 45 : -45;
                 message = (NAVIGATOR_MESSAGE){0};
                 message.type = MSG_TRACKING_OBSTACLE;
-                message.data.sonar_probe.valid = motor_estop &&
-                    scan_angle(tracking_angle, &cm);
+                message.data.sonar_probe.status = motor_estop ?
+                    scan_angle(tracking_angle, &cm) : SONAR_INVALID;
+                message.data.sonar_probe.valid = message.data.sonar_probe.status == SONAR_OK;
                 message.sampled_at_us = time_us();
                 message.data.sonar_probe.angle_deg = tracking_angle;
                 message.data.sonar_probe.distance_cm = cm;

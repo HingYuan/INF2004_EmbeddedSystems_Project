@@ -51,8 +51,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd;
     // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    // MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
-    MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
+    MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
     // Sensor specific telemetry cache
     char last_decoded_char = 0;
@@ -303,7 +303,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
                             case MSG_OBSTACLE_DETECTED:
                                 last_obstacle_dist_cm = n_msg.data.obstacle_distance_cm;
-                                bypass = (BYPASS_CONTEXT){0};
+                                bypass = (BYPASS_CONTEXT){.reverse_remaining_cm = BYPASS_REVERSE_MAX_CM};
                                 bypass.started_us = time_us();
                                 bypass_stop(BYPASS_IDLE);
                                 m_mode = MODE_OBSTACLE_ASSESS;
@@ -591,7 +591,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
         // Keep timed moves bounded even when the common handlers consume messages.
         if (bypass_active && bypass.wait != BYPASS_WAIT_NONE) {
-            if (message_size != sizeof(NAVIGATOR_MESSAGE) && message_size != E_TMOUT) {
+            if (m_mode == MODE_SAFE_STOP) {
+                bypass_abort("external emergency stop");
+            } else if (message_size != sizeof(NAVIGATOR_MESSAGE) && message_size != E_TMOUT) {
                 bypass_abort("Navigator receive failed");
             } else {
                 const NAVIGATOR_MESSAGE *remote =
@@ -616,8 +618,8 @@ static void bypass_set_mode(MOVEMENT_MODE *mode, MOTOR_COMMAND *command)
         *mode = MODE_SAFE_STOP;
     else if (bypass.phase == BYPASS_COMPLETE)
         *mode = MODE_REENTRY_ADVANCE;
-    else if (bypass.phase != BYPASS_IDLE)
-        *mode = MODE_WALL_HUGGING;
+    else
+        *mode = bypass.phase == BYPASS_IDLE ? MODE_OBSTACLE_ASSESS : MODE_WALL_HUGGING;
 }
 
 static void bypass_abort(const char *reason)
@@ -695,6 +697,33 @@ static void bypass_pivot(BYPASS_PHASE phase, INT direction, UW degrees)
     bypass_drive(phase, left, right, (turn_ms * degrees + 89U) / 90U);
 }
 
+static void bypass_reverse(BYPASS_PHASE resume)
+{
+    if (!motor_estop || bypass.reverse_remaining_cm == 0U) {
+        bypass_abort("reverse recovery unavailable / exhausted");
+        return;
+    }
+    UW cm = bypass.reverse_remaining_cm < BYPASS_REVERSE_STEP_CM ?
+        bypass.reverse_remaining_cm : BYPASS_REVERSE_STEP_CM;
+    bypass.reverse_remaining_cm -= cm;
+    bypass.reverse_resume = resume;
+    // shortcut: rear space is unmeasured; add rear sensing for routes with obstacles behind the car.
+    tm_printf((UB *)"[bypass] Reverse recovery: %u cm; %u cm remaining\n",
+              cm, bypass.reverse_remaining_cm);
+    bypass_drive(BYPASS_REVERSE, -FORWARD_SPEED_BARCODE, FORWARD_SPEED_BARCODE,
+                 cm * BYPASS_REVERSE_MS_PER_CM);
+}
+
+static void bypass_scan(void)
+{
+    bypass.phase = BYPASS_IDLE;
+    bypass.wait = BYPASS_WAIT_SCAN;
+    bypass.requested_us = time_us();
+    bypass.deadline_us = bypass.requested_us + BYPASS_SCAN_MS * 1000U;
+    if (!motor_estop || tk_set_flg(ranger_flgid, SONAR_SCAN_REQUEST) < E_OK)
+        bypass_abort("scan request failed");
+}
+
 static UW bypass_swept_radius_cm(void)
 {
     UW arm = BYPASS_PIVOT_FROM_FRONT_CM;
@@ -713,7 +742,11 @@ static void bypass_corner_peek(void)
     if (rear > arm) arm = rear;
     // sin(5 degrees) < 0.088; retain 2 cm during the small peek.
     UW peek_width = ROBOT_HALF_WIDTH_CM + (arm * 88U + 999U) / 1000U + 2U;
-    if (!bypass.wall_seen || bypass.wall_cm * 707U / 1000U < peek_width) {
+    if (!bypass.wall_seen && !bypass.front_face) {
+        bypass_abort("corner requested before wall acquisition");
+        return;
+    }
+    if (bypass.wall_cm * 707U / 1000U < peek_width) {
         bypass_abort("insufficient room for corner peek");
         return;
     }
@@ -728,8 +761,21 @@ static void bypass_corner_peek(void)
 
 static BOOL bypass_wall_present(const SONAR_PROBE_RESULT *probe)
 {
+    UW target = bypass.front_face ? bypass.front_wall_target_cm : BYPASS_WALL_TARGET_CM;
     return probe->valid && probe->distance_cm >= 2U &&
-           probe->distance_cm < BYPASS_WALL_TARGET_CM + BYPASS_EDGE_JUMP_CM;
+           probe->distance_cm < target + BYPASS_EDGE_JUMP_CM;
+}
+
+static BOOL bypass_sonar_fault(const SONAR_PROBE_RESULT *probe)
+{
+    if (probe->valid != (probe->status == SONAR_OK) ||
+        (UINT)probe->status > SONAR_UNSTABLE ||
+        probe->status == SONAR_SENSOR_FAULT || probe->status == SONAR_SERVO_FAULT ||
+        probe->status == SONAR_TOO_CLOSE) {
+        bypass_abort("sonar fault / too-close return");
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static void bypass_track(void)
@@ -745,7 +791,8 @@ static void bypass_track(void)
 
 static void bypass_steer(UW cm)
 {
-    INT error = (INT)cm - (INT)BYPASS_WALL_TARGET_CM;
+    UW target = bypass.front_face ? bypass.front_wall_target_cm : BYPASS_WALL_TARGET_CM;
+    INT error = (INT)cm - (INT)target;
     if (error >= -BYPASS_WALL_DEADBAND_CM && error <= BYPASS_WALL_DEADBAND_CM)
         error = 0;
     INT correction = bypass.side * CLAMP(error, -BYPASS_STEER_LIMIT, BYPASS_STEER_LIMIT);
@@ -762,13 +809,17 @@ static void bypass_after_stop(void)
     bypass.attempts = 0;
     switch (bypass.phase) {
     case BYPASS_IDLE:
-        bypass.wait = BYPASS_WAIT_SCAN;
-        bypass.deadline_us = time_us() + BYPASS_SCAN_MS * 1000U;
-        if (tk_set_flg(ranger_flgid, SONAR_SCAN_REQUEST) < E_OK)
-            bypass_abort("scan request failed");
+        bypass_scan();
+        break;
+    case BYPASS_REVERSE:
+        if (bypass.reverse_resume == BYPASS_IDLE)
+            bypass_scan();
+        else
+            bypass_probe(bypass.reverse_resume, SONAR_PROBE_FRONT_FLAG);
         break;
     case BYPASS_TURN_OUT:
-        bypass_probe(BYPASS_CHECK_OUT, SONAR_PROBE_FRONT_FLAG);
+        bypass_probe(bypass.front_face ? BYPASS_CHECK_FORWARD : BYPASS_CHECK_OUT,
+                     SONAR_PROBE_FRONT_FLAG);
         break;
     case BYPASS_SHIFT_OUT:
         bypass.shift_remaining_ms -= bypass.segment_ms;
@@ -784,6 +835,10 @@ static void bypass_after_stop(void)
     case BYPASS_CHECK_SIDE:
         bypass_probe(BYPASS_CHECK_SIDE, bypass_side_probe());
         break;
+    case BYPASS_ACQUIRE_WALL:
+        bypass.acquire_remaining_ms -= bypass.segment_ms;
+        bypass_probe(BYPASS_CHECK_SIDE, bypass_side_probe());
+        break;
     case BYPASS_PEEK_OUT:
         bypass_probe(BYPASS_CHECK_PEEK, bypass_side_probe());
         break;
@@ -795,6 +850,18 @@ static void bypass_after_stop(void)
         bypass_probe(BYPASS_CHECK_SIDE, bypass_side_probe());
         break;
     case BYPASS_TURN_IN:
+        if (bypass.front_face) {
+            bypass.front_face = FALSE;
+            bypass.wall_seen = FALSE;
+            bypass.corner_active = FALSE;
+            bypass.wall_cm = 0;
+            bypass.acquire_remaining_ms = BYPASS_ACQUIRE_MAX_CM * BYPASS_MS_PER_CM;
+            tm_printf((UB *)"[bypass] Front corner cleared; following obstacle side\n");
+            bypass_probe(BYPASS_CHECK_FORWARD, SONAR_PROBE_FRONT_FLAG);
+            break;
+        }
+        bypass_probe(BYPASS_CHECK_RETURN, SONAR_PROBE_FRONT_FLAG);
+        break;
     case BYPASS_FIND_LINE:
         bypass_probe(BYPASS_CHECK_RETURN, SONAR_PROBE_FRONT_FLAG);
         break;
@@ -817,10 +884,28 @@ static void bypass_profile(const OBSTACLE_PROFILE *profile)
 {
     BOOL left = profile->left_edge_valid && profile->left_offset_valid;
     BOOL right = profile->right_edge_valid && profile->right_offset_valid;
-    if (!profile->profile_valid || (!left && !right) ||
-        profile->closest_cm + BYPASS_PIVOT_FROM_FRONT_CM <
+    if (!profile->profile_valid || profile->closest_cm < 2U || profile->closest_cm > 400U) {
+        bypass_abort("invalid obstacle scan");
+        return;
+    }
+    if (profile->closest_cm + BYPASS_PIVOT_FROM_FRONT_CM <
         bypass_swept_radius_cm() + WALL_BODY_GAP_CM) {
-        bypass_abort("invalid profile / no observed edge / pivot too close");
+        bypass_reverse(BYPASS_IDLE);
+        return;
+    }
+    bypass.front_face = !left && !right;
+    if (bypass.front_face) {
+        if (profile->front_cm < 2U || profile->front_cm > 400U) {
+            bypass_abort("missing front-face distance");
+            return;
+        }
+        bypass.side = profile->left_scan_cm >= profile->right_scan_cm ? 1 : -1;
+        bypass.front_wall_target_cm = ((profile->front_cm + BYPASS_PIVOT_FROM_FRONT_CM) * 1414U + 999U) / 1000U;
+        // The front scan anchors the first corner estimate if the diagonal ray already misses the edge.
+        bypass.wall_cm = bypass.front_wall_target_cm;
+        tm_printf((UB *)"[bypass] No edge visible; follow front face %s, ray target=%u cm\n",
+                  bypass.side > 0 ? "left" : "right", bypass.front_wall_target_cm);
+        bypass_pivot(BYPASS_TURN_OUT, bypass.side, 90U);
         return;
     }
     bypass.side = left && (!right || profile->left_offset_cm <= profile->right_offset_cm) ? 1 : -1;
@@ -830,6 +915,7 @@ static void bypass_profile(const OBSTACLE_PROFILE *profile)
         return;
     }
     bypass.shift_remaining_ms = offset * BYPASS_MS_PER_CM;
+    bypass.acquire_remaining_ms = BYPASS_ACQUIRE_MAX_CM * BYPASS_MS_PER_CM;
     tm_printf((UB *)"[bypass] Pass %s; offset=%u cm, wall ray target=%u cm\n",
               bypass.side > 0 ? "left" : "right", offset, BYPASS_WALL_TARGET_CM);
     bypass_pivot(BYPASS_TURN_OUT, bypass.side, 90U);
@@ -841,12 +927,35 @@ static void bypass_probe_result(const SONAR_PROBE_RESULT *probe)
         bypass_abort("unexpected sonar angle");
         return;
     }
+    if (!probe->valid && probe->status == SONAR_TOO_CLOSE && probe->angle_deg == 0) {
+        bypass_reverse(bypass.phase);
+        return;
+    }
+    if (bypass_sonar_fault(probe))
+        return;
     BOOL side_check = bypass.phase == BYPASS_CHECK_SIDE || bypass.phase == BYPASS_CHECK_PEEK;
-    if (!probe->valid || (side_check && !bypass_wall_present(probe))) {
-        if (++bypass.attempts < BYPASS_SCAN_ATTEMPTS) {
+    BOOL no_echo_front = !probe->valid && probe->status == SONAR_NO_ECHO && probe->angle_deg == 0;
+    if ((!probe->valid && !no_echo_front) || (side_check && !bypass_wall_present(probe))) {
+        // After the first peek, each stopped scan already supplies three samples.
+        BOOL corner_recheck = bypass.phase == BYPASS_CHECK_SIDE && bypass.corner_active &&
+                              (probe->valid || probe->status == SONAR_NO_ECHO);
+        if (++bypass.attempts < BYPASS_SCAN_ATTEMPTS && !corner_recheck) {
             bypass_probe(bypass.phase, bypass.probe_flag);
+        } else if (!probe->valid && probe->status != SONAR_NO_ECHO) {
+            bypass_abort("unstable / invalid sonar response");
         } else if (bypass.phase == BYPASS_CHECK_SIDE) {
-            bypass_corner_peek();
+            if (bypass.wall_seen || bypass.front_face) {
+                if (bypass.corner_active)
+                    bypass_probe(BYPASS_CHECK_CLEAR, SONAR_PROBE_FRONT_FLAG);
+                else
+                    bypass_corner_peek();
+            } else if (bypass.acquire_remaining_ms != 0U) {
+                // Before reaching the near corner, the diagonal ray may miss the box.
+                tm_printf((UB *)"[bypass] Wall not acquired; checking forward search path\n");
+                bypass_probe(BYPASS_CHECK_ACQUIRE, SONAR_PROBE_FRONT_FLAG);
+            } else {
+                bypass_abort("wall not acquired within search limit");
+            }
         } else if (bypass.phase == BYPASS_CHECK_PEEK) {
             bypass_pivot(BYPASS_PEEK_BACK, bypass.side, BYPASS_PEEK_DEG);
         } else {
@@ -862,6 +971,8 @@ static void bypass_probe_result(const SONAR_PROBE_RESULT *probe)
                 ROBOT_LENGTH_CM + WALL_BODY_GAP_CM) * BYPASS_MS_PER_CM;
             bypass_pivot(BYPASS_PEEK_BACK, bypass.side, BYPASS_PEEK_DEG);
         } else {
+            if (!bypass.wall_seen)
+                tm_printf((UB *)"[bypass] Wall acquired: %u cm\n", probe->distance_cm);
             bypass.wall_seen = TRUE;
             bypass.wall_cm = probe->distance_cm;
             bypass.corner_active = FALSE;
@@ -870,13 +981,20 @@ static void bypass_probe_result(const SONAR_PROBE_RESULT *probe)
         return;
     }
     UW reserve = BYPASS_STOP_DISTANCE_CM + WALL_BODY_GAP_CM;
-    if (probe->distance_cm <= reserve || probe->distance_cm > 400U) {
-        bypass_abort("forward path blocked");
+    if (!no_echo_front && probe->distance_cm > 400U) {
+        bypass_abort("out-of-range forward reading");
         return;
     }
-    // Reserve stopping room, allowing twice the estimated forward speed between checks.
-    UW budget = (probe->distance_cm - reserve) * BYPASS_MS_PER_CM / 2U;
+    if (!no_echo_front && probe->distance_cm <= reserve) {
+        bypass_reverse(bypass.phase);
+        return;
+    }
+    // shortcut: no echo can hide a disconnected sensor; add independent sensing if that must prevent motion.
+    UW budget = no_echo_front ? BYPASS_NO_ECHO_STEP_CM * BYPASS_MS_PER_CM :
+        (probe->distance_cm - reserve) * BYPASS_MS_PER_CM / 2U;
     bypass.front_budget_ms = budget < BYPASS_FRONT_INTERVAL_MS ? budget : BYPASS_FRONT_INTERVAL_MS;
+    if (no_echo_front)
+        tm_printf((UB *)"[bypass] Forward no echo; travel budget=%u ms\n", bypass.front_budget_ms);
     UW duration = bypass.front_budget_ms;
     switch (bypass.phase) {
     case BYPASS_CHECK_OUT:
@@ -886,9 +1004,15 @@ static void bypass_probe_result(const SONAR_PROBE_RESULT *probe)
     case BYPASS_CHECK_FORWARD:
         bypass_track();
         break;
+    case BYPASS_CHECK_ACQUIRE:
+        if (duration > BYPASS_SEARCH_STEP_CM * BYPASS_MS_PER_CM)
+            duration = BYPASS_SEARCH_STEP_CM * BYPASS_MS_PER_CM;
+        if (duration > bypass.acquire_remaining_ms) duration = bypass.acquire_remaining_ms;
+        bypass_drive(BYPASS_ACQUIRE_WALL, FORWARD_SPEED_BARCODE, -FORWARD_SPEED_BARCODE, duration);
+        break;
     case BYPASS_CHECK_CLEAR:
         if (bypass.corner_remaining_ms == 0U) {
-            if (probe->distance_cm + BYPASS_PIVOT_FROM_FRONT_CM <
+            if (!no_echo_front && probe->distance_cm + BYPASS_PIVOT_FROM_FRONT_CM <
                 bypass_swept_radius_cm() + WALL_BODY_GAP_CM)
                 bypass_abort("insufficient room for inward pivot");
             else
@@ -957,7 +1081,9 @@ static void bypass_update(const NAVIGATOR_MESSAGE *message)
     if (message->type == MSG_MOTOR_STOPPED && bypass.wait == BYPASS_WAIT_STOP) {
         bypass_after_stop();
     } else if (message->type == MSG_OBSTACLE_PROFILED && bypass.wait == BYPASS_WAIT_SCAN) {
-        bypass_profile(&message->data.obstacle_profile);
+        if ((W)(message->sampled_at_us - bypass.requested_us) >= 0 &&
+            (UW)(now - message->sampled_at_us) < BYPASS_SCAN_MS * 1000U)
+            bypass_profile(&message->data.obstacle_profile);
     } else if (message->type == MSG_SONAR_PROBED && bypass.wait == BYPASS_WAIT_PROBE) {
         if ((W)(message->sampled_at_us - bypass.requested_us) >= 0 &&
             (UW)(now - message->sampled_at_us) < BYPASS_RESPONSE_MS * 1000U)
@@ -969,10 +1095,15 @@ static void bypass_update(const NAVIGATOR_MESSAGE *message)
         if ((W)(message->sampled_at_us - bypass.requested_us) < 0 ||
             (UW)(now - message->sampled_at_us) >= BYPASS_TRACK_STALE_MS * 1000U)
             return;
+        if (bypass_sonar_fault(probe))
+            return;
         if (probe->angle_deg != -45 * bypass.side) {
             bypass_abort("unexpected tracking angle");
             return;
         }
+        if (bypass.wait == BYPASS_WAIT_TRACK)
+            tm_printf((UB *)"[bypass] Side %d: %u cm valid=%d\n",
+                      probe->angle_deg, probe->distance_cm, probe->valid);
         if (!bypass_wall_present(probe)) {
             bypass_stop(BYPASS_CHECK_SIDE);
             return;
@@ -981,6 +1112,8 @@ static void bypass_update(const NAVIGATOR_MESSAGE *message)
             bypass_abort("wall too close");
             return;
         }
+        if (!bypass.wall_seen)
+            tm_printf((UB *)"[bypass] Wall acquired: %u cm\n", probe->distance_cm);
         bypass.wall_seen = TRUE;
         bypass.wall_cm = probe->distance_cm;
         bypass.last_tracking_us = message->sampled_at_us;
