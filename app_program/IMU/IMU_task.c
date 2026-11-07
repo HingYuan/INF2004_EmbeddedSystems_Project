@@ -257,14 +257,17 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 int16_t heading = imu_get_heading_deg();
                 (void)heading;
 
-                if (iabs((INT)roll) >= 5 || iabs((INT)pitch) >= 5) {
-                    float gx, gy, gz;
-                    imu_read_accel_g(&gx, &gy, &gz);
+                BOOL is_tilted = (fabsf(roll) >= HUMP_TILT_THRESHOLD_DEG || fabsf(pitch) >= HUMP_TILT_THRESHOLD_DEG);
 
-                    // Instantaneous geometric height: h = L * sin(tilt)
-                    // Does NOT integrate time, so it never drifts when resting on the peak.
-                    float sin_tilt = imu_sqrtf(SQ(gx) + SQ(gy)) / (total_g > 0.01f ? total_g : 1.0f);
-                    float current_height_mm = HUMP_CHASSIS_SCALE_MM * sin_tilt;
+                if (is_tilted) {
+                    // Geometric height:
+                    // For single-sided ramp (left/right wheel), roll is dominant -> scale by track width (100mm).
+                    // For full-width ramp, pitch is dominant -> scale by chassis wheelbase (150mm).
+                    float safe_total_g = (total_g > 0.01f ? total_g : 1.0f);
+                    float h_roll = HUMP_TRACK_WIDTH_MM * (fabsf(gy) / safe_total_g);
+                    float h_pitch = HUMP_CHASSIS_SCALE_MM * (fabsf(gx) / safe_total_g);
+                    float current_height_mm = (h_roll > h_pitch) ? h_roll : h_pitch;
+
                     if (current_height_mm > hump_peak_height) {
                         hump_peak_height = current_height_mm;
                     }
@@ -288,9 +291,14 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     if (no_hump_sent) no_hump_sent = 0;
                 } else {
                     if (!no_hump_sent) {
+                        // Returned back down to ground: report the final calculated peak height!
+                        float final_peak_height = hump_peak_height;
+
                         IMU_TELEMETRY_MSG msg = {
                             .event = IMU_MSG_NO_HUMP,
-                            .estimated_height_mm = 0.0f,
+                            .pitch_deg = pitch,
+                            .roll_deg = roll,
+                            .estimated_height_mm = final_peak_height,
                         };
 
                         NAVIGATOR_MESSAGE n_msg = {
@@ -299,6 +307,9 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         };
 
                         tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+
+                        tm_printf((UB *)"[IMU HUMP] Returned to ground. Final Peak Height: %d mm\n", (INT)final_peak_height);
+
                         hump_peak_height = 0.0f;
                         vertical_velocity = 0.0f;
                         telemetry_snapshot.estimated_height_mm = 0.0f;
@@ -314,7 +325,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     telemetry_snapshot.pitch_deg = pitch;
                     telemetry_snapshot.roll_deg = roll;
                     telemetry_snapshot.imu_state = (uint8_t)state;
-                    if (iabs(roll) < 5 && iabs(pitch) < 5) {
+                    if (!is_tilted) {
                         telemetry_snapshot.imu_event = IMU_MSG_NONE;
                     }
                 }
