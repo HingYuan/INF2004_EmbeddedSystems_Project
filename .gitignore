@@ -26,5 +26,4 @@ __pycache__/
 .cursor/rules/caveman.mdc
 <<<<<<< Updated upstream
 .venv/
-=======
->>>>>>> Stashed changes
+venv/

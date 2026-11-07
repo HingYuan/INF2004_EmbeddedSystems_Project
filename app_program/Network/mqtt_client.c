@@ -117,6 +117,8 @@ static DIRECTION movement_direction(const MOTOR_COMMAND *command)
        command->target_speed_right == -40) return DIR_LEFT;
     if(command->target_speed_left == 40 &&
        command->target_speed_right == 40) return DIR_RIGHT;
+    if(command->target_speed_left == 0 &&
+       command->target_speed_right == 0) return DIR_STOP;
     return DIR_INVALID;
 }
 
@@ -430,6 +432,10 @@ SZ telemetry_json(char *output, SZ capacity)
     json_float(output, capacity, &length, telemetry_snapshot.pitch_deg);
     json_text(output, capacity, &length, ",\"roll\":");
     json_float(output, capacity, &length, telemetry_snapshot.roll_deg);
+    json_text(output, capacity, &length, ",\"height_mm\":");
+    json_float(output, capacity, &length, telemetry_snapshot.estimated_height_mm);
+    json_text(output, capacity, &length, ",\"imu_state\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.imu_state);
     json_text(output, capacity, &length, ",\"imu_event\":");
     json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.imu_event);
 
