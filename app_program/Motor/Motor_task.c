@@ -10,10 +10,13 @@
 // #define MOTOR_PWM_WRAP  6249U
 #define MOTOR_PWM_WRAP  3124U		// halved the PWM wrap. Below I also maintained the PWM duty cycle. Testing stuff
 
-#define CTRL_PERIOD_MS          8   /* state machine period */
+#define CTRL_PERIOD_MS          1   /* 1 x 20 ms (tk_dly_tsk(2)) = 20 ms (50 Hz) state machine period */
 #define BRAKE_STEP_PCT          200  /* BRAKE: immediate stop */
 #define STALL_MIN_PCT           10   /* only check stall above this power */
 #define STALL_PERIODS           125   /* 25 x 20 ms = 0.5 s with no ticks = stall */
+#define STALL_PERIODS           50   /* 50 x 20 ms = 1.0 s with no ticks = stall */
+#define KP_TRIM                 2    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
+#define MAX_TRIM_PCT            10   /* Maximum closed-loop trim adjustment (% PWM) */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 
@@ -45,6 +48,77 @@ LOCAL UINT read_encoder_state(UINT pin_a, UINT pin_b)
 {
 	return ((gpio_get_val(pin_a) != 0) ? 2U : 0U)
 		| ((gpio_get_val(pin_b) != 0) ? 1U : 0U);
+}
+
+// Track current motor PWM outputs for encoder direction sign inside ISR
+LOCAL volatile INT isr_out_l = 0;
+LOCAL volatile INT isr_out_r = 0;
+LOCAL volatile W isr_ticks_la = 0, isr_ticks_lb = 0;
+LOCAL volatile W isr_ticks_ra = 0, isr_ticks_rb = 0;
+
+// 0.5 ms (500 us) RP2040 Hardware Timer Alarm 0 ISR for jitter-free optical encoder sampling
+LOCAL void encoder_alarm_isr(UINT intno)
+{
+	out_w(TIMER_INTR, 1U);
+	out_w(TIMER_ALARM0, in_w(TIMER_TIMERAWL) + 500U);
+	ClearInt(intno);
+
+	UW v = in_w(GPIO_IN);
+	UINT raw_la = (v >> MOTOR_LEFT_ENC_A) & 1U;
+	UINT raw_lb = (v >> MOTOR_LEFT_ENC_B) & 1U;
+	UINT raw_ra = (v >> MOTOR_RIGHT_ENC_A) & 1U;
+	UINT raw_rb = (v >> MOTOR_RIGHT_ENC_B) & 1U;
+
+	INT dir_l = (isr_out_l > 0) ? 1 : (isr_out_l < 0 ? -1 : 1);
+	INT dir_r = (isr_out_r < 0) ? 1 : (isr_out_r > 0 ? -1 : 1);
+
+	static UINT deb_la = 1, deb_lb = 1, deb_ra = 1, deb_rb = 1;
+	static UB cnt_la = 0, cnt_lb = 0, cnt_ra = 0, cnt_rb = 0;
+	static UB cd_la = 0, cd_lb = 0, cd_ra = 0, cd_rb = 0;
+	static W raw_cnt_la = 0, raw_cnt_lb = 0, raw_cnt_ra = 0, raw_cnt_rb = 0;
+
+	if (cd_la > 0) cd_la--;
+	if (cd_lb > 0) cd_lb--;
+	if (cd_ra > 0) cd_ra--;
+	if (cd_rb > 0) cd_rb--;
+
+	// 2 samples (1.0 ms) fast debounce + 90 samples (45 ms) cooldown captures both slot edges (~40 edges/rev)
+	// Dividing by 2 converts the 2 edges per slot into 1 tick per slot (~20 ticks/rev)
+	if (raw_la != deb_la) {
+		if (++cnt_la >= 2) {
+			deb_la = raw_la; cnt_la = 0;
+			if (deb_la && cd_la == 0) { raw_cnt_la += dir_l; cd_la = 90; }
+		}
+	} else { cnt_la = 0; }
+
+	if (raw_lb != deb_lb) {
+		if (++cnt_lb >= 2) {
+			deb_lb = raw_lb; cnt_lb = 0;
+			if (deb_lb && cd_lb == 0) { raw_cnt_lb += dir_l; cd_lb = 90; }
+		}
+	} else { cnt_lb = 0; }
+
+	if (raw_ra != deb_ra) {
+		if (++cnt_ra >= 2) {
+			deb_ra = raw_ra; cnt_ra = 0;
+			if (deb_ra && cd_ra == 0) { raw_cnt_ra += dir_r; cd_ra = 90; }
+		}
+	} else { cnt_ra = 0; }
+
+	if (raw_rb != deb_rb) {
+		if (++cnt_rb >= 2) {
+			deb_rb = raw_rb; cnt_rb = 0;
+			if (deb_rb && cd_rb == 0) { raw_cnt_rb += dir_r; cd_rb = 90; }
+		}
+	} else { cnt_rb = 0; }
+
+	isr_ticks_la = raw_cnt_la / 2;
+	isr_ticks_lb = raw_cnt_lb / 2;
+	isr_ticks_ra = raw_cnt_ra / 2;
+	isr_ticks_rb = raw_cnt_rb / 2;
+
+	enc_l_ticks = isr_ticks_la;
+	enc_r_ticks = isr_ticks_rb;
 }
 
 // Drive one motor. speed: -100..100 percent.
@@ -93,7 +167,7 @@ LOCAL INT ramp(INT cur, INT target, INT step)
 }
 
 /* TRUE when a wheel is powered but its encoder has not moved for STALL_PERIODS */
-LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt)
+LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt_l, INT *cnt_r)
 {
 	BOOL l = (iabs(out_l) >= STALL_MIN_PCT && dl == 0);
 	BOOL r = (iabs(out_r) >= STALL_MIN_PCT && dr == 0);
@@ -101,6 +175,19 @@ LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt)
 	// Stall only when both powered wheels are physically stuck
 	if(l && r) (*cnt)++; else *cnt = 0;
 	return (*cnt >= STALL_PERIODS);
+	if (iabs(out_l) >= STALL_MIN_PCT) {
+		if (dl == 0) (*cnt_l)++; else *cnt_l = 0;
+	} else {
+		*cnt_l = 0;
+	}
+
+	if (iabs(out_r) >= STALL_MIN_PCT) {
+		if (dr == 0) (*cnt_r)++; else *cnt_r = 0;
+	} else {
+		*cnt_r = 0;
+	}
+
+	return (*cnt_l >= STALL_PERIODS || *cnt_r >= STALL_PERIODS);
 }
 
 EXPORT void motor_task(INT stacd, void *exinf)
@@ -125,8 +212,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 	W turn_start_r = 0;
 	INT turn_goal_l = 0;
 	INT turn_goal_r = 0;
+	W cruise_start_l = 0;
+	W cruise_start_r = 0;
 	
-	INT stall_cnt = 0;
+	INT stall_cnt_l = 0, stall_cnt_r = 0;
 	INT ms = 0;
 	INT stop_stable_periods = 0;
 
@@ -177,6 +266,17 @@ EXPORT void motor_task(INT stacd, void *exinf)
 		UINT diff_l = left_state ^ next_left;
 		if (diff_l & next_left) {
 			enc_l_ticks += (out_l > 0) ? 1 : (out_l < 0 ? -1 : 1);
+	// Start 2000 Hz (500 us) RP2040 Hardware Timer Alarm 0 (IRQ 0)
+	{
+		T_DINT dint = {0};
+		dint.intatr = TA_HLNG;
+		dint.inthdr = (FP)encoder_alarm_isr;
+		if (tk_def_int(0, &dint) == E_OK) {
+			out_w(TIMER_INTR, 1U);
+			set_w(TIMER_INTE, 1U);
+			out_w(TIMER_ALARM0, in_w(TIMER_TIMERAWL) + 500U);
+			ClearInt(0);
+			EnableInt(0, 2);
 		}
 
 		UINT diff_r = right_state ^ next_right;
@@ -186,6 +286,14 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 		left_state = next_left;
 		right_state = next_right;
+	}
+
+	while(1) {
+		/* ---- encoders sampled at 2000 Hz in hardware ISR encoder_alarm_isr ---- */
+		(void)left_state;
+		(void)right_state;
+		isr_out_l = out_l;
+		isr_out_r = out_r;
 
 		if (motor_estop) {
 			if (state != MS_ESTOP) {
@@ -231,6 +339,21 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			}
 
 
+			// Periodic tick logging when wheels rotate or power applied
+			static W last_la = 0, last_lb = 0, last_ra = 0, last_rb = 0;
+			if (++print_timer >= 15) {
+				print_timer = 0;
+				if (isr_ticks_la != last_la || isr_ticks_lb != last_lb || isr_ticks_ra != last_ra || isr_ticks_rb != last_rb || out_l != 0 || out_r != 0) {
+					last_la = isr_ticks_la; last_lb = isr_ticks_lb;
+					last_ra = isr_ticks_ra; last_rb = isr_ticks_rb;
+					last_print_l = enc_l_ticks;
+					last_print_r = enc_r_ticks;
+					tm_printf((UB *)"[enc] ticks L=%d R=%d (LA=%d LB=%d | RA=%d RB=%d) | dist L=%d R=%d mm\n",
+						(INT)enc_l_ticks, (INT)enc_r_ticks,
+						(INT)isr_ticks_la, (INT)isr_ticks_lb, (INT)isr_ticks_ra, (INT)isr_ticks_rb,
+						motor_get_left_dist_mm(), motor_get_right_dist_mm());
+				}
+			}
 
 			switch(state) {
 
@@ -280,8 +403,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					turn_goal_r = cmd.turn_ticks_right;
 					turn_start_l = enc_l_ticks;
 					turn_start_r = enc_r_ticks;
+					cruise_start_l = enc_l_ticks;
+					cruise_start_r = enc_r_ticks;
 
-					stall_cnt = 0;
+					stall_cnt_l = 0; stall_cnt_r = 0;
 					out_l = tgt_l;
 					out_r = tgt_r;
 
@@ -298,6 +423,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 			case MS_CRUISE:
 				if(new_cmd) {
+					if(cmd.target_speed_left != tgt_l || cmd.target_speed_right != tgt_r) {
+						cruise_start_l = enc_l_ticks;
+						cruise_start_r = enc_r_ticks;
+					}
 					tgt_l = cmd.target_speed_left;
 					tgt_r = cmd.target_speed_right;
 
@@ -326,15 +455,30 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 				// Driving straight forward means opposite signs (e.g. +50 left, -50 right)
 				if(tgt_l == -tgt_r && tgt_l != 0) {
+					// Closed-loop encoder trim so both wheels track the exact same distance
+					INT moved_l = iabs((INT)(enc_l_ticks - cruise_start_l));
+					INT moved_r = iabs((INT)(enc_r_ticks - cruise_start_r));
+					INT trim = (moved_l - moved_r) * KP_TRIM;
+					if (trim > MAX_TRIM_PCT) trim = MAX_TRIM_PCT;
+					if (trim < -MAX_TRIM_PCT) trim = -MAX_TRIM_PCT;
+
+					if (tgt_l > 0) {
+						out_l = tgt_l - trim;
+						out_r = tgt_r - trim; // tgt_r is negative, so -trim increases magnitude when trim > 0
+					} else {
+						out_l = tgt_l + trim;
+						out_r = tgt_r + trim;
+					}
+
 					// Fail-Safe: Check for broken encoder sensor (Section 7)
-					if((dl == 0 && iabs((INT)dr) > 1) ||
-					   (dr == 0 && iabs((INT)dl) > 1)) {
+					if((stall_cnt_l >= 35 && stall_cnt_r == 0) ||
+					   (stall_cnt_r >= 35 && stall_cnt_l == 0)) {
 						encoder_degraded = TRUE;
 						motor_fault_word |= FAULT_BIT_ENCODER; // Set Bit 1 (Sensor failed)
 					}
 				}
 
-				if(stalled(out_l, out_r, dl, dr, &stall_cnt)) {
+				if(stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
 					out_l = out_r = 0;
 
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
@@ -384,6 +528,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					// Simultaneous stop: when bounded target reached, stop both wheels together
 					BOOL move_finished = (turn_goal_l > 0 && turn_goal_r > 0) ?
 						(left_done || right_done) : (left_done && right_done);
+				// Stop each wheel individually when it reaches its target; complete turn when both finish
+				BOOL turn_finished = (left_done && right_done);
 
 					if (move_finished) {
 						out_l = 0;
@@ -406,7 +552,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					out_r = right_done ? 0 : tgt_r;
 
 				// Keep existing stall protection
-				if (stalled(out_l, out_r, dl, dr, &stall_cnt)) {
+				if (stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
 					out_l = out_r = 0;
 
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
@@ -432,8 +578,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					turn_goal_r = cmd.turn_ticks_right;
 					turn_start_l = enc_l_ticks;
 					turn_start_r = enc_r_ticks;
+					cruise_start_l = enc_l_ticks;
+					cruise_start_r = enc_r_ticks;
 					
-					stall_cnt = 0;
+					stall_cnt_l = 0; stall_cnt_r = 0;
 					move_done_pending = FALSE; // Cancel any prior turn completion
 					out_l = tgt_l;
 					out_r = tgt_r;
