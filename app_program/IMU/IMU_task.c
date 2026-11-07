@@ -39,14 +39,6 @@ LOCAL float imu_atan2f(float y, float x)
     return (y < 0.0f) ? -r : r;
 }
 
-// Swapped and inverted for physical IMU mounting:
-// Pitch is along sensor Y (inverted), Roll is along sensor X (inverted)
-LOCAL void imu_compute_pitch_roll(float gx, float gy, float gz, float *pitch, float *roll)
-{
-    *pitch = -imu_atan2f(gy, imu_sqrtf(SQ(gx) + SQ(gz))) * 180.0f / 3.14159265f;
-    *roll  = -imu_atan2f(gx, gz) * 180.0f / 3.14159265f;
-}
-
 #if (IMU_SDA_PIN % 4) != 0 || IMU_SDA_PIN > 20 || IMU_SCL_PIN != (IMU_SDA_PIN + 1)
 #error "IMU pins must be an RP2040 I2C0 SDA/SCL pair: GP0/1, GP4/5, GP8/9, GP12/13, GP16/17 or GP20/21"
 #endif
@@ -181,8 +173,6 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
     IMU_FSM_STATE state = STATE_INITIALIZE;
     float baseline_z = 1.0f;
-    float baseline_pitch = 0.0f;
-    float baseline_roll = 0.0f;
     float vertical_velocity = 0.0f;
     float hump_peak_height = 0.0f;
     INT telemetry_timer = 0;
@@ -237,30 +227,15 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
             case STATE_CALIBRATING: {
                 float sum_z = 0.0f;
-                float sum_pitch = 0.0f;
-                float sum_roll = 0.0f;
                 const int SAMPLES = 50;
 
                 for (int i = 0; i < SAMPLES; i++) {
                     float gx, gy, gz;
                     imu_read_accel_g(&gx, &gy, &gz);
                     sum_z += gz;
-
-                    float p = 0.0f, r = 0.0f;
-                    imu_compute_pitch_roll(gx, gy, gz, &p, &r);
-                    sum_pitch += p;
-                    sum_roll += r;
-
                     tk_dly_tsk(10);
                 }
                 baseline_z = sum_z / (float)SAMPLES;
-                baseline_pitch = sum_pitch / (float)SAMPLES;
-                baseline_roll = sum_roll / (float)SAMPLES;
-
-                tm_printf((UB *)"[IMU CALIB] Zero offsets: Pitch=%d deg, Roll=%d deg, Z=%d.%02d g\n",
-                          (INT)baseline_pitch, (INT)baseline_roll,
-                          (INT)baseline_z, (INT)(fabsf(baseline_z * 100.0f)) % 100);
-
                 state = STATE_MONITORING;
                 break;
             }
@@ -273,12 +248,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 float total_g_sq = SQ(gx) + SQ(gy) + SQ(gz);
 
                 float total_g = imu_sqrtf(total_g_sq);
-                float raw_pitch = 0.0f, raw_roll = 0.0f;
-                imu_compute_pitch_roll(gx, gy, gz, &raw_pitch, &raw_roll);
-
-                // Calibrated pitch and roll (0.0 deg on flat ground)
-                float pitch = raw_pitch - baseline_pitch;
-                float roll  = raw_roll  - baseline_roll;
+                float pitch = imu_atan2f(gx, imu_sqrtf(SQ(gy) + SQ(gz))) * 180.0f / 3.14159f;
+                float roll  = imu_atan2f(gy, gz) * 180.0f / 3.14159f;
 
                 // tm_printf((UB *)"[IMU] Pitch: %4d | Roll: %4d | Total: %d.%02d g\n",
                 //             (INT)pitch, (INT)roll, (INT)total_g, (INT)(fabsf(total_g * 100.0f)) % 100);
@@ -292,9 +263,9 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     // Geometric height:
                     // For single-sided ramp (left/right wheel), roll is dominant -> scale by track width (100mm).
                     // For full-width ramp, pitch is dominant -> scale by chassis wheelbase (150mm).
-                    const float DEG_TO_RAD = 3.14159265f / 180.0f;
-                    float h_roll = HUMP_TRACK_WIDTH_MM * (fabsf(roll) * DEG_TO_RAD);
-                    float h_pitch = HUMP_CHASSIS_SCALE_MM * (fabsf(pitch) * DEG_TO_RAD);
+                    float safe_total_g = (total_g > 0.01f ? total_g : 1.0f);
+                    float h_roll = HUMP_TRACK_WIDTH_MM * (fabsf(gy) / safe_total_g);
+                    float h_pitch = HUMP_CHASSIS_SCALE_MM * (fabsf(gx) / safe_total_g);
                     float current_height_mm = (h_roll > h_pitch) ? h_roll : h_pitch;
 
                     if (current_height_mm > hump_peak_height) {
@@ -365,8 +336,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     break;
                 }
 
-                // Priority 2: Tilt Warning (Pitch or Roll > 30 deg)
-                if (fabsf(pitch) > SAFE_TILT_LIMIT_DEG || fabsf(roll) > SAFE_TILT_LIMIT_DEG) {
+                // Priority 2: Tilt Warning (Pitch > 30 deg equivalent)
+                if (SQ(gx) > (total_g_sq * TILT_30_RATIO)) {
                     state = STATE_TILT_WARNING;
                     break;
                 }
@@ -380,27 +351,22 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 
                 // Allow expensive math here because the car is likely stopped/recovering anyway
                 float total_g = imu_sqrtf(SQ(gx) + SQ(gy) + SQ(gz));
-                float raw_pitch = 0.0f, raw_roll = 0.0f;
-                imu_compute_pitch_roll(gx, gy, gz, &raw_pitch, &raw_roll);
-                float pitch = raw_pitch - baseline_pitch;
-                float roll  = raw_roll  - baseline_roll;
+                float pitch = imu_atan2f(gx, imu_sqrtf(SQ(gy) + SQ(gz))) * 180.0f / 3.14159f;
 
                 IMU_TELEMETRY_MSG msg = {
                     .event = IMU_MSG_TILT_WARNING,
                     .pitch_deg = pitch,
-                    .roll_deg = roll,
                     .peak_g = total_g
                 };
                 if (navigator_mbfid > E_OK) {
                     telemetry_snapshot.pitch_deg = pitch;
-                    telemetry_snapshot.roll_deg = roll;
                     telemetry_snapshot.imu_state = (uint8_t)state;
                     telemetry_snapshot.imu_event = IMU_MSG_TILT_WARNING;
                     NAVIGATOR_MESSAGE nav_msg = { .type = MSG_IMU_UPDATE, .data.imu_telemetry_msg = msg };
                     (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
                 }
 
-                if (fabsf(pitch) < (SAFE_TILT_LIMIT_DEG - 5.0f) && fabsf(roll) < (SAFE_TILT_LIMIT_DEG - 5.0f)) {
+                if (fabsf(pitch) < (SAFE_TILT_LIMIT_DEG - 5.0f)) {
                     state = STATE_MONITORING;
                 }
                 break;
