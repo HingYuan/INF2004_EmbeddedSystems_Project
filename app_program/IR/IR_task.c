@@ -71,9 +71,6 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
     UB pin_left = (stacd >> 8) & 0xFF;
     UB pin_right = stacd & 0xFF;
 
-    tm_printf("%d\n", pin_left);
-    tm_printf("%d\n", pin_right);
-
     ID adc_dd = tk_opn_dev((const UB *)"adca", TD_READ);
     if (adc_dd < E_OK) {
         tm_printf((UB *)"[ir] opening ADC failed: %d\n", adc_dd);
@@ -85,7 +82,7 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
         SZ actual;
         ER err;
 
-        err = tk_srea_dev(adc_dd, 0, &raw_right, 1, &actual);
+        err = tk_srea_dev(adc_dd, 1, &raw_right, 1, &actual);
         if (err != E_OK) {
             tm_printf((UB *)"[ir] GP26 ADC read failed: %d\n", err);
             return;
@@ -100,13 +97,15 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
         UH right_state = (UH)((raw_right * 3300U) / 4095U);
         UH left_state = (UH)((raw_left * 3300U) / 4095U);
 
+        tm_printf("%d %d\n", left_state, right_state);
+
         NAVIGATOR_MESSAGE nm;
         nm.type = MSG_IR_UPDATE;
         if (left_state >= ADC_IR_THRESHOLD && right_state >= ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_B;        // Black-black
         else if (left_state < ADC_IR_THRESHOLD && right_state < ADC_IR_THRESHOLD) nm.data.ir_state = STATE_W_W;     // White-white
         else if (left_state >= ADC_IR_THRESHOLD && right_state < ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_W;    // Black-white
         else nm.data.ir_state = STATE_W_B;                                                                          // White-black
-        
+
         tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
 
         tk_dly_tsk(10);
@@ -209,7 +208,7 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
 
                 tm_printf((UB *)"[decoder] Matched pattern 0x%03X to character: %c\n", current_pattern, decoded_char);
 
-                if (decoded_char != '*') {  //ignore asterisk
+                if (decoded_char != '*' && decoded_char != '?') {  //ignore asterisk
                     // Construct and send message to navigator
                     NAVIGATOR_MESSAGE nm = {
                         .type = MSG_BARCODE_DECODED,

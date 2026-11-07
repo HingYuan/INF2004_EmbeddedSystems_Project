@@ -21,21 +21,6 @@ void clear_navigator_mbf() {
 
 /*
 Note for Bryan, rmb to remove mqtt_get_movement_for_barcode function from network code
-
-static BOOL execute_mapped_barcode(B barcode, MOTOR_COMMAND *command)
-{
-    if(!mqtt_get_movement_for_barcode((char)barcode, command)) {
-        tm_printf((UB *)"[nav] unmapped barcode: %c\n", barcode);
-        return FALSE;
-    }
-    if(tk_snd_mbf(motor_mbfid, (void *)command, sizeof(MOTOR_COMMAND),
-                  TMO_FEVR) < E_OK) {
-        tm_printf((UB *)"[nav] failed to send mapped barcode\n");
-        return FALSE;
-    }
-    return TRUE;
-
-
 In case you need it
 curr_speed_left = mot_cmd.target_speed_left;
 curr_speed_right = mot_cmd.target_speed_right;
@@ -55,7 +40,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd;
     // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    // MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
     // Sensor specific telemetry cache
     char last_decoded_char = 0;
@@ -72,16 +58,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     UH turning_rampup_count = 0;
 
     // Barcode decoding
-    B instruction_idx = 0;                                                     // Iterate through instructions for each intersection
-    B barcode_characters[NUMBER_OF_COMMANDS] = {};                              // Character key, sent from wifi
-    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                    // Instruction mapping, sent from wifi
+    B instruction_idx = 0;                                                      // Iterate through instructions for each intersection
+    B barcode_characters[NUMBER_OF_COMMANDS] = { 'A' };                              // Character key, sent from wifi
+    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_LEFT };                    // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                    // 
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
     DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT, DIR_STOP };
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;     // Preset all instructions as DIR_INVALID
-    // B instructions_count = 0;
-    B instructions_count = 5;
-    // B barcode_count = 0;
+    B instructions_count = 0;   
+    // B instructions_count = 5;
 
     // Decision making
     B num_rotations = 0;
@@ -160,7 +145,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 mapping_increment++;
                                 instructions_count++;
 
-                                if (mapping_increment > NUMBER_OF_COMMANDS) m_mode = MODE_BARCODE_SCANNING;
+                                if (mapping_increment >= NUMBER_OF_COMMANDS) {
+                                    m_mode = MODE_BARCODE_SCANNING;
+                                }
 
                                 break;
                             default:
@@ -174,19 +161,19 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE:
                                 switch (n_msg.data.ir_state) {
                                     case STATE_W_B:
-                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BASE;
-                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BASE;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BARCODE;
+                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BARCODE;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                                         break;
                                     case STATE_B_W:
-                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BASE;
-                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BASE;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BARCODE;
+                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BARCODE;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
@@ -194,8 +181,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     default:
                                         mot_cmd.target_speed_left =     FORWARD_SPEED_BARCODE;
                                         mot_cmd.target_speed_right =   -FORWARD_SPEED_BARCODE;
-                                        mot_cmd.turn_ticks_left =        0;
-                                        mot_cmd.turn_ticks_right =       0;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
@@ -217,6 +204,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     if (instruction_idx > NUMBER_OF_COMMANDS) {
                                         m_mode = MODE_LINE_FOLLOWING;
                                         instruction_idx = 0;
+
+                                        tk_dly_tsk(1000);
                                     }
                                 }
 
@@ -409,8 +398,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE:
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
-                                // DIRECTION curr_decision = instructions[instruction_idx];
-                                DIRECTION curr_decision = instructions_fake[instruction_idx];
+                                DIRECTION curr_decision = instructions[instruction_idx];
+                                // DIRECTION curr_decision = instructions_fake[instruction_idx];
 
                                 if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                     switch (curr_decision) {

@@ -14,7 +14,7 @@
 // #define FORWARD_SPEED           30
 // #define FORWARD_SPEED_BARCODE   30
 #define FORWARD_SPEED           50
-#define FORWARD_SPEED_BARCODE   50
+#define FORWARD_SPEED_BARCODE   30
 
 // Stop / brake
 #define STOP_SPEED              0
@@ -28,6 +28,11 @@
 #define LEFT_TURN_R_BASE        40
 #define RIGHT_TURN_L_BASE       40
 #define RIGHT_TURN_R_BASE       20
+
+#define LEFT_TURN_L_BARCODE     20
+#define LEFT_TURN_R_BARCODE     40
+#define RIGHT_TURN_L_BARCODE    40
+#define RIGHT_TURN_R_BARCODE    20
 
 // turning w/ max rampup
 #define LEFT_TURN_L_RAMP        20
@@ -144,7 +149,7 @@ typedef struct {
 =========================================
 */
 
-#define NUMBER_OF_COMMANDS 5
+#define NUMBER_OF_COMMANDS 1
 
 typedef enum {
     MODE_BARCODE_SCANNING,          // Slow speed barcode scanning

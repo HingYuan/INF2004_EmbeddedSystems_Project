@@ -104,7 +104,7 @@ EXPORT ER robot_tasks_start(void)
 	static const TASK_START tasks[] = {
 		{ ultrasonic_task, 2, packed_stacd_ultrasonic, TP_PRC1, "Ultrasonic" },     // Ultrasonic sensor + servo motor
 		{ ir_sensor_task, 2, packed_stacd_ir, TP_PRC1, "IR line sensors" },         // IR line following sensors
-		{ ir_barcode_task, 1, IR_LEFT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
+		{ ir_barcode_task, 2, IR_LEFT_PIN, TP_PRC1, "IR barcode sensor" },			// IR barcode sensor
 		{ ir_barcode_decoder_task, 1, 0, TP_PRC1, "IR barcode decoder" },			// Barcode decoder
 		{ motor_task, 2, 0, TP_PRC1, "Motors" },                                    // Motors
 		{ imu_task, 2, 0, TP_PRC2, "IMU" },											// IMU
@@ -112,7 +112,7 @@ EXPORT ER robot_tasks_start(void)
 
 		/* Below tasks for miscellaneous purposes */
 		// { ir_sensor_zeroing, 2, packed_stacd_ir, TP_PRC1, "IR-zeroing"},				// IR zeroing (for testing line following IR sensors)
-		{ diagnostic_task, 10, 0, TP_PRC1, "Diagnostic task" },						// Background task that measures free time
+		// { diagnostic_task, 10, 0, TP_PRC1, "Diagnostic task" },						// Background task that measures free time
 	};
     
     // Create flags
