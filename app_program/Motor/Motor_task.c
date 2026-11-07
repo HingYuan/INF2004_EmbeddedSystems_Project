@@ -10,10 +10,12 @@
 // #define MOTOR_PWM_WRAP  6249U
 #define MOTOR_PWM_WRAP  3124U		// halved the PWM wrap. Below I also maintained the PWM duty cycle. Testing stuff
 
-#define CTRL_PERIOD_MS          8   /* state machine period */
+#define CTRL_PERIOD_MS          1   /* 1 x 20 ms (tk_dly_tsk(2)) = 20 ms (50 Hz) state machine period */
 #define BRAKE_STEP_PCT          200  /* BRAKE: immediate stop */
 #define STALL_MIN_PCT           10   /* only check stall above this power */
-#define STALL_PERIODS           125  /* 125 x 8 ms = 1.0 s with no ticks = stall */
+#define STALL_PERIODS           50   /* 50 x 20 ms = 1.0 s with no ticks = stall */
+#define KP_TRIM                 2    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
+#define MAX_TRIM_PCT            10   /* Maximum closed-loop trim adjustment (% PWM) */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 
@@ -164,13 +166,21 @@ LOCAL INT ramp(INT cur, INT target, INT step)
 }
 
 /* TRUE when a wheel is powered but its encoder has not moved for STALL_PERIODS */
-LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt)
+LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt_l, INT *cnt_r)
 {
-	BOOL l = (iabs(out_l) >= STALL_MIN_PCT && dl == 0);
-	BOOL r = (iabs(out_r) >= STALL_MIN_PCT && dr == 0);
+	if (iabs(out_l) >= STALL_MIN_PCT) {
+		if (dl == 0) (*cnt_l)++; else *cnt_l = 0;
+	} else {
+		*cnt_l = 0;
+	}
 
-	if(l || r) (*cnt)++; else *cnt = 0;
-	return (*cnt >= STALL_PERIODS);
+	if (iabs(out_r) >= STALL_MIN_PCT) {
+		if (dr == 0) (*cnt_r)++; else *cnt_r = 0;
+	} else {
+		*cnt_r = 0;
+	}
+
+	return (*cnt_l >= STALL_PERIODS || *cnt_r >= STALL_PERIODS);
 }
 
 EXPORT void motor_task(INT stacd, void *exinf)
@@ -195,8 +205,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 	W turn_start_r = 0;
 	INT turn_goal_l = 0;
 	INT turn_goal_r = 0;
+	W cruise_start_l = 0;
+	W cruise_start_r = 0;
 	
-	INT stall_cnt = 0;
+	INT stall_cnt_l = 0, stall_cnt_r = 0;
 	INT ms = 0;
 	INT stop_stable_periods = 0;
 
@@ -300,7 +312,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 			// Periodic tick logging when wheels rotate or power applied
 			static W last_la = 0, last_lb = 0, last_ra = 0, last_rb = 0;
-			if (++print_timer >= 2) {
+			if (++print_timer >= 15) {
 				print_timer = 0;
 				if (isr_ticks_la != last_la || isr_ticks_lb != last_lb || isr_ticks_ra != last_ra || isr_ticks_rb != last_rb || out_l != 0 || out_r != 0) {
 					last_la = isr_ticks_la; last_lb = isr_ticks_lb;
@@ -362,8 +374,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					turn_goal_r = cmd.turn_ticks_right;
 					turn_start_l = enc_l_ticks;
 					turn_start_r = enc_r_ticks;
+					cruise_start_l = enc_l_ticks;
+					cruise_start_r = enc_r_ticks;
 
-					stall_cnt = 0;
+					stall_cnt_l = 0; stall_cnt_r = 0;
 					out_l = tgt_l;
 					out_r = tgt_r;
 
@@ -380,6 +394,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 			case MS_CRUISE:
 				if(new_cmd) {
+					if(cmd.target_speed_left != tgt_l || cmd.target_speed_right != tgt_r) {
+						cruise_start_l = enc_l_ticks;
+						cruise_start_r = enc_r_ticks;
+					}
 					tgt_l = cmd.target_speed_left;
 					tgt_r = cmd.target_speed_right;
 
@@ -408,15 +426,30 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
 				// Driving straight forward means opposite signs (e.g. +50 left, -50 right)
 				if(tgt_l == -tgt_r && tgt_l != 0) {
+					// Closed-loop encoder trim so both wheels track the exact same distance
+					INT moved_l = iabs((INT)(enc_l_ticks - cruise_start_l));
+					INT moved_r = iabs((INT)(enc_r_ticks - cruise_start_r));
+					INT trim = (moved_l - moved_r) * KP_TRIM;
+					if (trim > MAX_TRIM_PCT) trim = MAX_TRIM_PCT;
+					if (trim < -MAX_TRIM_PCT) trim = -MAX_TRIM_PCT;
+
+					if (tgt_l > 0) {
+						out_l = tgt_l - trim;
+						out_r = tgt_r - trim; // tgt_r is negative, so -trim increases magnitude when trim > 0
+					} else {
+						out_l = tgt_l + trim;
+						out_r = tgt_r + trim;
+					}
+
 					// Fail-Safe: Check for broken encoder sensor (Section 7)
-					if((dl == 0 && iabs((INT)dr) > 1) ||
-					   (dr == 0 && iabs((INT)dl) > 1)) {
+					if((stall_cnt_l >= 35 && stall_cnt_r == 0) ||
+					   (stall_cnt_r >= 35 && stall_cnt_l == 0)) {
 						encoder_degraded = TRUE;
 						motor_fault_word |= FAULT_BIT_ENCODER; // Set Bit 1 (Sensor failed)
 					}
 				}
 
-				if(stalled(out_l, out_r, dl, dr, &stall_cnt)) {
+				if(stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
 					out_l = out_r = 0;
 
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
@@ -463,9 +496,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					(turn_goal_r == 0) ||
 					(iabs((INT)(enc_r_ticks - turn_start_r)) >= turn_goal_r);
 
-				// Symmetrical in-place turn: stop both when turn angle reached (prevents one wheel running away)
-				BOOL turn_finished = (turn_goal_l > 0 && turn_goal_r > 0) ?
-					(left_done || right_done) : (left_done && right_done);
+				// Stop each wheel individually when it reaches its target; complete turn when both finish
+				BOOL turn_finished = (left_done && right_done);
 
 				if (turn_finished) {
 					out_l = 0;
@@ -489,7 +521,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				out_r = right_done ? 0 : tgt_r;
 
 				// Keep existing stall protection
-				if (stalled(out_l, out_r, dl, dr, &stall_cnt)) {
+				if (stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
 					out_l = out_r = 0;
 
 					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
@@ -515,8 +547,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					turn_goal_r = cmd.turn_ticks_right;
 					turn_start_l = enc_l_ticks;
 					turn_start_r = enc_r_ticks;
+					cruise_start_l = enc_l_ticks;
+					cruise_start_r = enc_r_ticks;
 					
-					stall_cnt = 0;
+					stall_cnt_l = 0; stall_cnt_r = 0;
 					move_done_pending = FALSE; // Cancel any prior turn completion
 					out_l = tgt_l;
 					out_r = tgt_r;
