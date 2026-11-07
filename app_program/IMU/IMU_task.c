@@ -100,9 +100,14 @@ LOCAL bool imu_read_accel_raw(int16_t *x, int16_t *y, int16_t *z)
     
     if (er < E_OK) return false;
 
-    *x = (int16_t)(((UINT)data[1] << 8) | data[0]) >> 4;
-    *y = (int16_t)(((UINT)data[3] << 8) | data[2]) >> 4;
-    *z = (int16_t)(((UINT)data[5] << 8) | data[4]) >> 4;
+    // Correctly sign-extend 12-bit signed data from 16-bit register pairs
+    int16_t raw_x = (int16_t)(((uint16_t)data[1] << 8) | data[0]);
+    int16_t raw_y = (int16_t)(((uint16_t)data[3] << 8) | data[2]);
+    int16_t raw_z = (int16_t)(((uint16_t)data[5] << 8) | data[4]);
+
+    *x = raw_x >> 4;
+    *y = raw_y >> 4;
+    *z = raw_z >> 4;
     return true;
 }
 
@@ -184,24 +189,44 @@ EXPORT void imu_task(INT stacd, void *exinf)
             }
 
             case STATE_CALIBRATING: {
+                tm_printf((UB *)"[IMU] Calibrating zero on flat ground...\n");
+                tk_dly_tsk(200); // Allow sensor ADC & filters to stabilize after power-on
+
                 float sum_z = 0.0f;
                 float sum_pitch = 0.0f;
                 float sum_roll = 0.0f;
-                const int SAMPLES = 50;
+                int valid_samples = 0;
+                int attempts = 0;
 
-                for (int i = 0; i < SAMPLES; i++) {
-                    float gx, gy, gz;
-                    float raw_p, raw_r;
-                    imu_read_accel_g(&gx, &gy, &gz);
-                    imu_compute_pitch_roll(gx, gy, gz, &raw_p, &raw_r);
-                    sum_z += gz;
-                    sum_pitch += raw_p;
-                    sum_roll += raw_r;
+                while (valid_samples < 50 && attempts < 100) {
+                    int16_t rx, ry, rz;
+                    if (imu_read_accel_raw(&rx, &ry, &rz)) {
+                        float gx = (float)rx * 0.001f;
+                        float gy = (float)ry * 0.001f;
+                        float gz = (float)rz * 0.001f;
+                        float raw_p, raw_r;
+                        imu_compute_pitch_roll(gx, gy, gz, &raw_p, &raw_r);
+                        sum_z += gz;
+                        sum_pitch += raw_p;
+                        sum_roll += raw_r;
+                        valid_samples++;
+                    }
+                    attempts++;
                     tk_dly_tsk(10);
                 }
-                baseline_z = sum_z / (float)SAMPLES;
-                baseline_pitch = sum_pitch / (float)SAMPLES;
-                baseline_roll = sum_roll / (float)SAMPLES;
+
+                if (valid_samples > 0) {
+                    baseline_z = sum_z / (float)valid_samples;
+                    baseline_pitch = sum_pitch / (float)valid_samples;
+                    baseline_roll = sum_roll / (float)valid_samples;
+                } else {
+                    baseline_z = 1.0f;
+                    baseline_pitch = 0.0f;
+                    baseline_roll = 0.0f;
+                }
+
+                tm_printf((UB *)"[IMU] Calibrated! Offsets -> P:%d R:%d (samples:%d)\n",
+                          (INT)baseline_pitch, (INT)baseline_roll, valid_samples);
                 state = STATE_MONITORING;
                 break;
             }
@@ -296,8 +321,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     if (!is_tilted) {
                         telemetry_snapshot.imu_event = IMU_MSG_NONE;
                     }
-                    tm_printf((UB *)"[IMU] P:%d R:%d H:%d St:%d\n",
-                              (INT)pitch, (INT)roll, (INT)current_height_mm, (INT)state);
+                    tm_printf((UB *)"[IMU] Pitch:%d Roll:%d H:%dmm\n",
+                              (INT)pitch, (INT)roll, (INT)current_height_mm);
                 }
 
                 // Priority 1: Shock Detection 
