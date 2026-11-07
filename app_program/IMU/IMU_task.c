@@ -152,7 +152,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
     const float SHOCK_G_SQ = SQ(SHOCK_THRESHOLD_G);
     const float TILT_30_RATIO = 0.25f; 
 
-    BOOL no_hump_sent = 0;
+    BOOL hump_active = FALSE;
+    INT tilt_debounce = 0;
 
     while (1) {
         switch (state) {
@@ -250,7 +251,6 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                 if (is_tilted) {
                     // Geometric height using calibrated tilt angles:
-                    // sin(angle) ~= angle_deg * (pi / 180)
                     const float DEG_TO_RAD = 3.14159265f / 180.0f;
                     float sin_roll  = fabsf(roll) * DEG_TO_RAD;
                     float sin_pitch = fabsf(pitch) * DEG_TO_RAD;
@@ -265,26 +265,33 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         hump_peak_height = current_height_mm;
                     }
 
-                    IMU_TELEMETRY_MSG msg = {
-                        .event = IMU_MSG_HUMP_DETECTED,
-                        .pitch_deg = pitch,
-                        .roll_deg = roll,
-                        .estimated_height_mm = current_height_mm,
-                    };
-
-                    NAVIGATOR_MESSAGE n_msg = {
-                        .type = MSG_IMU_UPDATE,
-                        .data.imu_telemetry_msg = msg,
-                    };
-
-                    tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
                     telemetry_snapshot.estimated_height_mm = current_height_mm;
                     telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
 
-                    if (no_hump_sent) no_hump_sent = 0;
+                    // Debounce: require tilt to persist for 4 consecutive samples (80 ms)
+                    // and notify Navigator ONCE on entering the hump (no queue flooding)
+                    if (++tilt_debounce >= 4) {
+                        tilt_debounce = 4;
+                        if (!hump_active) {
+                            hump_active = TRUE;
+                            IMU_TELEMETRY_MSG msg = {
+                                .event = IMU_MSG_HUMP_DETECTED,
+                                .pitch_deg = pitch,
+                                .roll_deg = roll,
+                                .estimated_height_mm = current_height_mm,
+                            };
+                            NAVIGATOR_MESSAGE n_msg = {
+                                .type = MSG_IMU_UPDATE,
+                                .data.imu_telemetry_msg = msg,
+                            };
+                            tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+                            tm_printf((UB *)"[IMU HUMP] Detected! Tilt P:%d R:%d\n", (INT)pitch, (INT)roll);
+                        }
+                    }
                 } else {
-                    if (!no_hump_sent) {
-                        // Returned back down to ground: report the final calculated peak height!
+                    if (tilt_debounce > 0) tilt_debounce--;
+                    if (tilt_debounce == 0 && hump_active) {
+                        hump_active = FALSE;
                         float final_peak_height = hump_peak_height;
 
                         IMU_TELEMETRY_MSG msg = {
@@ -293,27 +300,22 @@ EXPORT void imu_task(INT stacd, void *exinf)
                             .roll_deg = roll,
                             .estimated_height_mm = final_peak_height,
                         };
-
                         NAVIGATOR_MESSAGE n_msg = {
                             .type = MSG_IMU_UPDATE,
                             .data.imu_telemetry_msg = msg,
                         };
-
                         tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
-
-                        tm_printf((UB *)"[IMU HUMP] Peak:%dmm\n", (INT)final_peak_height);
+                        tm_printf((UB *)"[IMU HUMP] Returned to flat. Peak:%dmm\n", (INT)final_peak_height);
 
                         hump_peak_height = 0.0f;
                         vertical_velocity = 0.0f;
                         telemetry_snapshot.estimated_height_mm = 0.0f;
                         telemetry_snapshot.imu_event = IMU_MSG_NO_HUMP;
-
-                        no_hump_sent = 1;
                     }
                 }
 
                 // Record telemetry every 500ms (single compact serial log <= 32B FIFO)
-                if (++telemetry_timer >= 5) {
+                if (++telemetry_timer >= 25) {
                     telemetry_timer = 0;
                     telemetry_snapshot.pitch_deg = pitch;
                     telemetry_snapshot.roll_deg = roll;

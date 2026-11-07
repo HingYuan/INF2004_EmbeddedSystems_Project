@@ -13,9 +13,8 @@
 #define CTRL_PERIOD_MS          1   /* 1 x 20 ms (tk_dly_tsk(2)) = 20 ms (50 Hz) state machine period */
 #define BRAKE_STEP_PCT          200  /* BRAKE: immediate stop */
 #define STALL_MIN_PCT           10   /* only check stall above this power */
-#define STALL_PERIODS           125   /* 25 x 20 ms = 0.5 s with no ticks = stall */
-#define STALL_PERIODS           50   /* 50 x 20 ms = 1.0 s with no ticks = stall */
-#define KP_TRIM                 2    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
+#define STALL_PERIODS           125   /* 50 x 20 ms = 1.0 s with no ticks = stall */
+#define KP_TRIM                 0    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
 #define MAX_TRIM_PCT            10   /* Maximum closed-loop trim adjustment (% PWM) */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
@@ -169,12 +168,6 @@ LOCAL INT ramp(INT cur, INT target, INT step)
 /* TRUE when a wheel is powered but its encoder has not moved for STALL_PERIODS */
 LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt_l, INT *cnt_r)
 {
-	BOOL l = (iabs(out_l) >= STALL_MIN_PCT && dl == 0);
-	BOOL r = (iabs(out_r) >= STALL_MIN_PCT && dr == 0);
-
-	// Stall only when both powered wheels are physically stuck
-	if(l && r) (*cnt)++; else *cnt = 0;
-	return (*cnt >= STALL_PERIODS);
 	if (iabs(out_l) >= STALL_MIN_PCT) {
 		if (dl == 0) (*cnt_l)++; else *cnt_l = 0;
 	} else {
@@ -243,29 +236,20 @@ EXPORT void motor_task(INT stacd, void *exinf)
 		}
 	}
 
-	// Set up Encoder Pins (inputs with pull-ups for open-collector optical sensors)
+	// Set up Encoder Pins (inputs with pull-up & Schmitt trigger)
 	for(i = 0; i < 4; i++) {
 		if(gpio_set_pin(encoder_pins[i], GPIO_MODE_IN) < E_OK) {
 			tm_printf((UB *)"[motors] encoder GPIO setup failed on GP%d\n",
 				  encoder_pins[i]);
 			tk_ext_tsk();
 		}
-		set_w(GPIO(encoder_pins[i]), GPIO_PUE | GPIO_SHEMITT);
+		// Enable pull-up and Schmitt trigger (vital for ADC pins GP26/GP27)
+		set_w(GPIO(encoder_pins[i]), GPIO_IE | GPIO_PUE | GPIO_SHEMITT);
 	}
 
 	left_state = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
 	right_state = read_encoder_state(MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B);
 
-	while(1) {
-		/* ---- every 1 ms: encoders + e-stop ---- */
-		// record current encoder state
-		UINT next_left = read_encoder_state(MOTOR_LEFT_ENC_A, MOTOR_LEFT_ENC_B);
-		UINT next_right = read_encoder_state(MOTOR_RIGHT_ENC_A, MOTOR_RIGHT_ENC_B);
-
-		// Count ticks: pure rising edge detection on optical disc slots
-		UINT diff_l = left_state ^ next_left;
-		if (diff_l & next_left) {
-			enc_l_ticks += (out_l > 0) ? 1 : (out_l < 0 ? -1 : 1);
 	// Start 2000 Hz (500 us) RP2040 Hardware Timer Alarm 0 (IRQ 0)
 	{
 		T_DINT dint = {0};
@@ -278,14 +262,6 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			ClearInt(0);
 			EnableInt(0, 2);
 		}
-
-		UINT diff_r = right_state ^ next_right;
-		if (diff_r & next_right) {
-			enc_r_ticks += (out_r < 0) ? 1 : (out_r > 0 ? -1 : 1);
-		}
-
-		left_state = next_left;
-		right_state = next_right;
 	}
 
 	while(1) {
@@ -329,15 +305,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			prev_r = enc_r_ticks;
 
 			/* always drain the buffer, even in E-STOP (command is then ignored) */
-			if(tk_rcv_mbf(motor_mbfid, &cmd, TMO_POL) == (INT)sizeof(cmd)) new_cmd = TRUE;
-
-			// Background tick verification: print once per second (every 50 x 20ms = 1000ms)
-			static INT tick_log_timer = 0;
-			if (++tick_log_timer >= 50) {
-				tick_log_timer = 0;
-				tm_printf((UB *)"[ticks] L=%d R=%d\n", (INT)enc_l_ticks, (INT)enc_r_ticks);
+			while(tk_rcv_mbf(motor_mbfid, &cmd, TMO_POL) == (INT)sizeof(cmd)){
+				if(new_cmd) buffer_drop_count++;
+				new_cmd = TRUE;
 			}
-
 
 			// Periodic tick logging when wheels rotate or power applied
 			static W last_la = 0, last_lb = 0, last_ra = 0, last_rb = 0;
@@ -373,12 +344,12 @@ EXPORT void motor_task(INT stacd, void *exinf)
 						NAVIGATOR_MESSAGE msg = {0};
 						msg.type = MSG_MOTOR_MOVE_DONE;
 
-							ER er = tk_snd_mbf(
-								navigator_mbfid,
-								&msg,
-								sizeof(msg),
-								TMO_FEVR
-							);
+						ER er = tk_snd_mbf(
+							navigator_mbfid,
+							&msg,
+							sizeof(msg),
+							TMO_POL
+						);
 
 						if (er >= E_OK) {
 							move_done_pending = FALSE;
@@ -525,31 +496,29 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					(turn_goal_r == 0) ||
 					(iabs((INT)(enc_r_ticks - turn_start_r)) >= turn_goal_r);
 
-					// Simultaneous stop: when bounded target reached, stop both wheels together
-					BOOL move_finished = (turn_goal_l > 0 && turn_goal_r > 0) ?
-						(left_done || right_done) : (left_done && right_done);
 				// Stop each wheel individually when it reaches its target; complete turn when both finish
 				BOOL turn_finished = (left_done && right_done);
 
-					if (move_finished) {
-						out_l = 0;
-						out_r = 0;
-						set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
-						set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
+				if (turn_finished) {
+					out_l = 0;
+					out_r = 0;
+					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
+					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
 
-						turn_goal_l = 0;
-						turn_goal_r = 0;
+					turn_goal_l = 0;
+					turn_goal_r = 0;
 
-						move_done_pending = TRUE;
-						move_stable_periods = 0;
+					// Report completion after braking
+					move_done_pending = TRUE;
+					move_stable_periods = 0;
 
-						SET_STATE(MS_BRAKE);
-						break;
-					}
+					SET_STATE(MS_BRAKE);
+					break;
+				}
 
-					// Stop each wheel individually at its target
-					out_l = left_done ? 0 : tgt_l;
-					out_r = right_done ? 0 : tgt_r;
+				// Stop each wheel individually at its target
+				out_l = left_done ? 0 : tgt_l;
+				out_r = right_done ? 0 : tgt_r;
 
 				// Keep existing stall protection
 				if (stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
@@ -564,8 +533,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					break;
 				}
 
-					set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
-					set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
+				set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, out_l);
+				set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, out_r);
 
 				break;
 			}
