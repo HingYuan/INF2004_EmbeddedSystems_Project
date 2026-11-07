@@ -15,6 +15,14 @@
 #define SONAR_PROBE_FRONT_FLAG  (1U << 2)
 #define SONAR_PROBE_LEFT_FLAG   (1U << 3)
 #define SONAR_PROBE_RIGHT_FLAG  (1U << 4)
+#define SONAR_TRACK_LEFT_FLAG   (1U << 5)
+#define SONAR_TRACK_RIGHT_FLAG  (1U << 6)
+#define SONAR_PAUSE_FLAG        (1U << 7)
+
+// Front-centred sonar, 12 x 20 cm body; shared by profiling and bypass.
+#define ROBOT_HALF_WIDTH_CM      6U  // Half the full body width: 12 cm / 2.
+#define ROBOT_LENGTH_CM         20U  // Front-to-back body length; used to allow the rear to clear the corner (cm).
+#define WALL_BODY_GAP_CM         5U  // Desired gap between the car's body and the obstacle (cm), not the diagonal echo.
 
 IMPORT void ultrasonic_task(INT stacd, void *exinf);
 

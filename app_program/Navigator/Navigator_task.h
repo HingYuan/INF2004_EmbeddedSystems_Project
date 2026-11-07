@@ -3,6 +3,7 @@
 
 #include <tk/tkernel.h>
 #include "../Motor/Motor_task.h"
+#include "../Ultrasonic/Ultrasonic_task.h"
 
 /* 
 =========================================
@@ -82,6 +83,27 @@ typedef struct {
     BOOL profile_valid;        // Basic scan quality, not a safe route
 } OBSTACLE_PROFILE;
 
+// Starting estimates for bench testing: tune at speed 30 / pivot speed 35.
+// shortcut: timed travel varies with battery and grip, recalibrate before course runs.
+#define BYPASS_MS_PER_CM            80U  // Time per cm at speed 30; increase if travel is too short, decrease if too far.
+#define BYPASS_LEFT_90_MS          700U  // Left 90-degree pivot time; increase if under-turning, decrease if over-turning.
+#define BYPASS_RIGHT_90_MS         700U  // Right 90-degree pivot time; tune separately from the left turn.
+#define BYPASS_STOP_DISTANCE_CM      3U  // Must cover measured forward travel after requesting a stop (cm).
+#define BYPASS_PIVOT_FROM_FRONT_CM  10U  // Front of car to midpoint between driven wheels (cm); measure on your car.
+#define BYPASS_PEEK_DEG              5U  // Small stationary pivot to look around a corner; allowed range is 1..5 degrees.
+#define BYPASS_SEARCH_STEP_CM        5U  // Maximum forward distance per timed corner-search step (cm).
+#define BYPASS_FRONT_INTERVAL_MS   500U  // Maximum driving time between stopped front-distance checks (ms).
+#define BYPASS_RESPONSE_MS        1000U  // Maximum wait for a motor-stop acknowledgement or a probe/tracking reply (ms).
+#define BYPASS_TRACK_STALE_MS      300U  // Stop if the latest wall-tracking reading is this old (ms).
+#define BYPASS_SCAN_MS           10000U  // Maximum wait for the initial obstacle profile (ms).
+#define BYPASS_TOTAL_MS          60000U  // Whole bypass timeout, including initial scanning and scan stops (ms).
+#define BYPASS_RETURN_MS         12000U  // Line-search timeout after turning inward, including scan stops (ms).
+#define BYPASS_SCAN_ATTEMPTS         3U  // Probe attempts per check before corner search or a safe stop.
+#define BYPASS_WALL_TARGET_CM (((ROBOT_HALF_WIDTH_CM + WALL_BODY_GAP_CM) * 1414U + 999U) / 1000U) // Calculated 45-degree sonar target (~16 cm); adjust WALL_BODY_GAP_CM instead.
+#define BYPASS_WALL_DEADBAND_CM      2   // Ignore distance errors within +/-2 cm of the diagonal sonar target.
+#define BYPASS_STEER_LIMIT          10   // Cap each wheel's speed adjustment at +/-10 around forward speed 30.
+#define BYPASS_EDGE_JUMP_CM         10U  // A reading at least this far above the target suggests a possible wall end (cm).
+
 // Bypass movement phases
 typedef enum {
     BYPASS_IDLE,
@@ -98,11 +120,41 @@ typedef enum {
     BYPASS_CHECK_RETURN,
     BYPASS_FIND_LINE,
     BYPASS_LINE_FOUND,
-    BYPASS_TURN_ALIGN,
-    BYPASS_VERIFY_LINE,
-    BYPASS_COMPLETE,
-    BYPASS_ABORT
+    BYPASS_COMPLETE = 16,      // Preserve existing telemetry IDs.
+    BYPASS_ABORT,
+    BYPASS_PEEK_OUT,
+    BYPASS_CHECK_PEEK,
+    BYPASS_PEEK_BACK
 } BYPASS_PHASE;
+
+typedef enum {
+    BYPASS_WAIT_NONE, BYPASS_WAIT_STOP, BYPASS_WAIT_SCAN,
+    BYPASS_WAIT_PROBE, BYPASS_WAIT_TRACK, BYPASS_WAIT_MOVE
+} BYPASS_WAIT;
+
+typedef struct {
+    BYPASS_PHASE phase;
+    BYPASS_WAIT wait;
+    MOTOR_COMMAND command;
+    INT side;                    // +1: pass left, obstacle on right; -1: mirrored
+    UW started_us;
+    UW deadline_us;
+    UW requested_us;
+    UW last_tracking_us;
+    UW return_started_us;
+    UW last_ir_us;
+    UW shift_remaining_ms;
+    UW corner_remaining_ms;
+    UW segment_ms;
+    UW front_budget_ms;
+    UW wall_cm;
+    UW attempts;
+    UW black_count;
+    UINT probe_flag;
+    W probe_angle;
+    BOOL wall_seen;
+    BOOL corner_active;
+} BYPASS_CONTEXT;
 
 typedef struct {
     UW distance_cm;
@@ -169,7 +221,7 @@ typedef enum {
     MSG_OBSTACLE_DETECTED,      // Ultrasonic sensor detect obstacle
     MSG_MOTOR_STOPPED,          
     MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
-    MSG_TRACKING_OBSTACLE,
+    MSG_TRACKING_OBSTACLE,     // data.sonar_probe at the parked +/-45 degree angle
     MSG_SONAR_PROBED,
     MSG_MOTOR_MOVE_DONE,
     MSG_IMU_UPDATE,
@@ -184,6 +236,7 @@ typedef struct {
 
 typedef struct {
     MESSAGE_TYPE type;
+    UW sampled_at_us;          // time_us(): populated by IR and sonar producers
     union {
         IR_STATE ir_state;
         B decoded_char;

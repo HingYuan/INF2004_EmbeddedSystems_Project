@@ -25,10 +25,6 @@
 #define FINE_PASSES                 2
 #define EDGE_DEPTH_GAP_CM         10U
 
-// Robot dimensions and experimental gap
-#define ROBOT_HALF_WIDTH_CM        7U
-#define SAFETY_MARGIN_CM           2U
-
 static const W coarse_angles[COARSE_COUNT] = {
     -45, -30, -15, 0, 15, 30, 45
 };
@@ -319,7 +315,7 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
         profile->left_offset_cm =
             (UW)(x > 0 ? x : 0) +
             ROBOT_HALF_WIDTH_CM +
-            SAFETY_MARGIN_CM;
+            WALL_BODY_GAP_CM;
 
         profile->left_offset_valid = TRUE;
     }
@@ -332,7 +328,7 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
         profile->right_offset_cm =
             (UW)(x < 0 ? -x : 0) +
             ROBOT_HALF_WIDTH_CM +
-            SAFETY_MARGIN_CM;
+            WALL_BODY_GAP_CM;
 
         profile->right_offset_valid = TRUE;
     }
@@ -401,8 +397,9 @@ LOCAL BOOL send_to_navigator(
         navigator_mbfid,
         (void *)message,
         sizeof(*message),
-        TMO_FEVR);
+        TMO_POL);
     if (er < E_OK) {
+        motor_estop = TRUE;
         tm_printf((UB *)"[sonar] Failed to send Navigator event: %d\n", er);
         return FALSE;
     }
@@ -415,6 +412,7 @@ LOCAL void send_sonar_distance(UW distance_cm, BOOL valid)
     NAVIGATOR_MESSAGE sonar_msg = {0};
 
     sonar_msg.type = MSG_SONAR_DISTANCE;
+    sonar_msg.sampled_at_us = time_us();
     sonar_msg.data.sonar_distance.distance_cm = distance_cm;
     sonar_msg.data.sonar_distance.valid = valid;
 
@@ -444,11 +442,16 @@ LOCAL BOOL handle_probe(UINT flags)
     else if (flags & SONAR_PROBE_RIGHT_FLAG)
         angle = -45;
 
-    // Probes are only allowed after stopping
-    if (!motor_estop)
-        return FALSE;
+    UINT probes = SONAR_PROBE_FRONT_FLAG | SONAR_PROBE_LEFT_FLAG |
+                  SONAR_PROBE_RIGHT_FLAG;
+    BOOL valid = motor_estop && (flags & probes) != 0U &&
+                 (flags & ~probes) == 0U && (flags & (flags - 1U)) == 0U;
+    if (valid)
+        valid = scan_angle(angle, &cm);
+    else
+        motor_estop = TRUE;
 
-    BOOL valid = scan_angle(angle, &cm);
+    UW sampled_at = time_us();
 
     ER er = pwm_set_cc(
         SERVO_PIN, SERVO_CENTER_US);
@@ -460,6 +463,7 @@ LOCAL BOOL handle_probe(UINT flags)
 
     NAVIGATOR_MESSAGE message = {0};
     message.type = MSG_SONAR_PROBED;
+    message.sampled_at_us = sampled_at;
 
     message.data.sonar_probe.angle_deg = angle;
     message.data.sonar_probe.distance_cm =
@@ -542,6 +546,7 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
         motor_estop = TRUE;
 
         message.type = MSG_OBSTACLE_DETECTED;
+        message.sampled_at_us = time_us();
         message.data.obstacle_distance_cm = front_cm;
 
         tm_printf(
@@ -565,32 +570,86 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
         scan_obstacle(&profile);
 
         message.type = MSG_OBSTACLE_PROFILED;
+        message.sampled_at_us = time_us();
         message.data.obstacle_profile = profile;
 
         if (!send_to_navigator(&message))
             return;
 
-        // Service stationary checks during bypass
+        // Tracking keeps the servo parked; directional scans still require a stop.
+        BOOL tracking = FALSE;
+        W tracking_angle = 0;
         while (1) {
             UINT requests =
                 SONAR_RESUME_FLAG |
                 SONAR_PROBE_FRONT_FLAG |
                 SONAR_PROBE_LEFT_FLAG |
-                SONAR_PROBE_RIGHT_FLAG;
+                SONAR_PROBE_RIGHT_FLAG |
+                SONAR_TRACK_LEFT_FLAG |
+                SONAR_TRACK_RIGHT_FLAG |
+                SONAR_PAUSE_FLAG;
 
-            if (tk_wai_flg(
+            ER er = tk_wai_flg(
                     ranger_flgid,
                     requests,
                     TWF_ORW | TWF_BITCLR,
                     &pattern,
-                    TMO_FEVR) < E_OK) {
+                    tracking ? (TMO)SONAR_PING_DELAY_MS : TMO_FEVR);
+
+            if (er == E_TMOUT && tracking) {
+                UW cm = 0;
+                message = (NAVIGATOR_MESSAGE){0};
+                message.type = MSG_TRACKING_OBSTACLE;
+                message.data.sonar_probe.valid = read_distance_cm(&cm);
+                message.sampled_at_us = time_us();
+                message.data.sonar_probe.angle_deg = tracking_angle;
+                message.data.sonar_probe.distance_cm = cm;
+                if (!send_to_navigator(&message))
+                    return;
+                if (!message.data.sonar_probe.valid)
+                    tracking = FALSE;
+                continue;
+            }
+            if (er < E_OK) {
 
                 motor_estop = TRUE;
                 return;
             }
 
-            if (pattern & SONAR_RESUME_FLAG)
+            pattern &= requests;
+            tracking = FALSE;
+            if (pattern == 0U || (pattern & (pattern - 1U)) != 0U) {
+                (void)handle_probe(pattern);
+                motor_estop = TRUE;
+                continue;
+            }
+            if (pattern == SONAR_RESUME_FLAG) {
+                if (pwm_set_cc(SERVO_PIN, SERVO_CENTER_US) < E_OK) {
+                    motor_estop = TRUE;
+                    return;
+                }
+                tk_dly_tsk(SERVO_SETTLE_MS);
                 break;
+            }
+            if (pattern == SONAR_PAUSE_FLAG)
+                continue;
+
+            if (pattern == SONAR_TRACK_LEFT_FLAG ||
+                pattern == SONAR_TRACK_RIGHT_FLAG) {
+                UW cm = 0;
+                tracking_angle = pattern == SONAR_TRACK_LEFT_FLAG ? 45 : -45;
+                message = (NAVIGATOR_MESSAGE){0};
+                message.type = MSG_TRACKING_OBSTACLE;
+                message.data.sonar_probe.valid = motor_estop &&
+                    scan_angle(tracking_angle, &cm);
+                message.sampled_at_us = time_us();
+                message.data.sonar_probe.angle_deg = tracking_angle;
+                message.data.sonar_probe.distance_cm = cm;
+                tracking = message.data.sonar_probe.valid;
+                if (!send_to_navigator(&message))
+                    return;
+                continue;
+            }
 
             if (!handle_probe(pattern)) {
                 motor_estop = TRUE;

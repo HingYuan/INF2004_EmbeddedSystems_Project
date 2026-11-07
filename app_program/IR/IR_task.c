@@ -131,8 +131,9 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
 		INT left_state = (INT)gpio_get_val((UINT)pin_left);
         INT right_state = (INT)gpio_get_val((UINT)pin_right);
 
-        NAVIGATOR_MESSAGE nm;
+        NAVIGATOR_MESSAGE nm = {0};
         nm.type = MSG_IR_UPDATE;
+        nm.sampled_at_us = time_us();
         if (left_state == 1 && right_state == 1) nm.data.ir_state = STATE_B_B;          // Black-black
         else if (left_state == 0 && right_state == 0) nm.data.ir_state = STATE_W_W;     // White-white
         else if (left_state == 1 && right_state == 0) nm.data.ir_state = STATE_B_W;     // Black-white
