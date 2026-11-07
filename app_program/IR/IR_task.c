@@ -97,8 +97,6 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
         UH right_state = (UH)((raw_right * 3300U) / 4095U);
         UH left_state = (UH)((raw_left * 3300U) / 4095U);
 
-        tm_printf("%d %d\n", left_state, right_state);
-
         NAVIGATOR_MESSAGE nm;
         nm.type = MSG_IR_UPDATE;
         if (left_state >= ADC_IR_THRESHOLD && right_state >= ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_B;        // Black-black

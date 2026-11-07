@@ -39,9 +39,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     NAVIGATOR_MESSAGE n_msg;
     INT message_size;
     MOTOR_COMMAND mot_cmd;
-    // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
+    MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
     // MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
-    MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
+    // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
     // Sensor specific telemetry cache
     char last_decoded_char = 0;
@@ -59,8 +59,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
     // Barcode decoding
     B instruction_idx = 0;                                                      // Iterate through instructions for each intersection
-    B barcode_characters[NUMBER_OF_COMMANDS] = { 'A' };                              // Character key, sent from wifi
-    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_LEFT };                    // Instruction mapping, sent from wifi
+    B barcode_characters[NUMBER_OF_COMMANDS] = {};                              // Character key, sent from wifi
+    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                    // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                    // 
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
     DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT, DIR_STOP };
@@ -434,8 +434,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                             mot_cmd.target_speed_left =     RIGHT_PIVOT_L;
                                             mot_cmd.target_speed_right =    RIGHT_PIVOT_R;
-                                            mot_cmd.turn_ticks_left =       0;
-                                            mot_cmd.turn_ticks_right =      0;
+                                            mot_cmd.turn_ticks_left =       65;
+                                            mot_cmd.turn_ticks_right =      65;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
