@@ -12,6 +12,8 @@
 */
 
 // Forward
+// #define FORWARD_SPEED           30
+// #define FORWARD_SPEED_BARCODE   30
 #define FORWARD_SPEED           50
 #define FORWARD_SPEED_BARCODE   30
 
@@ -19,22 +21,31 @@
 #define STOP_SPEED              0
 
 // turning (maintain forward speed)
+// #define LEFT_TURN_L_BASE        15
+// #define LEFT_TURN_R_BASE        35
+// #define RIGHT_TURN_L_BASE       35
+// #define RIGHT_TURN_R_BASE       15
 #define LEFT_TURN_L_BASE        20
 #define LEFT_TURN_R_BASE        40
-#define RIGHT_TURN_L_BASE       40 
+#define RIGHT_TURN_L_BASE       40
 #define RIGHT_TURN_R_BASE       20
 
+#define LEFT_TURN_L_BARCODE     20
+#define LEFT_TURN_R_BARCODE     40
+#define RIGHT_TURN_L_BARCODE    40
+#define RIGHT_TURN_R_BARCODE    20
+
 // turning w/ max rampup
-#define LEFT_TURN_L_RAMP        25
-#define LEFT_TURN_R_RAMP        50
-#define RIGHT_TURN_L_RAMP       50
-#define RIGHT_TURN_R_RAMP       25
+#define LEFT_TURN_L_RAMP        20
+#define LEFT_TURN_R_RAMP        55
+#define RIGHT_TURN_L_RAMP       55
+#define RIGHT_TURN_R_RAMP       20
 
 // pivoting / turning on the spot
-#define LEFT_PIVOT_L            35
-#define LEFT_PIVOT_R            35
-#define RIGHT_PIVOT_L           35
-#define RIGHT_PIVOT_R           35
+#define LEFT_PIVOT_L            25
+#define LEFT_PIVOT_R            25
+#define RIGHT_PIVOT_L           25
+#define RIGHT_PIVOT_R           25
 
 /* 
 =========================================
@@ -181,7 +192,7 @@ typedef struct {
     float pitch_deg;
     float roll_deg;
     float peak_g;
-    float estimated_height_cm;
+    float estimated_height_mm;
 } IMU_TELEMETRY_MSG;
 
 /* 
@@ -190,7 +201,7 @@ typedef struct {
 =========================================
 */
 
-#define NUMBER_OF_COMMANDS 4
+#define NUMBER_OF_COMMANDS 1
 
 typedef enum {
     MODE_BARCODE_SCANNING,          // Slow speed barcode scanning
@@ -211,6 +222,7 @@ typedef enum {
     DIR_BACK,
     DIR_LEFT,
     DIR_RIGHT,
+    DIR_STOP,
     DIR_INVALID,
 } DIRECTION;
 
@@ -283,6 +295,8 @@ typedef struct {
     // Sensor Specific: IMU
     float    pitch_deg;         // Vehicle pitch
     float    roll_deg;          // Vehicle roll
+    uint8_t  imu_state;             // IMU_FSM_STATE enum
+    float    estimated_height_mm;   // Peak/current hump height in mm
     uint8_t  imu_event;         // IMU_EVENT_TYPE enum
 } TELEMETRY_SNAPSHOT;
 

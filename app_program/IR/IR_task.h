@@ -4,8 +4,10 @@
 #include <tk/tkernel.h>
 
 #define IR_LEFT_PIN         6
-#define IR_CENTER_PIN       17
-#define IR_RIGHT_PIN        5
+#define IR_CENTER_PIN       28
+#define IR_RIGHT_PIN        27
+
+#define ADC_IR_THRESHOLD    1000
 
 typedef struct {
     INT state;

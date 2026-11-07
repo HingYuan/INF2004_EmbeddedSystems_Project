@@ -25,3 +25,4 @@ __pycache__/
 *.md
 .cursor/rules/caveman.mdc
 .venv/
+venv/
