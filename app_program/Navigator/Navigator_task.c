@@ -211,7 +211,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     }
 
                                     // If max instructions recorded
-                                    if (instruction_idx > NUMBER_OF_COMMANDS) {
+                                    if (instruction_idx >= NUMBER_OF_COMMANDS) {
                                         m_mode = MODE_LINE_FOLLOWING;
                                         instruction_idx = 0;
 
@@ -449,8 +449,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                             mot_cmd.target_speed_left =     RIGHT_PIVOT_L;
                                             mot_cmd.target_speed_right =    RIGHT_PIVOT_R;
-                                            mot_cmd.turn_ticks_left =       0;
-                                            mot_cmd.turn_ticks_right =      0;
+                                            mot_cmd.turn_ticks_left =       65;
+                                            mot_cmd.turn_ticks_right =      65;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
