@@ -43,9 +43,7 @@ LOCAL float imu_atan2f(float y, float x)
 // Pitch is along sensor Y (inverted), Roll is along sensor X (inverted)
 LOCAL void imu_compute_pitch_roll(float gx, float gy, float gz, float *pitch, float *roll)
 {
-    float den = imu_sqrtf(SQ(gx) + SQ(gz));
-    if (den < 0.001f) den = 0.001f;
-    *pitch = -imu_atan2f(gy, den) * 180.0f / 3.14159265f;
+    *pitch = -imu_atan2f(gy, imu_sqrtf(SQ(gx) + SQ(gz))) * 180.0f / 3.14159265f;
     *roll  = -imu_atan2f(gx, gz) * 180.0f / 3.14159265f;
 }
 
@@ -81,14 +79,6 @@ LOCAL ID imu_dd = 0;
 
 LOCAL void imu_route_pins(void)
 {
-#if IMU_SDA_PIN == 0
-    /* If GP0/GP1 were claimed by UART0, disable the UART hardware so it releases the pins */
-    out_w(RP2040_UART0_BASE + 0x030, 0); // UART0_CR = 0 (disable UART0)
-#endif
-#if IMU_SDA_PIN != 8
-    if((in_w(GPIO_CTRL(8)) & 0x1F) == GPIO_CTRL_FUNCSEL_I2C) out_w(GPIO_CTRL(8), GPIO_CTRL_FUNCSEL_NULL);
-    if((in_w(GPIO_CTRL(9)) & 0x1F) == GPIO_CTRL_FUNCSEL_I2C) out_w(GPIO_CTRL(9), GPIO_CTRL_FUNCSEL_NULL);
-#endif
     out_w(GPIO(IMU_SDA_PIN), GPIO_IE | GPIO_DRIVE_4MA | GPIO_PUE | GPIO_SHEMITT);
     out_w(GPIO(IMU_SCL_PIN), GPIO_IE | GPIO_DRIVE_4MA | GPIO_PUE | GPIO_SHEMITT);
     out_w(GPIO_CTRL(IMU_SDA_PIN), GPIO_CTRL_FUNCSEL_I2C);
@@ -107,23 +97,16 @@ LOCAL bool imu_read_accel_raw(int16_t *x, int16_t *y, int16_t *z)
     UB data[6];
     SZ asz = 0;
     
-    // 0xA8 is OUT_X_L_A with MSB set for auto-increment.
+    // 0xA8 is OUT_X_L_A with the MSB set for auto-increment.
     UB reg = 0xA8; 
-    T_I2C_EXEC exec = {
-        .sadr = active_accel_addr,
-        .snd_size = 1,
-        .snd_data = &reg,
-        .rcv_size = 6,
-        .rcv_data = data,
-    };
 
-    ER er = tk_swri_dev(imu_dd, TDN_I2C_EXEC, &exec, sizeof(T_I2C_EXEC), &asz);
-    if (er < E_OK) {
-        // Fallback to byte-by-byte reads
-        for (int i = 0; i < 6; i++) {
-            if (i2c_read_reg(imu_dd, active_accel_addr, (UW)(0xA8 + i), &data[i]) < E_OK) return false;
-        }
-    }
+    // Single burst write of the register address
+    tk_swri_dev(imu_dd, active_accel_addr, &reg, 1, &asz);
+    
+    // Single burst read of all 6 bytes (saves 5 context switches into the OS kernel)
+    ER er = tk_srea_dev(imu_dd, active_accel_addr, data, 6, &asz);
+    
+    if (er < E_OK) return false;
 
     *x = (int16_t)(((UINT)data[1] << 8) | data[0]) >> 4;
     *y = (int16_t)(((UINT)data[3] << 8) | data[2]) >> 4;
@@ -150,20 +133,13 @@ LOCAL bool imu_read_mag_raw(int16_t *mx, int16_t *my, int16_t *mz)
     UB data[6];
     SZ asz = 0;
     UB reg = OUT_X_H_M; // 0x03
-    T_I2C_EXEC exec = {
-        .sadr = LSM303_MAG_ADDR,
-        .snd_size = 1,
-        .snd_data = &reg,
-        .rcv_size = 6,
-        .rcv_data = data,
-    };
 
-    ER er = tk_swri_dev(imu_dd, TDN_I2C_EXEC, &exec, sizeof(T_I2C_EXEC), &asz);
-    if (er < E_OK) {
-        for (int i = 0; i < 6; i++) {
-            if (i2c_read_reg(imu_dd, LSM303_MAG_ADDR, (UW)(OUT_X_H_M + i), &data[i]) < E_OK) return false;
-        }
-    }
+    // Write starting register 0x03
+    tk_swri_dev(imu_dd, LSM303_MAG_ADDR, &reg, 1, &asz);
+
+    // Read all 6 bytes (X_H, X_L, Z_H, Z_L, Y_H, Y_L)
+    ER er = tk_srea_dev(imu_dd, LSM303_MAG_ADDR, data, 6, &asz);
+    if (er < E_OK) return false;
 
     // On LSM303DLHC, magnetometer register order is X, Z, Y (big-endian)
     *mx = (int16_t)(((UINT)data[0] << 8) | data[1]);
@@ -222,7 +198,6 @@ EXPORT void imu_task(INT stacd, void *exinf)
     while (1) {
         switch (state) {
             case STATE_INITIALIZE: {
-                telemetry_snapshot.imu_state = (uint8_t)STATE_INITIALIZE;
                 if (imu_dd <= 0) {
                     imu_dd = tk_opn_dev((const UB *)IMU_I2C_DEVNAME, TD_UPDATE);
                     if (imu_dd <= E_OK) {
@@ -234,8 +209,6 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     imu_route_pins();
                     tk_dly_tsk(50);
                     imu_scan_bus();
-                } else {
-                    imu_route_pins();
                 }
 
                 UW accel_addr = LSM303_ACCEL_ADDR;
@@ -254,18 +227,15 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                 if (er1 >= E_OK && er2 >= E_OK) {
                     active_accel_addr = accel_addr;
-                    tm_printf((UB *)"[IMU STATUS] CONNECTED! Accel at 0x%02x\n", (UINT)active_accel_addr);
+                    tm_printf((UB *)"[IMU STATUS] CONNECTED!\n");
                     state = STATE_CALIBRATING;
-                    telemetry_snapshot.imu_state = (uint8_t)STATE_CALIBRATING;
                 } else {
-                    tm_printf((UB *)"[IMU STATUS] Device not ready (er1=%d, er2=%d). Retrying...\n", er1, er2);
                     tk_dly_tsk(1000);
                 }
                 break;
             }
 
             case STATE_CALIBRATING: {
-                telemetry_snapshot.imu_state = (uint8_t)STATE_CALIBRATING;
                 float sum_z = 0.0f;
                 float sum_pitch = 0.0f;
                 float sum_roll = 0.0f;
@@ -292,12 +262,10 @@ EXPORT void imu_task(INT stacd, void *exinf)
                           (INT)baseline_z, (INT)(fabsf(baseline_z * 100.0f)) % 100);
 
                 state = STATE_MONITORING;
-                telemetry_snapshot.imu_state = (uint8_t)STATE_MONITORING;
                 break;
             }
 
             case STATE_MONITORING: {
-                telemetry_snapshot.imu_state = (uint8_t)STATE_MONITORING;
                 float gx, gy, gz;
                 imu_read_accel_g(&gx, &gy, &gz);
 
@@ -346,11 +314,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     };
 
                     tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
-                    telemetry_snapshot.pitch_deg = pitch;
-                    telemetry_snapshot.roll_deg = roll;
                     telemetry_snapshot.estimated_height_mm = current_height_mm;
                     telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
-                    telemetry_snapshot.imu_state = (uint8_t)state;
 
                     if (no_hump_sent) no_hump_sent = 0;
                 } else {
@@ -376,11 +341,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                         hump_peak_height = 0.0f;
                         vertical_velocity = 0.0f;
-                        telemetry_snapshot.pitch_deg = pitch;
-                        telemetry_snapshot.roll_deg = roll;
                         telemetry_snapshot.estimated_height_mm = 0.0f;
                         telemetry_snapshot.imu_event = IMU_MSG_NO_HUMP;
-                        telemetry_snapshot.imu_state = (uint8_t)state;
 
                         no_hump_sent = 1;
                     }
