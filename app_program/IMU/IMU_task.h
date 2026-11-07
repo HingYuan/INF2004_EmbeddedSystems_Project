@@ -23,10 +23,12 @@
 #define LSM303_MAG_ADDR       0x1E
 
 /* Detection Thresholds */
-#define SAFE_TILT_LIMIT_DEG   30.0f   // >30 deg triggers Tilt Warning
-#define SHOCK_THRESHOLD_G     2.5f    // >2.5g total acceleration triggers E-Stop
-#define HUMP_THRESHOLD_G      0.35f   // Z-axis deviation threshold for hump detection
-#define HUMP_CHASSIS_SCALE_MM 150.0f  // Effective chassis wheelbase/lever arm for height (mm)
+#define SAFE_TILT_LIMIT_DEG     30.0f   // >30 deg triggers Tilt Warning
+#define SHOCK_THRESHOLD_G       2.5f    // >2.5g total acceleration triggers E-Stop
+#define HUMP_THRESHOLD_G        0.35f   // Z-axis deviation threshold for hump detection
+#define HUMP_TILT_THRESHOLD_DEG 3.0f    // Minimum tilt (deg) to trigger hump detection (single-wheel ramp)
+#define HUMP_TRACK_WIDTH_MM     100.0f  // Track width between left and right wheels (mm)
+#define HUMP_CHASSIS_SCALE_MM   150.0f  // Effective chassis wheelbase length (mm)
 
 /* 
 =========================================
