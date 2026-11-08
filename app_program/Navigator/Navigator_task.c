@@ -40,8 +40,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd;
     // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    // MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
-    MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
+    MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
     // Sensor specific telemetry cache
     char last_decoded_char = 0;
@@ -63,7 +63,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_LEFT };                    // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                    // 
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
-    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT, DIR_LEFT, DIR_BACK, DIR_FRONT, DIR_STOP };
+    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_FRONT };
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;     // Preset all instructions as DIR_INVALID
     B instructions_count = 0;   
     // B instructions_count = 5;
@@ -108,12 +108,12 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             } else if (n_msg.type == MSG_IMU_UPDATE &&
                       (n_msg.data.imu_telemetry_msg.event == IMU_MSG_SHOCK_DETECTED ||
                        n_msg.data.imu_telemetry_msg.event == IMU_MSG_TILT_WARNING)) {
-                motor_estop = TRUE;
-                m_mode = MODE_SAFE_STOP;
-                mot_cmd.target_speed_left = STOP_SPEED;
-                mot_cmd.target_speed_right = STOP_SPEED;
-                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
-                tm_printf((UB *)"[nav] EMERGENCY STOP triggered by IMU event %d\n", n_msg.data.imu_telemetry_msg.event);
+                // motor_estop = TRUE;
+                // m_mode = MODE_SAFE_STOP;
+                // mot_cmd.target_speed_left = STOP_SPEED;
+                // mot_cmd.target_speed_right = STOP_SPEED;
+                // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
+                // tm_printf((UB *)"[nav] EMERGENCY STOP triggered by IMU event %d\n", n_msg.data.imu_telemetry_msg.event);
             } else if (n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
                 
@@ -147,7 +147,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 barcode_characters[mapping_increment] = code39_char;
                                 barcode_instructions[mapping_increment] = direction;
                                 mapping_increment++;
-                                instructions_count++;
 
                                 if (mapping_increment >= NUMBER_OF_COMMANDS) {
                                     m_mode = MODE_BARCODE_SCANNING;
@@ -377,7 +376,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                        tk_dly_tsk(400);
+                        tk_dly_tsk(600);
 
                         mot_cmd.target_speed_left =     0;
                         mot_cmd.target_speed_right =   -0;
@@ -385,9 +384,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         mot_cmd.turn_ticks_right =      0;
 
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-
-                        tk_dly_tsk(250);
-
+                        
                         m_mode = MODE_DECISION_MAKING_TURN;
                         clear_navigator_mbf();
 
@@ -402,15 +399,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE:
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
-                                DIRECTION curr_decision = instructions[instruction_idx];
-                                // DIRECTION curr_decision = instructions_fake[instruction_idx];
+                                // DIRECTION curr_decision = instructions[instruction_idx];
+                                DIRECTION curr_decision = instructions_fake[instruction_idx];
 
                                 if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                     switch (curr_decision) {
-                                        case DIR_FRONT:
-                                            m_mode = MODE_LINE_FOLLOWING;
-
-                                            break;
                                         case DIR_BACK:
                                             num_rotations = 2;
 
@@ -447,8 +440,23 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         case DIR_STOP:
                                             num_rotations = 0;
                                            
+                                        // DIR_FRONT
                                         default:
+                                            num_rotations = 0;
+
+                                            mot_cmd.target_speed_left =     FORWARD_SPEED;
+                                            mot_cmd.target_speed_right =   -FORWARD_SPEED;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
+
+                                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                            prev_ir_state = STATE_NULL;
+
                                             m_mode = MODE_LINE_FOLLOWING;
+
+                                            // Linger on last instruction on overflow
+                                            if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx = 0; }
 
                                             break;
                                     }
@@ -462,6 +470,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     
                                     if (num_rotations <= 0) {
 
+                                        tk_dly_tsk(50);
+
                                         mot_cmd.target_speed_left =     STOP_SPEED;
                                         mot_cmd.target_speed_right =    STOP_SPEED;
                                         mot_cmd.turn_ticks_left =       0;
@@ -472,9 +482,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         tk_dly_tsk(250);
 
                                         // Linger on last instruction on overflow
-                                        if (++instruction_idx >= instructions_count) { instruction_idx--; }
+                                        if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx = 0; }
 
-                                        tm_printf("INSTRUCTIONS: %d %d\n", instruction_idx, instructions_count);
                                         // Reset variables
                                         num_rotations = 0;
                                         prev_ir_state = STATE_NULL;
