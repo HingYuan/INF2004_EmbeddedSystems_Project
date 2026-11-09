@@ -3,6 +3,7 @@
 
 #include <tk/tkernel.h>
 #include "../Motor/Motor_task.h"
+#include "../Ultrasonic/Ultrasonic_task.h"
 
 /* 
 =========================================
@@ -73,6 +74,7 @@ typedef enum {
 typedef struct {
     UW closest_cm;
     W closest_angle_deg;       // Positive angle is left
+    UW front_cm;
 
     W left_edge_deg;
     W right_edge_deg;
@@ -114,13 +116,61 @@ typedef enum {
     BYPASS_TURN_ALIGN,
     BYPASS_VERIFY_LINE,
     BYPASS_COMPLETE,
-    BYPASS_ABORT
+    BYPASS_ABORT,
+    BYPASS_REVERSE,
+    BYPASS_RECOVER_OUT,
+    BYPASS_RESCAN_WAIT
 } BYPASS_PHASE;
+
+// shortcut: timed motion depends on battery and grip; recalibrate these values on the car.
+#define BYPASS_SPEED                 40
+#define BYPASS_PIVOT_SPEED           40
+#define BYPASS_MS_PER_CM             80U
+#define BYPASS_LEFT_45_MS           700U
+#define BYPASS_RIGHT_45_MS          700U
+#define BYPASS_PIVOT_FROM_FRONT_CM   10U
+#define BYPASS_SWEPT_RADIUS_CM       12U  // ceil(sqrt(10*10 + 6*6)) for the measured body.
+#define BYPASS_REVERSE_CM             5U
+#define BYPASS_WALL_TARGET_CM        16U
+#define BYPASS_WALL_DEADBAND_CM       2
+#define BYPASS_STEER_LIMIT           10
+#define BYPASS_CLOSE_CM             12U
+#define BYPASS_WALL_SEARCH_CM        40U
+#define BYPASS_EDGE_JUMP_CM          10U
+#define BYPASS_CONFIRM_COUNT         3U
+#define BYPASS_TRACK_STALE_MS      300U
+#define BYPASS_RESPONSE_MS        1000U
+#define BYPASS_SCAN_MS           15000U
+#define BYPASS_STOP_SETTLE_MS      150U
+#define BYPASS_POLL_MS              20U
+
+typedef struct {
+    BYPASS_PHASE phase;
+    BYPASS_PHASE resume_phase;
+    INT side;                     // +1: pass left, -1: pass right; retained for reentry.
+    UW phase_started_us;
+    UW deadline_us;
+    UW requested_us;
+    UW last_tracking_us;
+    UW last_sample_us;
+    UW shift_us;
+    UW acquire_us;
+    UW remaining_us;
+    UW wall_cm;
+    UW lost_count;
+    UW close_count;
+    UW black_count;
+    BOOL wall_seen;
+    BOOL owns_obstacle_stop;
+    BOOL recovery_outward;
+} BYPASS_CONTEXT;
 
 typedef struct {
     UW distance_cm;
     W angle_deg;
     BOOL valid;
+    SONAR_STATUS status;
+    UW sampled_at_us;
 } SONAR_PROBE_RESULT;
 
 /* 
@@ -188,7 +238,8 @@ typedef enum {
     MSG_MOTOR_MOVE_DONE,
     MSG_IMU_UPDATE,
     MSG_REMOTE_CMD,             // Remote motor command from MQTT
-    MSG_SONAR_DISTANCE
+    MSG_SONAR_DISTANCE,
+    MSG_BYPASS_TICK             // Navigator-local timeout; never sent by a sensor.
 } MESSAGE_TYPE;
 
 typedef struct {

@@ -15,6 +15,25 @@
 #define SONAR_PROBE_FRONT_FLAG  (1U << 2)
 #define SONAR_PROBE_LEFT_FLAG   (1U << 3)
 #define SONAR_PROBE_RIGHT_FLAG  (1U << 4)
+#define SONAR_TRACK_LEFT_FLAG   (1U << 5)
+#define SONAR_TRACK_RIGHT_FLAG  (1U << 6)
+
+typedef enum {
+    SONAR_INVALID,
+    SONAR_OK,
+    SONAR_NO_ECHO,
+    SONAR_TOO_CLOSE,
+    SONAR_SENSOR_FAULT,
+    SONAR_SERVO_FAULT,
+    SONAR_UNSTABLE
+} SONAR_STATUS;
+
+#define ROBOT_HALF_WIDTH_CM       6U
+#define ROBOT_LENGTH_CM          20U
+#define WALL_BODY_GAP_CM          5U
+
+// Latched separately so Navigator cannot release a hardware fault as a scan stop.
+IMPORT volatile BOOL sonar_fault;
 
 IMPORT void ultrasonic_task(INT stacd, void *exinf);
 
