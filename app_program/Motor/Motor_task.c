@@ -16,10 +16,9 @@
 #define STALL_PERIODS           125   /* 50 x 20 ms = 1.0 s with no ticks = stall */
 #define KP_TRIM                 5    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
 #define MAX_TRIM_PCT            15   /* Maximum closed-loop trim adjustment (% PWM) */
-#define RIGHT_DIST_SCALE        1015 /* Right wheel ticks needed per 1000 left ticks to drive straight.
-                                        >1000 = right wheel covers less ground per tick (car curves right).
-                                        Calibrate: drive 1 m, measure sideways offset d (mm),
-                                        add d/5 if it curves right, subtract d/5 if it curves left. */
+#define ENC_DEBOUNCE_SAMPLES    3    /* 3 x 0.5 ms = 1.5 ms stable level before an edge is accepted */
+#define ENC_COOLDOWN_SAMPLES    6    /* 3 ms lockout after an edge. Was 90 (45 ms), which capped every
+                                        wheel at ~11 ticks/s so both wheels always read equal speed. */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 
@@ -85,33 +84,33 @@ LOCAL void encoder_alarm_isr(UINT intno)
 	if (cd_ra > 0) cd_ra--;
 	if (cd_rb > 0) cd_rb--;
 
-	// 2 samples (1.0 ms) fast debounce + 90 samples (45 ms) cooldown captures both slot edges (~40 edges/rev)
+	// ENC_DEBOUNCE_SAMPLES debounce + short ENC_COOLDOWN_SAMPLES lockout (rising edges only)
 	// Dividing by 2 converts the 2 edges per slot into 1 tick per slot (~20 ticks/rev)
 	if (raw_la != deb_la) {
-		if (++cnt_la >= 2) {
+		if (++cnt_la >= ENC_DEBOUNCE_SAMPLES) {
 			deb_la = raw_la; cnt_la = 0;
-			if (deb_la && cd_la == 0) { raw_cnt_la += dir_l; cd_la = 90; }
+			if (deb_la && cd_la == 0) { raw_cnt_la += dir_l; cd_la = ENC_COOLDOWN_SAMPLES; }
 		}
 	} else { cnt_la = 0; }
 
 	if (raw_lb != deb_lb) {
-		if (++cnt_lb >= 2) {
+		if (++cnt_lb >= ENC_DEBOUNCE_SAMPLES) {
 			deb_lb = raw_lb; cnt_lb = 0;
-			if (deb_lb && cd_lb == 0) { raw_cnt_lb += dir_l; cd_lb = 90; }
+			if (deb_lb && cd_lb == 0) { raw_cnt_lb += dir_l; cd_lb = ENC_COOLDOWN_SAMPLES; }
 		}
 	} else { cnt_lb = 0; }
 
 	if (raw_ra != deb_ra) {
-		if (++cnt_ra >= 2) {
+		if (++cnt_ra >= ENC_DEBOUNCE_SAMPLES) {
 			deb_ra = raw_ra; cnt_ra = 0;
-			if (deb_ra && cd_ra == 0) { raw_cnt_ra += dir_r; cd_ra = 90; }
+			if (deb_ra && cd_ra == 0) { raw_cnt_ra += dir_r; cd_ra = ENC_COOLDOWN_SAMPLES; }
 		}
 	} else { cnt_ra = 0; }
 
 	if (raw_rb != deb_rb) {
-		if (++cnt_rb >= 2) {
+		if (++cnt_rb >= ENC_DEBOUNCE_SAMPLES) {
 			deb_rb = raw_rb; cnt_rb = 0;
-			if (deb_rb && cd_rb == 0) { raw_cnt_rb += dir_r; cd_rb = 90; }
+			if (deb_rb && cd_rb == 0) { raw_cnt_rb += dir_r; cd_rb = ENC_COOLDOWN_SAMPLES; }
 		}
 	} else { cnt_rb = 0; }
 
@@ -440,10 +439,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					// Closed-loop encoder trim so both wheels track the exact same distance
 					INT moved_l = iabs((INT)(enc_l_ticks - cruise_start_l));
 					INT moved_r = iabs((INT)(enc_r_ticks - cruise_start_r));
-					// Equal ticks != equal ground distance (tyre size / caster drag), so
-					// scale the left count before comparing. Error is in 1/1000 tick units.
-					INT err = moved_l * RIGHT_DIST_SCALE - moved_r * 1000;
-					INT trim = (err * KP_TRIM) / 1000;
+					INT trim = (moved_l - moved_r) * KP_TRIM;
 					if (trim > MAX_TRIM_PCT) trim = MAX_TRIM_PCT;
 					if (trim < -MAX_TRIM_PCT) trim = -MAX_TRIM_PCT;
 
