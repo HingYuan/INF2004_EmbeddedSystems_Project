@@ -287,10 +287,6 @@ EXPORT void motor_task(INT stacd, void *exinf)
 				motor_fault_word |= FAULT_BIT_ESTOP;   // Set Bit 2 (E-Stop active)
 				SET_STATE(MS_ESTOP);
 			}
-		} else if (state == MS_ESTOP) {
-			motor_fault_word &= ~FAULT_BIT_ESTOP;  // Clear Bit 2 (E-Stop released)
-			stop_stable_periods = 0;
-			SET_STATE(MS_IDLE);
 		}
 
 		/* ---- every CTRL_PERIOD_MS: state machine ---- */
@@ -304,10 +300,17 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			prev_l = enc_l_ticks;
 			prev_r = enc_r_ticks;
 
-			/* always drain the buffer, even in E-STOP (command is then ignored) */
+			/* Always drain the buffer; commands remain ignored while E-STOP is held. */
 			while(tk_rcv_mbf(motor_mbfid, &cmd, TMO_POL) == (INT)sizeof(cmd)){
 				if(new_cmd) buffer_drop_count++;
 				new_cmd = TRUE;
+			}
+
+			// Check release after receiving: Navigator may release E-STOP and enqueue a pivot together.
+			if (state == MS_ESTOP && !motor_estop) {
+				motor_fault_word &= ~FAULT_BIT_ESTOP;
+				stop_stable_periods = 0;
+				SET_STATE(MS_IDLE);
 			}
 
 			// Periodic tick logging when wheels rotate or power applied

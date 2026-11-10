@@ -17,7 +17,6 @@
 #define SONAR_TIMEOUT_US        26000U
 #define SONAR_ECHO_END_US       60000U
 #define SONAR_PING_DELAY_MS        60U
-#define OBSTACLE_TRIGGER_CM        30U
 #define OBSTACLE_CONFIRM_COUNT      2U
 
 // Coarse/fine profiling
@@ -296,6 +295,11 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
 
     center_ok = valid[3];
     profile->front_cm = valid[3] ? cm[3] : 0U;
+    // Compare the actual outer rays when choosing a side; missing edges must not leave side=0.
+    profile->left_scan_cm = cm[6];
+    profile->right_scan_cm = cm[0];
+    profile->left_scan_status = status[6];
+    profile->right_scan_status = status[0];
 
     if (center_ok) {
 
