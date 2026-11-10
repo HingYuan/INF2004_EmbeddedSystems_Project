@@ -16,6 +16,10 @@
 #define STALL_PERIODS           125   /* 50 x 20 ms = 1.0 s with no ticks = stall */
 #define KP_TRIM                 5    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
 #define MAX_TRIM_PCT            15   /* Maximum closed-loop trim adjustment (% PWM) */
+#define RIGHT_DIST_SCALE        103  /* Right wheel ticks needed per 100 left ticks to drive straight.
+                                        >100 = right wheel covers less ground per tick (car curves right).
+                                        Calibrate: drive 1 m, measure sideways offset d (mm) to the right,
+                                        then add d/50 to this value (subtract if it curves left). */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 
@@ -436,7 +440,10 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					// Closed-loop encoder trim so both wheels track the exact same distance
 					INT moved_l = iabs((INT)(enc_l_ticks - cruise_start_l));
 					INT moved_r = iabs((INT)(enc_r_ticks - cruise_start_r));
-					INT trim = (moved_l - moved_r) * KP_TRIM;
+					// Equal ticks != equal ground distance (tyre size / caster drag), so
+					// scale the left count before comparing. Error is in 1/100 tick units.
+					INT err = moved_l * RIGHT_DIST_SCALE - moved_r * 100;
+					INT trim = (err * KP_TRIM) / 100;
 					if (trim > MAX_TRIM_PCT) trim = MAX_TRIM_PCT;
 					if (trim < -MAX_TRIM_PCT) trim = -MAX_TRIM_PCT;
 
