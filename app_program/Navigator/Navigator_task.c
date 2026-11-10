@@ -29,7 +29,6 @@ curr_speed_right = mot_cmd.target_speed_right;
 
 /*
 CHANGE m_mode
-CHANGE instructions_count
 CHANGE from instructions_fake to instructions
 */
 
@@ -59,14 +58,12 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
     // Barcode decoding
     B instruction_idx = 0;                                                      // Iterate through instructions for each intersection
-    B barcode_characters[NUMBER_OF_COMMANDS] = { 'A' };                              // Character key, sent from wifi
-    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_LEFT };                    // Instruction mapping, sent from wifi
-    B mapping_increment = 0;                                                    // 
+    B barcode_characters[NUMBER_OF_COMMANDS] = { 'Z' };                         // Character key, sent from wifi
+    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_LEFT };          // Instruction mapping, sent from wifi
+    B mapping_increment = 0;                                                    // incrementing index for syncing barcode and instruction arrays
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
     DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_FRONT };
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;     // Preset all instructions as DIR_INVALID
-    B instructions_count = 0;   
-    // B instructions_count = 5;
 
     // Decision making
     B num_rotations = 0;
@@ -208,6 +205,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         m_mode = MODE_LINE_FOLLOWING;
                                         instruction_idx = 0;
 
+                                        mot_cmd.target_speed_left =     STOP_SPEED;
+                                        mot_cmd.target_speed_right =   -STOP_SPEED;
+                                        mot_cmd.turn_ticks_left =       0;
+                                        mot_cmd.turn_ticks_right =      0;
+
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
                                         tk_dly_tsk(1000);
                                     }
                                 }
@@ -220,78 +224,80 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         switch (n_msg.type) {
                             case MSG_IR_UPDATE:
                                 IR_STATE curr_state = n_msg.data.ir_state;
+
+                                    tm_printf("Current state: %d VS previous state: %d\n", curr_state, prev_ir_state);
       
                                     if (curr_state != prev_ir_state) {
 
-                                    if (curr_state == STATE_W_W) {
-                                        turning_rampup_count = 0;
+                                        if (curr_state == STATE_W_W) {
+                                            turning_rampup_count = 0;
 
-                                        mot_cmd.target_speed_left =     FORWARD_SPEED;
-                                        mot_cmd.target_speed_right =   -FORWARD_SPEED;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
-
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    } else if (curr_state == STATE_W_B) {
-                                        // Car veering left, adjust right
-                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BASE;
-                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BASE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
-
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    } else if (curr_state == STATE_B_W) {
-                                        // Car veering right, adjust left
-                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BASE;
-                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BASE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
-
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    } else if (curr_state == STATE_B_B) {
-                                        turning_rampup_count = 0;
-
-                                        // Car at instersection
-                                        mot_cmd.target_speed_left =     STOP_SPEED;
-                                        mot_cmd.target_speed_right =   -STOP_SPEED;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
-
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-
-                                        m_mode = MODE_DECISION_MAKING_ADVANCE;
-                                    } else {
-                                        // Errorneous state
-
-                                    }
-
-                                    // Update previous IR state
-                                    prev_ir_state = curr_state;
-                                } else {
-                                    // Ramp up turning if stuck on turning
-                                    if (curr_state == STATE_B_W || curr_state == STATE_W_B) {
-                                        if (turning_rampup_count < TURNING_RAMPUP_LIMIT) {
-                                            turning_rampup_count++;
-                                        }
-
-                                        if (turning_rampup_count == TURNING_RAMPUP_LIMIT) {
-                                            turning_rampup_count++;     
-
-                                            mot_cmd.turn_ticks_left =   0;
-                                            mot_cmd.turn_ticks_right =  0;
-                                            
-                                            if (curr_state == STATE_B_W) {
-                                                mot_cmd.target_speed_left =     LEFT_TURN_L_RAMP;
-                                                mot_cmd.target_speed_right =   -LEFT_TURN_R_RAMP;
-                                            } else if (curr_state == STATE_W_B) {
-                                                mot_cmd.target_speed_left =     RIGHT_TURN_L_RAMP;
-                                                mot_cmd.target_speed_right =   -RIGHT_TURN_R_RAMP;
-                                            }
+                                            mot_cmd.target_speed_left =     FORWARD_SPEED;
+                                            mot_cmd.target_speed_right =   -FORWARD_SPEED;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                        }                                    
+                                        } else if (curr_state == STATE_W_B) {
+                                            // Car veering left, adjust right
+                                            mot_cmd.target_speed_left =     RIGHT_TURN_L_BASE;
+                                            mot_cmd.target_speed_right =   -RIGHT_TURN_R_BASE;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
+
+                                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        } else if (curr_state == STATE_B_W) {
+                                            // Car veering right, adjust left
+                                            mot_cmd.target_speed_left =     LEFT_TURN_L_BASE;
+                                            mot_cmd.target_speed_right =   -LEFT_TURN_R_BASE;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
+
+                                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        } else if (curr_state == STATE_B_B) {
+                                            turning_rampup_count = 0;
+
+                                            // Car at instersection
+                                            mot_cmd.target_speed_left =     STOP_SPEED;
+                                            mot_cmd.target_speed_right =   -STOP_SPEED;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
+
+                                            tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                            m_mode = MODE_DECISION_MAKING_ADVANCE;
+                                        } else {
+                                            // Errorneous state
+
+                                        }
+
+                                        // Update previous IR state
+                                        prev_ir_state = curr_state;
+                                    } else {
+                                        // Ramp up turning if stuck on turning
+                                        if (curr_state == STATE_B_W || curr_state == STATE_W_B) {
+                                            if (turning_rampup_count < TURNING_RAMPUP_LIMIT) {
+                                                turning_rampup_count++;
+                                            }
+
+                                            if (turning_rampup_count == TURNING_RAMPUP_LIMIT) {
+                                                turning_rampup_count++;     
+
+                                                mot_cmd.turn_ticks_left =   0;
+                                                mot_cmd.turn_ticks_right =  0;
+                                                
+                                                if (curr_state == STATE_B_W) {
+                                                    mot_cmd.target_speed_left =     LEFT_TURN_L_RAMP;
+                                                    mot_cmd.target_speed_right =   -LEFT_TURN_R_RAMP;
+                                                } else if (curr_state == STATE_W_B) {
+                                                    mot_cmd.target_speed_left =     RIGHT_TURN_L_RAMP;
+                                                    mot_cmd.target_speed_right =   -RIGHT_TURN_R_RAMP;
+                                                }
+
+                                                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                            }                                    
+                                        }
                                     }
-                                }
 
                                 break;
                             case MSG_OBSTACLE_DETECTED:
