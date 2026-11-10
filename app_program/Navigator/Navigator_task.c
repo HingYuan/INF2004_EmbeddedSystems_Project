@@ -131,7 +131,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
                         switch (n_msg.type) {
-                            case MSG_WIFI_BARCODE_MAPPING:      // Note for bryan & future self: packed data must look like 0bxxxx xxxx yyyy yyyy, where x is direction and y is character.
+                            case MSG_WIFI_BARCODE_MAPPING: {    // Note for bryan & future self: packed data must look like 0bxxxx xxxx yyyy yyyy, where x is direction and y is character.
                                 DIRECTION direction = n_msg.data.packed_command_mapping >> 8;      // Cast int to enum
                                 B code39_char = n_msg.data.packed_command_mapping & 0x00ff;        // bitwise & mask to get least-significant 8 bits
 
@@ -150,6 +150,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 }
 
                                 break;
+                            }
                             default:
                                 
                                 break;
@@ -222,7 +223,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         break;
                     case MODE_LINE_FOLLOWING:
                         switch (n_msg.type) {
-                            case MSG_IR_UPDATE:
+                            case MSG_IR_UPDATE: {
                                 IR_STATE curr_state = n_msg.data.ir_state;
 
                                     tm_printf("Current state: %d VS previous state: %d\n", curr_state, prev_ir_state);
@@ -300,6 +301,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     }
 
                                 break;
+                            }
                             case MSG_OBSTACLE_DETECTED:
 
                                 last_obstacle_dist_cm = n_msg.data.obstacle_distance_cm;
@@ -322,7 +324,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                         break;
 
-                    case MODE_GOING_OVER_HUMP:
+                    case MODE_GOING_OVER_HUMP: {
                         VB left_speed =     FORWARD_SPEED;
                         VB right_speed =   -FORWARD_SPEED;
 
@@ -371,6 +373,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         }
 
                         break;
+                    }
 
                     case MODE_DECISION_MAKING_ADVANCE:
                         tk_dly_tsk(250);
@@ -402,7 +405,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     case MODE_DECISION_MAKING_TURN:
 
                         switch (n_msg.type) {
-                            case MSG_IR_UPDATE:
+                            case MSG_IR_UPDATE: {
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
                                 // DIRECTION curr_decision = instructions[instruction_idx];
@@ -500,6 +503,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 if (prev_ir_state != curr_ir_state) { prev_ir_state = curr_ir_state; }
 
                                 break;
+                            }
                             default:
                                 
                                 break;
