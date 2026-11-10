@@ -233,6 +233,7 @@ typedef struct {
     int16_t  speed_right;
     int32_t  enc_l;             // Left encoder ticks
     int32_t  enc_r;             // Right encoder ticks
+    int32_t  dist_cm;           // Average distance travelled in cm
 
     // Sensor Specific: Ultrasonic
     uint32_t obstacle_distance_cm; // Direct front obstacle distance

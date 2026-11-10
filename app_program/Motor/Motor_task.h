@@ -75,6 +75,7 @@ IMPORT volatile W enc_r_ticks;
 IMPORT INT motor_get_left_dist_mm(void);
 IMPORT INT motor_get_right_dist_mm(void);
 IMPORT INT motor_get_avg_dist_mm(void);
+IMPORT INT motor_get_avg_dist_cm(void);
 
 // Make your task function visible to the main program
 IMPORT void motor_task(INT stacd, void *exinf);

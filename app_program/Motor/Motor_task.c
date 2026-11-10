@@ -155,6 +155,11 @@ EXPORT INT motor_get_avg_dist_mm(void)
 	return (motor_get_left_dist_mm() + motor_get_right_dist_mm()) / 2;
 }
 
+EXPORT INT motor_get_avg_dist_cm(void)
+{
+	return motor_get_avg_dist_mm() / 10;
+}
+
 LOCAL INT iabs(INT v) { return v < 0 ? -v : v; }
 
 /* Move cur toward target by at most step */

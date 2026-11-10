@@ -414,6 +414,8 @@ SZ telemetry_json(char *output, SZ capacity)
     json_signed_number(output, capacity, &length, telemetry_snapshot.enc_l);
     json_text(output, capacity, &length, ",\"enc_r\":");
     json_signed_number(output, capacity, &length, telemetry_snapshot.enc_r);
+    json_text(output, capacity, &length, ",\"dist_cm\":");
+    json_signed_number(output, capacity, &length, telemetry_snapshot.dist_cm);
 
     // Sensor Specific: Ultrasonic
     json_text(output, capacity, &length, ",\"obs_dist\":");

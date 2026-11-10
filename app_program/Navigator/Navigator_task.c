@@ -653,6 +653,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             telemetry_snapshot.instruction_idx = (uint8_t)instruction_idx;
             telemetry_snapshot.enc_l = (int32_t)enc_l_ticks;
             telemetry_snapshot.enc_r = (int32_t)enc_r_ticks;
+            telemetry_snapshot.dist_cm = (int32_t)motor_get_avg_dist_cm();
             telemetry_snapshot.obstacle_distance_cm = last_obstacle_dist_cm;
             telemetry_snapshot.closest_cm = last_closest_cm;
             telemetry_snapshot.closest_angle_deg = (int32_t)last_closest_angle_deg;
