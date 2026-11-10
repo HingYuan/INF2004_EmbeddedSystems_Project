@@ -324,10 +324,11 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					last_ra = isr_ticks_ra; last_rb = isr_ticks_rb;
 					last_print_l = enc_l_ticks;
 					last_print_r = enc_r_ticks;
-					tm_printf((UB *)"[enc] ticks L=%d R=%d (LA=%d LB=%d | RA=%d RB=%d) | dist L=%d R=%d mm\n",
+					tm_printf((UB *)"[dist] total=%d cm (L=%d mm, R=%d mm) | ticks L=%d R=%d | PWM L=%d R=%d\n",
+						motor_get_avg_dist_cm(),
+						motor_get_left_dist_mm(), motor_get_right_dist_mm(),
 						(INT)enc_l_ticks, (INT)enc_r_ticks,
-						(INT)isr_ticks_la, (INT)isr_ticks_lb, (INT)isr_ticks_ra, (INT)isr_ticks_rb,
-						motor_get_left_dist_mm(), motor_get_right_dist_mm());
+						out_l, out_r);
 				}
 			}
 

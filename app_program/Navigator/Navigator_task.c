@@ -226,7 +226,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE: {
                                 IR_STATE curr_state = n_msg.data.ir_state;
 
-                                    tm_printf("Current state: %d VS previous state: %d\n", curr_state, prev_ir_state);
+                                    // tm_printf("Current state: %d VS previous state: %d\n", curr_state, prev_ir_state);
       
                                     if (curr_state != prev_ir_state) {
 
