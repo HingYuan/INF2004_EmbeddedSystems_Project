@@ -7,7 +7,7 @@
 #define IR_CENTER_PIN       28
 #define IR_RIGHT_PIN        27
 
-#define ADC_IR_THRESHOLD    1000
+#define ADC_IR_THRESHOLD    500
 
 typedef struct {
     INT state;

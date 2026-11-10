@@ -97,6 +97,8 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
         UH right_state = (UH)((raw_right * 3300U) / 4095U);
         UH left_state = (UH)((raw_left * 3300U) / 4095U);
 
+        // tm_printf("right state: %d\n", right_state);
+
         NAVIGATOR_MESSAGE nm;
         nm.type = MSG_IR_UPDATE;
         if (left_state >= ADC_IR_THRESHOLD && right_state >= ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_B;        // Black-black
@@ -106,7 +108,8 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
 
         tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
 
-        tk_dly_tsk(10);
+        // 10ms sampling (100Hz) catches thin black tape instantly
+        tk_dly_tsk(1);
     }
 }
 

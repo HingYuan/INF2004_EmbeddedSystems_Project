@@ -68,13 +68,14 @@ IMPORT volatile W enc_r_ticks;
 // Wheel diameter = 60mm, 20 slots/rev -> ~9.4 mm per tick
 #define WHEEL_DIAMETER_MM    60
 #define ENCODER_SLOTS        20
-#define MM_PER_TICK_X10      94    // 9.4 mm per tick stored as fixed-point (x10)
+#define MM_PER_TICK_X10      85    // 8.5 mm per tick calibrated (5cm ruler test)
 #define WHEELBASE_MM         100   // 100mm track width between wheels
 
 // Helper functions to get physical distance and speed
 IMPORT INT motor_get_left_dist_mm(void);
 IMPORT INT motor_get_right_dist_mm(void);
 IMPORT INT motor_get_avg_dist_mm(void);
+IMPORT INT motor_get_avg_dist_cm(void);
 
 // Make your task function visible to the main program
 IMPORT void motor_task(INT stacd, void *exinf);
