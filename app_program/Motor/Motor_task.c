@@ -16,9 +16,9 @@
 #define STALL_PERIODS           125   /* 50 x 20 ms = 1.0 s with no ticks = stall */
 #define KP_TRIM                 5    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
 #define MAX_TRIM_PCT            15   /* Maximum closed-loop trim adjustment (% PWM) */
-#define ENC_DEBOUNCE_SAMPLES    3    /* 3 x 0.5 ms = 1.5 ms stable level before an edge is accepted */
-#define ENC_COOLDOWN_SAMPLES    6    /* 3 ms lockout after an edge. Was 90 (45 ms), which capped every
-                                        wheel at ~11 ticks/s so both wheels always read equal speed. */
+#define ENC_DEBOUNCE_SAMPLES    2    /* 2 x 0.5 ms = 1.0 ms stable level */
+#define ENC_COOLDOWN_SAMPLES    90   /* 45 ms lockout eliminates optical edge chatter */
+#define RIGHT_DIST_SCALE        1010 /* 1000=drift right, 1030=turn left -> 1010 (1% boost) for straight */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
 
@@ -439,7 +439,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 					// Closed-loop encoder trim so both wheels track the exact same distance
 					INT moved_l = iabs((INT)(enc_l_ticks - cruise_start_l));
 					INT moved_r = iabs((INT)(enc_r_ticks - cruise_start_r));
-					INT trim = (moved_l - moved_r) * KP_TRIM;
+					INT err = moved_l * RIGHT_DIST_SCALE - moved_r * 1000;
+					INT trim = (err * KP_TRIM) / 1000;
 					if (trim > MAX_TRIM_PCT) trim = MAX_TRIM_PCT;
 					if (trim < -MAX_TRIM_PCT) trim = -MAX_TRIM_PCT;
 
