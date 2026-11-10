@@ -157,7 +157,8 @@ EXPORT INT motor_get_avg_dist_mm(void)
 
 EXPORT INT motor_get_avg_dist_cm(void)
 {
-	return motor_get_avg_dist_mm() / 10;
+	INT mm = motor_get_avg_dist_mm();
+	return (mm >= 0) ? (mm + 5) / 10 : (mm - 5) / 10;
 }
 
 LOCAL INT iabs(INT v) { return v < 0 ? -v : v; }
