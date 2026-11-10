@@ -68,7 +68,8 @@ IMPORT volatile W enc_r_ticks;
 // Wheel diameter = 60mm, 20 slots/rev -> ~9.4 mm per tick
 #define WHEEL_DIAMETER_MM    60
 #define ENCODER_SLOTS        20
-#define MM_PER_TICK_X10      85    // 8.5 mm per tick calibrated (5cm ruler test)
+#define MM_PER_TICK_X100     68    // 0.68 mm per tick calibrated (20cm = 296 ticks)
+#define MM_PER_TICK_X10      7     // Compatibility fallback (0.7 mm/tick)
 #define WHEELBASE_MM         100   // 100mm track width between wheels
 
 // Helper functions to get physical distance and speed
