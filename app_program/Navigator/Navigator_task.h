@@ -74,7 +74,7 @@ typedef enum {
 typedef struct {
     UW closest_cm;
     W closest_angle_deg;       // Positive angle is left
-    UW front_cm;
+    UW front_cm;              // Stationary centre reading used to check room for the diagonal entry.
 
     W left_edge_deg;
     W right_edge_deg;
@@ -97,80 +97,88 @@ typedef struct {
     BOOL profile_valid;        // Basic scan quality, not a safe route
 } OBSTACLE_PROFILE;
 
-// Bypass movement phases
+/*
+ * MOVEMENT_MODE selects the main job; BYPASS_PHASE selects the current step inside bypass.
+ * Normal path: IDLE -> CHECK_OUT -> TURN_OUT -> SHIFT_OUT -> TURN_PARALLEL -> CHECK_SIDE
+ *              -> ADVANCE -> CLEAR_CORNER -> TURN_IN -> FIND_LINE -> LINE_FOUND.
+ * A close obstacle uses REVERSE -> RECOVER_OUT -> resume_phase.
+ * During assessment, REVERSE -> RESCAN_WAIT -> IDLE makes room for another scan.
+ * Keep enum order unchanged: telemetry uses these numeric IDs, including unused older phases.
+ */
 typedef enum {
-    BYPASS_IDLE,
-    BYPASS_TURN_OUT,
-    BYPASS_CHECK_OUT,
-    BYPASS_SHIFT_OUT,
-    BYPASS_TURN_PARALLEL,
-    BYPASS_CHECK_SIDE,
-    BYPASS_CHECK_FORWARD,
-    BYPASS_ADVANCE,
-    BYPASS_CHECK_CLEAR,
-    BYPASS_CLEAR_CORNER,
-    BYPASS_TURN_IN,
-    BYPASS_CHECK_RETURN,
-    BYPASS_FIND_LINE,
-    BYPASS_LINE_FOUND,
-    BYPASS_TURN_ALIGN,
-    BYPASS_VERIFY_LINE,
-    BYPASS_COMPLETE,
-    BYPASS_ABORT,
-    BYPASS_REVERSE,
-    BYPASS_RECOVER_OUT,
-    BYPASS_RESCAN_WAIT
+    BYPASS_IDLE,              // Wait for the initial stop acknowledgement or the stationary scan result.
+    BYPASS_TURN_OUT,          // Pivot 45 degrees toward the selected passing side.
+    BYPASS_CHECK_OUT,         // Wait for the first reading after parking the servo toward the obstacle.
+    BYPASS_SHIFT_OUT,         // Drive diagonally until the car can clear the obstacle's side.
+    BYPASS_TURN_PARALLEL,     // Pivot 45 degrees back to the original forward heading.
+    BYPASS_CHECK_SIDE,        // Drive straight until the sonar ray reaches the side, then acquire the wall.
+    BYPASS_CHECK_FORWARD,     // Unused older forward-check phase; fixed-side tracking does not use it.
+    BYPASS_ADVANCE,           // Follow the obstacle, steering to maintain the target side distance.
+    BYPASS_CHECK_CLEAR,       // Unused older phase; ADVANCE now confirms consecutive far-edge readings.
+    BYPASS_CLEAR_CORNER,      // Drive farther so the rear clears the box; seeing the wall again cancels this.
+    BYPASS_TURN_IN,           // Pivot 45 degrees inward toward the black line.
+    BYPASS_CHECK_RETURN,      // Unused older forward-check phase before returning to the line.
+    BYPASS_FIND_LINE,         // Drive toward the line until two consecutive IR readings contain black.
+    BYPASS_LINE_FOUND,        // Stop normally, restore forward sonar, and hand over to MODE_REENTRY_ADVANCE.
+    BYPASS_TURN_ALIGN,        // Unused older phase; the teammate's MODE_REENTRY_PIVOT handles alignment.
+    BYPASS_VERIFY_LINE,       // Unused older line-verification phase.
+    BYPASS_COMPLETE,          // Unused older completion marker; the current handoff occurs at LINE_FOUND.
+    BYPASS_ABORT,             // Hardware/communication fault stop, not a routine close-distance response.
+    BYPASS_REVERSE,           // Reverse 5 cm to gain entry room, recover clearance, or reacquire the wall.
+    BYPASS_RECOVER_OUT,       // Move forward while steering outward after a close-distance reverse.
+    BYPASS_RESCAN_WAIT        // Briefly settle after stopping, then request another assessment scan.
 } BYPASS_PHASE;
 
 // shortcut: timed motion depends on battery and grip; recalibrate these values on the car.
-#define BYPASS_SPEED                 40
-#define BYPASS_PIVOT_SPEED           40
-#define BYPASS_MS_PER_CM             80U
-#define BYPASS_LEFT_45_MS           700U
+#define BYPASS_SPEED                 40  // Base forward/reverse motor command power.
+#define BYPASS_PIVOT_SPEED           40  // Motor command power during a stationary pivot.
+#define BYPASS_MS_PER_CM             80U // Estimated travel time per cm at BYPASS_SPEED.
+#define BYPASS_LEFT_45_MS           700U // Calibrate left and right turns separately.
 #define BYPASS_RIGHT_45_MS          700U
-#define BYPASS_PIVOT_FROM_FRONT_CM   10U
+#define BYPASS_PIVOT_FROM_FRONT_CM   10U // Front of car to the pivot point between the driven wheels.
 #define BYPASS_SWEPT_RADIUS_CM       12U  // ceil(sqrt(10*10 + 6*6)) for the measured body.
-#define BYPASS_REVERSE_CM             5U
-#define BYPASS_WALL_TARGET_CM        16U
-#define BYPASS_WALL_DEADBAND_CM       2
-#define BYPASS_STEER_LIMIT           10
-#define BYPASS_CLOSE_CM             12U
-#define BYPASS_WALL_SEARCH_CM        40U
-#define BYPASS_EDGE_JUMP_CM          10U
-#define BYPASS_CONFIRM_COUNT         3U
-#define BYPASS_TRACK_STALE_MS      300U
-#define BYPASS_RESPONSE_MS        1000U
-#define BYPASS_SCAN_MS           15000U
-#define BYPASS_STOP_SETTLE_MS      150U
-#define BYPASS_POLL_MS              20U
+#define BYPASS_REVERSE_CM             5U // Distance of each short recovery reverse.
+#define BYPASS_WALL_TARGET_CM        16U // Diagonal sonar distance at 45 degrees, about a 5 cm body gap.
+#define BYPASS_WALL_DEADBAND_CM       2  // No steering correction within +/-2 cm of the target.
+#define BYPASS_STEER_LIMIT           10  // Maximum power adjustment to each wheel around BYPASS_SPEED.
+#define BYPASS_CLOSE_CM             12U // Readings at/below this steer away; persistent readings reverse.
+#define BYPASS_WALL_SEARCH_CM        40U // Largest echo accepted when initially acquiring the side wall.
+#define BYPASS_EDGE_JUMP_CM          10U // A rise beyond this from the last wall reading suggests its end.
+#define BYPASS_CONFIRM_COUNT         3U // Consecutive readings needed for close/far confirmation.
+#define BYPASS_TRACK_STALE_MS      300U // Missing tracking messages cause a fault; no-echo messages still count.
+#define BYPASS_RESPONSE_MS        1000U // Wait limit for the stop acknowledgement or tracking startup.
+#define BYPASS_SCAN_MS           15000U // Wait limit for a complete stationary scan.
+#define BYPASS_STOP_SETTLE_MS      150U // Pause after a reverse before rescanning.
+#define BYPASS_POLL_MS              20U // Wake Navigator for phase deadlines even without new sensor messages.
 
+// Navigator owns this context. All *_us values are microseconds; timestamps come from time_us().
 typedef struct {
-    BYPASS_PHASE phase;
-    BYPASS_PHASE resume_phase;
-    INT side;                     // +1: pass left, -1: pass right; retained for reentry.
-    UW phase_started_us;
-    UW deadline_us;
-    UW requested_us;
-    UW last_tracking_us;
-    UW last_sample_us;
-    UW shift_us;
-    UW acquire_us;
-    UW remaining_us;
-    UW wall_cm;
-    UW lost_count;
-    UW close_count;
-    UW black_count;
-    BOOL wall_seen;
-    BOOL owns_obstacle_stop;
-    BOOL recovery_outward;
+    BYPASS_PHASE phase;           // What the car is doing now.
+    BYPASS_PHASE resume_phase;    // Step to continue after reversing/recovering.
+    INT side;                     // +1: pass left (sonar right); -1: pass right (sonar left); kept for reentry.
+    UW phase_started_us;          // Start time; ignore readings taken before this phase.
+    UW deadline_us;               // Time to finish this phase; zero means wait for sensor events instead.
+    UW requested_us;              // Start of the current side-tracking request; reject older replies.
+    UW last_tracking_us;          // Last fresh tracking message, including ordinary no-echo results.
+    UW last_sample_us;            // Last accepted sample timestamp; prevents counting one sample twice.
+    UW shift_us;                  // Calculated duration of the 45-degree diagonal drive.
+    UW acquire_us;                // Straight approach time before trusting an echo as the side wall.
+    UW remaining_us;              // Time left in the interrupted movement, saved before reversing.
+    UW wall_cm;                   // Last accepted obstacle distance, used to detect a jump at the far edge.
+    UW lost_count;                // Consecutive missing/far echoes during acquisition or edge confirmation.
+    UW close_count;               // Consecutive readings too close to the body.
+    UW black_count;               // Consecutive IR readings containing black during FIND_LINE only.
+    BOOL wall_seen;               // Must see the obstacle before interpreting echo loss as its far edge.
+    BOOL owns_obstacle_stop;      // Allows releasing the initial scan stop, never another task's fault stop.
+    BOOL recovery_outward;        // TRUE: steer outward after reversing; FALSE: assessment/acquisition retry.
 } BYPASS_CONTEXT;
 
 typedef struct {
-    UW distance_cm;
-    W angle_deg;
-    BOOL valid;
-    SONAR_STATUS status;
-    UW sampled_at_us;
+    UW distance_cm;               // Measured echo distance; use only when valid is TRUE.
+    W angle_deg;                 // Positive points left, negative points right.
+    BOOL valid;                  // TRUE only for SONAR_OK; no echo is not a measured clear distance.
+    SONAR_STATUS status;         // Distinguishes an echo, no echo, too close, and hardware failure.
+    UW sampled_at_us;            // time_us() when this measurement finished.
 } SONAR_PROBE_RESULT;
 
 /* 
@@ -210,11 +218,11 @@ typedef enum {
     MODE_GOING_OVER_HUMP,           // Traversing over hump
     MODE_DECISION_MAKING_ADVANCE,   // Car advances a bit after an intersection to center wheels on intersection
     MODE_DECISION_MAKING_TURN,      // Car stops at intersection, need to refer to next instruction, rotate
-    MODE_WALL_HUGGING,              // Ultrasonic sensor is aware of obstacle and navigtor is navigating around it
-    MODE_REENTRY_ADVANCE,           // Navigator moves car forward onto black line after MODE_REENTRY_DETECT to position itself for pivot
-    MODE_REENTRY_PIVOT,             // Navigator spins the car in place to align with line
-    MODE_OBSTACLE_ASSESS,  
-    MODE_SAFE_STOP              
+    MODE_WALL_HUGGING,              // Run BYPASS_PHASE steps: diagonal entry, wall following, rear clearance and line search.
+    MODE_REENTRY_ADVANCE,           // Teammate's code: advance onto the line after the bypass handoff.
+    MODE_REENTRY_PIVOT,             // Teammate's code: pivot to align with the line.
+    MODE_OBSTACLE_ASSESS,           // Stop, scan, choose a side, and reverse/rescan if diagonal entry needs more room.
+    MODE_SAFE_STOP                 // Hold stopped after a latched hardware or communication fault.
 } MOVEMENT_MODE;
 
 typedef enum {
