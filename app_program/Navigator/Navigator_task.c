@@ -88,8 +88,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     BOOL live_sonar_distance_valid = FALSE;
     W turn_start_ticks = 0;
 
-    // 2s grace period to place car on track
+    // 2s grace period to place car on track, then flush any stale startup sensor messages
     tk_dly_tsk(2000);
+    clear_navigator_mbf();
 
     while (1) {
         message_size = tk_rcv_mbf(navigator_mbfid, (void *)&n_msg, TMO_FEVR); // Set as timeout forever (TMO_FEVR) as IR is continuously sending updates, so no timeout needed.
@@ -325,53 +326,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         break;
 
                     case MODE_GOING_OVER_HUMP: {
-                        VB left_speed =     FORWARD_SPEED;
-                        VB right_speed =   -FORWARD_SPEED;
-
-                        VB pitch = n_msg.data.imu_telemetry_msg.pitch_deg;
-                        VB roll = n_msg.data.imu_telemetry_msg.roll_deg;
-
-                        switch (n_msg.data.imu_telemetry_msg.event) {
-                            case IMU_MSG_HUMP_DETECTED:
-                                if (pitch < 0) {
-                                    mot_cmd.target_speed_left =  (left_speed + pitch) > 10 ? left_speed + pitch : 10;
-                                    mot_cmd.target_speed_right = -right_speed;
-                                } else {
-                                    mot_cmd.target_speed_left =  left_speed;
-                                    mot_cmd.target_speed_right = -((right_speed - pitch) < -10 ? right_speed - pitch : -10);
-                                }
-
-                                if (roll < -10 && hump_pop != 1) {
-                                    hump_pop = 1;
-                                } else if (roll > 10 && hump_pop != 0) {
-                                    hump_pop = 0;
-                                }
-                                
-                                mot_cmd.turn_ticks_left =        0;
-                                mot_cmd.turn_ticks_right =       0;
-
-                                spam_mitigation++;
-                                if (spam_mitigation > spam_mitigation_threshold) {
-                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    spam_mitigation = 0;
-                                }
-
-                                break;
-                            case IMU_MSG_NO_HUMP:
-                                // tm_printf("NO HUMP RECEIVED\n");
-                                if (hump_pop == 0) {
-                                    // tm_printf("RECOVERED\n");
-                                    m_mode = MODE_LINE_FOLLOWING;
-                                } else {
-                                    mot_cmd.turn_ticks_left =        0;
-                                    mot_cmd.turn_ticks_right =       0;
-
-                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                }
-
-                                break;
+                        if (n_msg.type == MSG_IMU_UPDATE &&
+                            n_msg.data.imu_telemetry_msg.event == IMU_MSG_NO_HUMP) {
+                            prev_ir_state = STATE_NULL;
+                            m_mode = MODE_LINE_FOLLOWING;
                         }
-
                         break;
                     }
 
@@ -440,8 +399,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                             mot_cmd.target_speed_left =     RIGHT_PIVOT_L;
                                             mot_cmd.target_speed_right =    RIGHT_PIVOT_R;
-                                            mot_cmd.turn_ticks_left =       65;
-                                            mot_cmd.turn_ticks_right =      65;
+                                            mot_cmd.turn_ticks_left =       0;
+                                            mot_cmd.turn_ticks_right =      0;
 
                                             tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 

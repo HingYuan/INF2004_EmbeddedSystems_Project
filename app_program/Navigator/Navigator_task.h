@@ -11,42 +11,34 @@
 */
 
 // Forward
-// #define FORWARD_SPEED           30
-// #define FORWARD_SPEED_BARCODE   30
-#define FORWARD_SPEED           30
-#define FORWARD_SPEED_BARCODE   30
+#define FORWARD_SPEED           25
+#define FORWARD_SPEED_BARCODE   22
 
 // Stop / brake
 #define STOP_SPEED              0
 
-// turning (maintain forward speed)
-// #define LEFT_TURN_L_BASE        15
-// #define LEFT_TURN_R_BASE        45
-// #define RIGHT_TURN_L_BASE       55
-// #define RIGHT_TURN_R_BASE       0
-#define LEFT_TURN_L_BASE        15
-#define LEFT_TURN_R_BASE        45
-#define RIGHT_TURN_L_BASE       45
-#define RIGHT_TURN_R_BASE       0
+// Smooth differential steering for line following
+#define LEFT_TURN_L_BASE        18
+#define LEFT_TURN_R_BASE        30
+#define RIGHT_TURN_L_BASE       30
+#define RIGHT_TURN_R_BASE       18
 
-#define LEFT_TURN_L_BARCODE     20
-#define LEFT_TURN_R_BARCODE     40
-#define RIGHT_TURN_L_BARCODE    40
-#define RIGHT_TURN_R_BARCODE    20
+#define LEFT_TURN_L_BARCODE     18
+#define LEFT_TURN_R_BARCODE     28
+#define RIGHT_TURN_L_BARCODE    28
+#define RIGHT_TURN_R_BARCODE    18
 
-// turning w/ max rampup
-#define LEFT_TURN_L_RAMP        0
-#define LEFT_TURN_R_RAMP        50
-// #define RIGHT_TURN_L_RAMP       65
-#define RIGHT_TURN_L_RAMP       50
-// #define RIGHT_TURN_R_RAMP       0
-#define RIGHT_TURN_R_RAMP       -30
+// Turning w/ max rampup (keep inner wheel moving at 15% instead of locking to 0!)
+#define LEFT_TURN_L_RAMP        15
+#define LEFT_TURN_R_RAMP        34
+#define RIGHT_TURN_L_RAMP       34
+#define RIGHT_TURN_R_RAMP       15
 
 // pivoting / turning on the spot
-#define LEFT_PIVOT_L            28
-#define LEFT_PIVOT_R            28
-#define RIGHT_PIVOT_L           28
-#define RIGHT_PIVOT_R           28
+#define LEFT_PIVOT_L            25
+#define LEFT_PIVOT_R            25
+#define RIGHT_PIVOT_L           25
+#define RIGHT_PIVOT_R           25
 
 /* 
 =========================================
@@ -62,7 +54,7 @@ typedef enum {
     STATE_NULL,
 } IR_STATE;
 
-#define TURNING_RAMPUP_LIMIT 10
+#define TURNING_RAMPUP_LIMIT 50
 
 /* 
 =========================================
