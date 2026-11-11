@@ -483,6 +483,14 @@ void mqtt_dashboard_poll(struct netif *netif)
     }
 }
 
+void mqtt_dashboard_link_down(void)
+{
+    if(mqtt_client != NULL) mqtt_disconnect(mqtt_client);
+    mqtt_connected = 0U;
+    mqtt_connect_pending = 0U;
+    mqtt_next_retry_ms = mqtt_now_ms() + MQTT_RETRY_MS;
+}
+
 void json_char(char *output, SZ capacity, SZ *length, char value)
 {
     if(*length + 1U < capacity) output[*length] = value;
@@ -567,6 +575,10 @@ SZ mqtt_dashboard_json(char *output, SZ capacity)
 void mqtt_dashboard_poll(struct netif *netif)
 {
     (void)netif;
+}
+
+void mqtt_dashboard_link_down(void)
+{
 }
 
 SZ mqtt_dashboard_json(char *output, SZ capacity)
