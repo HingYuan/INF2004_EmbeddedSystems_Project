@@ -134,6 +134,37 @@ LOCAL void imu_compute_pitch_roll(float gx, float gy, float gz, float *pitch_out
     *roll_out  = imu_atan2f(gx, imu_sqrtf(SQ(gy) + SQ(gz))) * 180.0f / 3.14159f;
 }
 
+LOCAL bool imu_read_mag_raw(int16_t *mx, int16_t *my, int16_t *mz)
+{
+    UB data[6];
+    SZ asz = 0;
+    UB reg = OUT_X_H_M; // 0x03
+
+    if (tk_swri_dev(imu_dd, LSM303_MAG_ADDR, &reg, 1, &asz) < E_OK) return false;
+    if (tk_srea_dev(imu_dd, LSM303_MAG_ADDR, data, 6, &asz) < E_OK) return false;
+
+    // On LSM303DLHC, magnetometer register order is X, Z, Y (big-endian)
+    *mx = (int16_t)(((uint16_t)data[0] << 8) | data[1]);
+    *mz = (int16_t)(((uint16_t)data[2] << 8) | data[3]);
+    *my = (int16_t)(((uint16_t)data[4] << 8) | data[5]);
+    return true;
+}
+
+// Returns compass heading in degrees (0 to 359)
+LOCAL int16_t imu_get_heading_deg(void)
+{
+    int16_t mx = 0, my = 0, mz = 0;
+    if (!imu_read_mag_raw(&mx, &my, &mz)) return telemetry_snapshot.heading_deg;
+
+    // IMU is mounted rotated 90 deg (sensor Y = forward, sensor X = side)
+    float rad = imu_atan2f((float)mx, (float)my);
+    float deg = rad * 180.0f / 3.14159265f;
+
+    if (deg < 0.0f) deg += 360.0f;
+    if (deg >= 360.0f) deg -= 360.0f;
+    return (int16_t)deg;
+}
+
 EXPORT void imu_task(INT stacd, void *exinf)
 {
     (void)stacd; (void)exinf;
@@ -178,6 +209,11 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 }
 
                 ER er2 = (er1 >= E_OK) ? imu_write_reg(accel_addr, CTRL_REG4_A, 0x08) : er1;
+
+                // Configure LSM303DLHC Magnetometer for compass heading
+                (void)imu_write_reg(LSM303_MAG_ADDR, CRA_REG_M, 0x14); // 30 Hz data rate
+                (void)imu_write_reg(LSM303_MAG_ADDR, CRB_REG_M, 0x20); // +/- 1.3 Gauss range
+                (void)imu_write_reg(LSM303_MAG_ADDR, MR_REG_M,  0x00); // Continuous measurement mode
 
                 if (er1 >= E_OK && er2 >= E_OK) {
                     active_accel_addr = accel_addr;
@@ -319,6 +355,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     telemetry_timer = 0;
                     telemetry_snapshot.pitch_deg = pitch;
                     telemetry_snapshot.roll_deg = roll;
+                    telemetry_snapshot.heading_deg = imu_get_heading_deg();
                     telemetry_snapshot.imu_state = (uint8_t)state;
                     if (!is_tilted) {
                         telemetry_snapshot.imu_event = IMU_MSG_NONE;

@@ -15,6 +15,7 @@
 // #define FORWARD_SPEED_BARCODE   30
 #define FORWARD_SPEED           30
 #define FORWARD_SPEED_BARCODE   30
+#define FORWARD_SPEED_HUMP      45
 
 // Stop / brake
 #define STOP_SPEED              0
@@ -245,6 +246,7 @@ typedef struct {
     // Sensor Specific: IMU
     float    pitch_deg;         // Vehicle pitch
     float    roll_deg;          // Vehicle roll
+    int16_t  heading_deg;       // Magnetometer compass heading (0-359 deg)
     uint8_t  imu_state;             // IMU_FSM_STATE enum
     float    estimated_height_mm;   // Peak/current hump height in mm
     uint8_t  imu_event;         // IMU_EVENT_TYPE enum

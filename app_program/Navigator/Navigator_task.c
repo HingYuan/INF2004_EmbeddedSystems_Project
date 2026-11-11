@@ -314,6 +314,12 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IMU_UPDATE:
                                 if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_HUMP_DETECTED) {
                                     m_mode = MODE_GOING_OVER_HUMP;
+                                    mot_cmd.target_speed_left =     FORWARD_SPEED_HUMP;
+                                    mot_cmd.target_speed_right =   -FORWARD_SPEED_HUMP;
+                                    mot_cmd.turn_ticks_left =       0;
+                                    mot_cmd.turn_ticks_right =      0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                                 }
 
                                 break;
@@ -325,51 +331,55 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         break;
 
                     case MODE_GOING_OVER_HUMP: {
-                        VB left_speed =     FORWARD_SPEED;
-                        VB right_speed =   -FORWARD_SPEED;
+                        if (n_msg.type == MSG_IMU_UPDATE) {
+                            VB left_speed =     FORWARD_SPEED_HUMP;
+                            VB right_speed =   -FORWARD_SPEED_HUMP;
 
-                        VB pitch = n_msg.data.imu_telemetry_msg.pitch_deg;
-                        VB roll = n_msg.data.imu_telemetry_msg.roll_deg;
+                            VB pitch = n_msg.data.imu_telemetry_msg.pitch_deg;
+                            VB roll = n_msg.data.imu_telemetry_msg.roll_deg;
 
-                        switch (n_msg.data.imu_telemetry_msg.event) {
-                            case IMU_MSG_HUMP_DETECTED:
-                                if (pitch < 0) {
-                                    mot_cmd.target_speed_left =  (left_speed + pitch) > 10 ? left_speed + pitch : 10;
-                                    mot_cmd.target_speed_right = -right_speed;
-                                } else {
-                                    mot_cmd.target_speed_left =  left_speed;
-                                    mot_cmd.target_speed_right = -((right_speed - pitch) < -10 ? right_speed - pitch : -10);
-                                }
+                            switch (n_msg.data.imu_telemetry_msg.event) {
+                                case IMU_MSG_HUMP_DETECTED:
+                                    if (pitch < 0) {
+                                        mot_cmd.target_speed_left =  (left_speed + pitch) > 10 ? left_speed + pitch : 10;
+                                        mot_cmd.target_speed_right = right_speed;
+                                    } else {
+                                        mot_cmd.target_speed_left =  left_speed;
+                                        mot_cmd.target_speed_right = (right_speed + pitch) < -10 ? right_speed + pitch : -10;
+                                    }
 
-                                if (roll < -10 && hump_pop != 1) {
-                                    hump_pop = 1;
-                                } else if (roll > 10 && hump_pop != 0) {
-                                    hump_pop = 0;
-                                }
-                                
-                                mot_cmd.turn_ticks_left =        0;
-                                mot_cmd.turn_ticks_right =       0;
-
-                                spam_mitigation++;
-                                if (spam_mitigation > spam_mitigation_threshold) {
-                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                    spam_mitigation = 0;
-                                }
-
-                                break;
-                            case IMU_MSG_NO_HUMP:
-                                // tm_printf("NO HUMP RECEIVED\n");
-                                if (hump_pop == 0) {
-                                    // tm_printf("RECOVERED\n");
-                                    m_mode = MODE_LINE_FOLLOWING;
-                                } else {
+                                    if (roll < -10 && hump_pop != 1) {
+                                        hump_pop = 1;
+                                    } else if (roll > 10 && hump_pop != 0) {
+                                        hump_pop = 0;
+                                    }
+                                    
                                     mot_cmd.turn_ticks_left =        0;
                                     mot_cmd.turn_ticks_right =       0;
 
-                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
-                                }
+                                    spam_mitigation++;
+                                    if (spam_mitigation > spam_mitigation_threshold) {
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        spam_mitigation = 0;
+                                    }
 
-                                break;
+                                    break;
+                                case IMU_MSG_NO_HUMP:
+                                    // tm_printf("NO HUMP RECEIVED\n");
+                                    hump_pop = 0;
+                                    prev_ir_state = STATE_NULL;
+                                    m_mode = MODE_LINE_FOLLOWING;
+                                    mot_cmd.target_speed_left =     FORWARD_SPEED;
+                                    mot_cmd.target_speed_right =   -FORWARD_SPEED;
+                                    mot_cmd.turn_ticks_left =       0;
+                                    mot_cmd.turn_ticks_right =      0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    break;
+                                default:
+                                    break;
+                            }
                         }
 
                         break;
