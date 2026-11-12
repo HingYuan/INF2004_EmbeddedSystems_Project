@@ -103,14 +103,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                 }
             } else if (n_msg.type == MSG_IMU_UPDATE &&
-                      (n_msg.data.imu_telemetry_msg.event == IMU_MSG_SHOCK_DETECTED ||
-                       n_msg.data.imu_telemetry_msg.event == IMU_MSG_TILT_WARNING)) {
-                // motor_estop = TRUE;
-                // m_mode = MODE_SAFE_STOP;
-                // mot_cmd.target_speed_left = STOP_SPEED;
-                // mot_cmd.target_speed_right = STOP_SPEED;
-                // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
-                // tm_printf((UB *)"[nav] EMERGENCY STOP triggered by IMU event %d\n", n_msg.data.imu_telemetry_msg.event);
+                       n_msg.data.imu_telemetry_msg.event == IMU_MSG_LIFTED_OVERTURNED) {
+                motor_estop = TRUE;
+                m_mode = MODE_SAFE_STOP;
+                mot_cmd.target_speed_left = STOP_SPEED;
+                mot_cmd.target_speed_right = STOP_SPEED;
+                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
+                tm_printf((UB *)"[nav] STOP: robot lifted/overturned\n");
             } else if (n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
                 

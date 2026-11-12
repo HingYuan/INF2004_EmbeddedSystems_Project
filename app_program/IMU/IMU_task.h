@@ -20,15 +20,13 @@
 #define IMU_SCL_PIN           1
 
 #define LSM303_ACCEL_ADDR     0x19
-#define LSM303_MAG_ADDR       0x1E
 
 /* Detection Thresholds */
-#define SAFE_TILT_LIMIT_DEG     30.0f   // >30 deg triggers Tilt Warning
-#define SHOCK_THRESHOLD_G       2.5f    // >2.5g total acceleration triggers E-Stop
-#define HUMP_THRESHOLD_G        0.35f   // Z-axis deviation threshold for hump detection
-#define HUMP_TILT_THRESHOLD_DEG 7.0f    // Minimum tilt (deg) to trigger hump detection (single-wheel ramp)
-#define HUMP_TRACK_WIDTH_MM     100.0f  // Track width between left and right wheels (mm)
-#define HUMP_CHASSIS_SCALE_MM   150.0f  // Effective chassis wheelbase length (mm)
+#define OVERTURN_TILT_DEG       40.0f   // >40 deg pitch/roll or Z-axis inversion triggers immediate stop
+#define LIFT_ACCEL_DEV_G        0.22f   // Sustained |total_g - baseline_g| deviation triggers lift stop
+#define HUMP_TILT_THRESHOLD_DEG 5.5f    // Minimum tilt (deg) to trigger hump detection (single-wheel ramp)
+#define HUMP_TRACK_WIDTH_MM     68.0f   // Track width between left and right wheels (mm)
+#define HUMP_CHASSIS_SCALE_MM   60.0f   // Effective chassis wheelbase length (mm)
 
 /* 
 =========================================
