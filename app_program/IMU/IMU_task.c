@@ -196,6 +196,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
     BOOL hump_active = FALSE;
     INT tilt_debounce = 0;
     INT safety_debounce = 0;
+    INT recovery_debounce = 0;
 
     while (1) {
         switch (state) {
@@ -422,9 +423,30 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 if (is_overturned || is_lifted) {
                     if (++safety_debounce >= 4) {
                         motor_estop = TRUE;
-                        telemetry_snapshot.pitch_deg = pitch;
-                        telemetry_snapshot.roll_deg = roll;
+                        hump_active = FALSE;
+                        tilt_debounce = 0;
+                        safety_debounce = 0;
+                        recovery_debounce = 0;
+                        telemetry_snapshot.pitch_deg = filt_pitch;
+                        telemetry_snapshot.roll_deg = filt_roll;
+                        telemetry_snapshot.estimated_height_mm = 0.0f;
                         state = STATE_LIFTED_OVERTURNED;
+                        telemetry_snapshot.imu_state = (uint8_t)state;
+                        telemetry_snapshot.imu_event = IMU_MSG_LIFTED_OVERTURNED;
+
+                        if (navigator_mbfid > E_OK) {
+                            IMU_TELEMETRY_MSG msg = {
+                                .event = IMU_MSG_LIFTED_OVERTURNED,
+                                .pitch_deg = telemetry_snapshot.pitch_deg,
+                                .roll_deg = telemetry_snapshot.roll_deg,
+                            };
+                            NAVIGATOR_MESSAGE nav_msg = {
+                                .type = MSG_IMU_UPDATE,
+                                .data.imu_telemetry_msg = msg,
+                            };
+                            (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+                        }
+                        tm_printf((UB *)"[IMU] LIFTED/OVERTURNED -> STOP\n");
                         break;
                     }
                 } else if (safety_debounce > 0) {
@@ -435,24 +457,61 @@ EXPORT void imu_task(INT stacd, void *exinf)
             }
 
             case STATE_LIFTED_OVERTURNED: {
+                float gx, gy, gz;
+                imu_read_accel_g(&gx, &gy, &gz);
+
+                float total_g_sq = SQ(gx) + SQ(gy) + SQ(gz);
+                float raw_pitch, raw_roll;
+                imu_compute_pitch_roll(gx, gy, gz, &raw_pitch, &raw_roll);
+
+                float pitch = raw_pitch - baseline_pitch;
+                float roll  = raw_roll  - baseline_roll;
+
+                p_hist[hist_idx] = pitch;
+                r_hist[hist_idx] = roll;
+                hist_idx = (hist_idx + 1) % 3;
+
+                float med_pitch = imu_median3(p_hist[0], p_hist[1], p_hist[2]);
+                float med_roll  = imu_median3(r_hist[0], r_hist[1], r_hist[2]);
+                filt_pitch += 0.22f * (med_pitch - filt_pitch);
+                filt_roll  += 0.22f * (med_roll  - filt_roll);
+
                 motor_estop = TRUE;
+                telemetry_snapshot.estimated_height_mm = 0.0f;
                 telemetry_snapshot.imu_state = (uint8_t)state;
                 telemetry_snapshot.imu_event = IMU_MSG_LIFTED_OVERTURNED;
 
-                if (navigator_mbfid > E_OK) {
-                    IMU_TELEMETRY_MSG msg = {
-                        .event = IMU_MSG_LIFTED_OVERTURNED,
-                        .pitch_deg = telemetry_snapshot.pitch_deg,
-                        .roll_deg = telemetry_snapshot.roll_deg,
-                    };
-                    NAVIGATOR_MESSAGE nav_msg = {
-                        .type = MSG_IMU_UPDATE,
-                        .data.imu_telemetry_msg = msg,
-                    };
-                    (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+                if (++telemetry_timer >= 25) {
+                    telemetry_timer = 0;
+                    telemetry_snapshot.pitch_deg = filt_pitch;
+                    telemetry_snapshot.roll_deg = filt_roll;
+                    telemetry_snapshot.heading_deg = imu_get_heading_deg();
+                    tm_printf((UB *)"[IMU] LIFTED/OVER P:%d R:%d\n",
+                              (INT)filt_pitch, (INT)filt_roll);
                 }
-                tm_printf((UB *)"[IMU] LIFTED/OVERTURNED -> STOP\n");
-                while (1) tk_dly_tsk(1000);
+
+                // Recover IMU monitoring once held upright, flat, and steady for 500 ms
+                // (motor_estop / MODE_SAFE_STOP stays latched for safety)
+                BOOL upright_flat = (fabsf(pitch) < (OVERTURN_TILT_DEG - 5.0f)) &&
+                                    (fabsf(roll)  < (OVERTURN_TILT_DEG - 5.0f)) &&
+                                    ((gz * baseline_z) >= (0.7f * SQ(baseline_z))) &&
+                                    (total_g_sq >= lift_low_g_sq) &&
+                                    (total_g_sq <= lift_high_g_sq);
+
+                if (upright_flat) {
+                    if (++recovery_debounce >= 25) {
+                        recovery_debounce = 0;
+                        safety_debounce = 0;
+                        tilt_debounce = 0;
+                        hump_active = FALSE;
+                        telemetry_snapshot.imu_event = IMU_MSG_NONE;
+                        state = STATE_MONITORING;
+                        telemetry_snapshot.imu_state = (uint8_t)state;
+                        tm_printf((UB *)"[IMU] Upright -> Monitoring resumed\n");
+                    }
+                } else if (recovery_debounce > 0) {
+                    recovery_debounce--;
+                }
                 break;
             }
         }
