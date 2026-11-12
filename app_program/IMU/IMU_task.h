@@ -23,8 +23,8 @@
 #define LSM303_MAG_ADDR       0x1E
 
 /* Detection Thresholds */
-#define OVERTURN_TILT_DEG       40.0f   // >40 deg pitch/roll or Z-axis inversion triggers immediate stop
-#define LIFT_ACCEL_DEV_G        0.22f   // Sustained |total_g - baseline_g| deviation triggers lift stop
+#define OVERTURN_TILT_DEG       25.0f   // >25 deg pitch/roll or Z-axis inversion triggers immediate stop
+#define LIFT_ACCEL_DEV_G        0.14f   // Sustained (80ms) |total_g - baseline_g| deviation triggers lift stop
 #define HUMP_TILT_THRESHOLD_DEG 5.5f    // Minimum filtered tilt (deg) to trigger hump detection (single-wheel ramp)
 #define HUMP_TRACK_WIDTH_MM     68.0f   // Track width between left and right wheels (mm)
 #define HUMP_CHASSIS_SCALE_MM   60.0f   // Effective chassis wheelbase length (mm)

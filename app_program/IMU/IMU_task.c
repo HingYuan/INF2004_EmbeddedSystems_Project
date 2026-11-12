@@ -152,8 +152,9 @@ LOCAL int16_t imu_get_heading_deg(void)
     int16_t mx = 0, my = 0, mz = 0;
     if (!imu_read_mag_raw(&mx, &my, &mz)) return telemetry_snapshot.heading_deg;
 
-    // IMU is mounted rotated 90 deg (sensor Y = forward, sensor X = side)
-    float rad = imu_atan2f((float)mx, (float)my);
+    // IMU mounted with +Y pointing backward (-Y = car forward) and +X pointing left:
+    // North along forward = -my, East/90 deg CW puts North along left (+mx) -> atan2(+mx, -my)
+    float rad = imu_atan2f((float)mx, -(float)my);
     float deg = rad * 180.0f / 3.14159265f;
 
     if (deg < 0.0f) deg += 360.0f;
@@ -342,12 +343,12 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     current_height_mm = (h_roll > h_pitch) ? h_roll : h_pitch;
 
                     telemetry_snapshot.estimated_height_mm = current_height_mm;
-                    telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
 
                     // Debounce: require tilt to persist for 4 consecutive samples (80 ms)
                     // and notify Navigator ONCE on entering the hump (no queue flooding)
                     if (++tilt_debounce >= 4) {
                         tilt_debounce = 4;
+                        telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
                         if (!hump_active) {
                             hump_active = TRUE;
                             IMU_TELEMETRY_MSG msg = {
@@ -412,13 +413,14 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 }
 
                 // Priority: Lifted or Overturned Detection -> immediate motor stop
+                // Require 4 samples (80ms) so brief 1cm ramp bumps/drops (<=45ms) never trigger a false lift stop
                 BOOL is_overturned = (fabsf(pitch) > OVERTURN_TILT_DEG) ||
                                      (fabsf(roll) > OVERTURN_TILT_DEG) ||
                                      ((gz * baseline_z) < (0.5f * SQ(baseline_z)));
                 BOOL is_lifted = (total_g_sq > lift_high_g_sq) || (total_g_sq < lift_low_g_sq);
 
                 if (is_overturned || is_lifted) {
-                    if (++safety_debounce >= 3) {
+                    if (++safety_debounce >= 4) {
                         motor_estop = TRUE;
                         telemetry_snapshot.pitch_deg = pitch;
                         telemetry_snapshot.roll_deg = roll;
