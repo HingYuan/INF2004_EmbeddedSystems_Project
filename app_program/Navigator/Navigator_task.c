@@ -39,8 +39,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd;
     // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    // MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
-    MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
+    MOVEMENT_MODE m_mode = MODE_LINE_FOLLOWING;
+    // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
     // Sensor specific telemetry cache
     char last_decoded_char = 0;
@@ -62,7 +62,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                        // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                        // incrementing index for syncing barcode and instruction arrays
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                                // Instructions scanned from barcodes
-    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_FRONT };
+    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_BACK };
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;         // Preset all instructions as DIR_INVALID
 
     // Decision making
@@ -367,8 +367,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE: {
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
-                                DIRECTION curr_decision = instructions[instruction_idx];
-                                // DIRECTION curr_decision = instructions_fake[instruction_idx];
+                                // DIRECTION curr_decision = instructions[instruction_idx];
+                                DIRECTION curr_decision = instructions_fake[instruction_idx];
 
                                 if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                     switch (curr_decision) {

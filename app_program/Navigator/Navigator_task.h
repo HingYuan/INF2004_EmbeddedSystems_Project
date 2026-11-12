@@ -11,17 +11,17 @@
 */
 
 // Forward
-#define FORWARD_SPEED           25
-#define FORWARD_SPEED_BARCODE   22
+#define FORWARD_SPEED           15
+#define FORWARD_SPEED_BARCODE   15
 
 // Stop / brake
 #define STOP_SPEED              0
 
 // Smooth differential steering for line following (no sudden jerks)
-#define LEFT_TURN_L_BASE        20
-#define LEFT_TURN_R_BASE        28
-#define RIGHT_TURN_L_BASE       28
-#define RIGHT_TURN_R_BASE       20
+#define LEFT_TURN_L_BASE        10
+#define LEFT_TURN_R_BASE        45
+#define RIGHT_TURN_L_BASE       45
+#define RIGHT_TURN_R_BASE       10
 
 #define LEFT_TURN_L_BARCODE     18
 #define LEFT_TURN_R_BARCODE     28
@@ -29,10 +29,10 @@
 #define RIGHT_TURN_R_BARCODE    18
 
 // Turning w/ max rampup (keep inner wheel moving at 15% instead of locking to 0!)
-#define LEFT_TURN_L_RAMP        15
-#define LEFT_TURN_R_RAMP        34
-#define RIGHT_TURN_L_RAMP       34
-#define RIGHT_TURN_R_RAMP       15
+#define LEFT_TURN_L_RAMP        10
+#define LEFT_TURN_R_RAMP        55
+#define RIGHT_TURN_L_RAMP       55
+#define RIGHT_TURN_R_RAMP       10
 
 // pivoting / turning on the spot
 #define LEFT_PIVOT_L            25
