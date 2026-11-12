@@ -143,7 +143,7 @@ typedef struct {
 =========================================
 */
 
-#define NUMBER_OF_COMMANDS 1
+#define NUMBER_OF_COMMANDS 2
 
 typedef enum {
     MODE_BARCODE_SCANNING,          // Slow speed barcode scanning
