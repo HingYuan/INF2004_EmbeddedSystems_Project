@@ -24,6 +24,8 @@ extern uint64_t time_us_64(void);
 #define MQTT_TOPIC_MAX      96U
 #define MQTT_PAYLOAD_MAX    256U
 #define MQTT_MOVEMENT_CONFIG_TOPIC_DEFAULT "robot/config/movement"
+#define MQTT_STATUS_TOPIC_DEFAULT "robot/status"
+#define MQTT_STATUS_INTERVAL_MS 5000U
 
 static mqtt_client_t *mqtt_client;
 static ip_addr_t mqtt_broker;
@@ -33,6 +35,8 @@ static char mqtt_payload[MQTT_PAYLOAD_MAX];
 static SZ mqtt_payload_length;
 static uint32_t mqtt_message_count;
 static uint32_t mqtt_next_retry_ms;
+static uint32_t mqtt_next_telemetry_ms;
+static uint32_t mqtt_next_status_ms;
 static uint8_t mqtt_configured;
 static uint8_t mqtt_connect_pending;
 static uint8_t mqtt_connected;
@@ -43,6 +47,9 @@ static volatile uint8_t movement_active;
 
 #ifndef MQTT_MOVEMENT_CONFIG_TOPIC
 #define MQTT_MOVEMENT_CONFIG_TOPIC MQTT_MOVEMENT_CONFIG_TOPIC_DEFAULT
+#endif
+#ifndef MQTT_STATUS_TOPIC
+#define MQTT_STATUS_TOPIC MQTT_STATUS_TOPIC_DEFAULT
 #endif
 
 static const char *skip_json_space(const char *text)
@@ -297,6 +304,8 @@ static void mqtt_connection(mqtt_client_t *client, void *arg,
     if(status == MQTT_CONNECT_ACCEPTED) {
         mqtt_connected = 1U;
         mqtt_last_error = 0;
+        mqtt_next_telemetry_ms = 0U;
+        mqtt_next_status_ms = 0U;
         tm_printf((UB *)"[mqtt] connected to " MQTT_BROKER_IP "\n");
         if(mqtt_subscribe(mqtt_client, MQTT_SUBSCRIBE_TOPIC, MQTT_QOS,
                           mqtt_request_done, NULL) != ERR_OK) {
@@ -337,11 +346,11 @@ static void mqtt_begin(void)
         mqtt_info.client_user = MQTT_USERNAME[0] != '\0' ? MQTT_USERNAME : NULL;
         mqtt_info.client_pass = MQTT_PASSWORD[0] != '\0' ? MQTT_PASSWORD : NULL;
         mqtt_info.keep_alive = 30U;
-        mqtt_info.will_topic = NULL;
-        mqtt_info.will_msg = NULL;
+        mqtt_info.will_topic = MQTT_STATUS_TOPIC;
+        mqtt_info.will_msg = "{\"online\":false}";
         mqtt_info.will_msg_len = 0U;
         mqtt_info.will_qos = 0U;
-        mqtt_info.will_retain = 0U;
+        mqtt_info.will_retain = 1U;
         mqtt_configured = 1U;
     }
 
@@ -353,9 +362,6 @@ static void mqtt_begin(void)
         mqtt_next_retry_ms = mqtt_now_ms() + MQTT_RETRY_MS;
     }
 }
-
-#define MQTT_TELEMETRY_INTERVAL_MS 500U
-static uint32_t mqtt_next_telemetry_ms;
 
 static void json_signed_number(char *output, SZ capacity, SZ *length,
                                int32_t value)
@@ -470,22 +476,51 @@ void mqtt_dashboard_poll(struct netif *netif)
             char telem_buf[320];
             SZ len = telemetry_json(telem_buf, sizeof(telem_buf));
             if(len > 0) {
-#ifdef MQTT_PUBLISH_TOPIC
-                mqtt_publish(mqtt_client, MQTT_PUBLISH_TOPIC, telem_buf, (u16_t)len,
-                             MQTT_QOS, 0, mqtt_request_done, NULL);
-#else
-                mqtt_publish(mqtt_client, "robot/telemetry", telem_buf, (u16_t)len,
-                             MQTT_QOS, 0, mqtt_request_done, NULL);
-#endif
+                err_t result = mqtt_publish(
+                    mqtt_client, MQTT_PUBLISH_TOPIC, telem_buf, (u16_t)len,
+                    MQTT_QOS, 0, mqtt_request_done, NULL);
+                if(result != ERR_OK) {
+                    mqtt_last_error = result;
+                    tm_printf((UB *)"[mqtt] telemetry publish failed: %d\n",
+                              result);
+                }
             }
-            mqtt_next_telemetry_ms = now + MQTT_TELEMETRY_INTERVAL_MS;
+            mqtt_next_telemetry_ms = now + 500U;
+        }
+
+        if((int32_t)(now - mqtt_next_status_ms) >= 0) {
+            char status_payload[96];
+            int length = tm_sprintf(
+                (UB *)status_payload,
+                (UB *)"{\"online\":true,\"uptime_ms\":%u,\"telemetry_seq\":%u}",
+                now, telemetry_snapshot.seq);
+            err_t result = mqtt_publish(
+                mqtt_client, MQTT_STATUS_TOPIC, status_payload,
+                (u16_t)length, MQTT_QOS, 1, mqtt_request_done, NULL);
+            if(result != ERR_OK) {
+                mqtt_last_error = result;
+                tm_printf((UB *)"[mqtt] status publish failed: %d\n", result);
+            }
+            mqtt_next_status_ms = now + MQTT_STATUS_INTERVAL_MS;
         }
     }
 }
 
 void mqtt_dashboard_link_down(void)
 {
-    if(mqtt_client != NULL) mqtt_disconnect(mqtt_client);
+    if(mqtt_client != NULL && mqtt_connected) {
+        static const char offline[] = "{\"online\":false}";
+        err_t result = mqtt_publish(
+            mqtt_client, MQTT_STATUS_TOPIC, offline,
+            (u16_t)(sizeof(offline) - 1U), MQTT_QOS, 1,
+            mqtt_request_done, NULL);
+        if(result != ERR_OK) {
+            mqtt_last_error = result;
+            tm_printf((UB *)"[mqtt] offline status publish failed: %d\n",
+                      result);
+        }
+        mqtt_disconnect(mqtt_client);
+    }
     mqtt_connected = 0U;
     mqtt_connect_pending = 0U;
     mqtt_next_retry_ms = mqtt_now_ms() + MQTT_RETRY_MS;
