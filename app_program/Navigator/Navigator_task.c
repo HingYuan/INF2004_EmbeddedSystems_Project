@@ -57,9 +57,10 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     UH turning_rampup_count = 0;
 
     // Barcode decoding
-    B instruction_idx = 0;                                                          // Iterate through instructions for each intersection
-    B barcode_characters[NUMBER_OF_COMMANDS] = {};                                  // Character key, sent from wifi
-    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                        // Instruction mapping, sent from wifi
+    B instruction_idx = 0;                                                          // Track instructions for navigating intersections
+    B instruction_idx_barcode = 0;                                                  // Same as above, but for adding new instructions from decoded barcodes along the track
+    B barcode_characters[NUMBER_OF_COMMANDS] = { 'A', 'Z' };                                  // Character key, sent from wifi
+    DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_BACK, DIR_LEFT };                        // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                        // incrementing index for syncing barcode and instruction arrays
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                                // Instructions scanned from barcodes
     DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_FRONT };
@@ -146,7 +147,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 mapping_increment++;
 
                                 if (mapping_increment >= NUMBER_OF_COMMANDS) {
-                                    m_mode = MODE_BARCODE_SCANNING;
+                                    m_mode = MODE_LINE_FOLLOWING;
                                 }
 
                                 break;
@@ -157,70 +158,70 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         }
 
                         break;
-                    case MODE_BARCODE_SCANNING:
-                        switch (n_msg.type) {
-                            case MSG_IR_UPDATE:
-                                switch (n_msg.data.ir_state) {
-                                    case STATE_W_B:
-                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BARCODE;
-                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BARCODE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    // case MODE_BARCODE_SCANNING:
+                    //     switch (n_msg.type) {
+                    //         case MSG_IR_UPDATE:
+                    //             switch (n_msg.data.ir_state) {
+                    //                 case STATE_W_B:
+                    //                     mot_cmd.target_speed_left =     RIGHT_TURN_L_BARCODE;
+                    //                     mot_cmd.target_speed_right =   -RIGHT_TURN_R_BARCODE;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        break;
-                                    case STATE_B_W:
-                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BARCODE;
-                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BARCODE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    //                     break;
+                    //                 case STATE_B_W:
+                    //                     mot_cmd.target_speed_left =     LEFT_TURN_L_BARCODE;
+                    //                     mot_cmd.target_speed_right =   -LEFT_TURN_R_BARCODE;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        break;
-                                    default:
-                                        mot_cmd.target_speed_left =     FORWARD_SPEED_BARCODE;
-                                        mot_cmd.target_speed_right =   -FORWARD_SPEED_BARCODE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    //                     break;
+                    //                 default:
+                    //                     mot_cmd.target_speed_left =     FORWARD_SPEED_BARCODE;
+                    //                     mot_cmd.target_speed_right =   -FORWARD_SPEED_BARCODE;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        break;
-                                }
+                    //                     break;
+                    //             }
 
-                                break;
-                            case MSG_BARCODE_DECODED:
-                                last_decoded_char = (char)n_msg.data.decoded_char;
+                    //             break;
+                    //         case MSG_BARCODE_DECODED:
+                    //             last_decoded_char = (char)n_msg.data.decoded_char;
 
-                                // Map detected character to instruction, then add to instruction array
-                                for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
-                                    if (last_decoded_char == barcode_characters[i]) {
-                                        instructions[instruction_idx] = barcode_instructions[i];
-                                        instruction_idx++;
-                                    }
+                    //             // Map detected character to instruction, then add to instruction array
+                    //             for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
+                    //                 if (last_decoded_char == barcode_characters[i]) {
+                    //                     instructions[instruction_idx] = barcode_instructions[i];
+                    //                     instruction_idx++;
+                    //                 }
 
-                                    // If max instructions recorded
-                                    if (instruction_idx >= NUMBER_OF_COMMANDS) {
-                                        m_mode = MODE_LINE_FOLLOWING;
-                                        instruction_idx = 0;
+                    //                 // If max instructions recorded
+                    //                 if (instruction_idx >= NUMBER_OF_COMMANDS) {
+                    //                     m_mode = MODE_LINE_FOLLOWING;
+                    //                     instruction_idx = 0;
 
-                                        mot_cmd.target_speed_left =     STOP_SPEED;
-                                        mot_cmd.target_speed_right =   -STOP_SPEED;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    //                     mot_cmd.target_speed_left =     STOP_SPEED;
+                    //                     mot_cmd.target_speed_right =   -STOP_SPEED;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        tk_dly_tsk(1000);
-                                    }
-                                }
+                    //                     tk_dly_tsk(1000);
+                    //                 }
+                    //             }
 
-                                break;
-                        }
+                    //             break;
+                    //     }
 
-                        break;
+                    //     break;
                     case MODE_LINE_FOLLOWING:
                         switch (n_msg.type) {
                             case MSG_IR_UPDATE: {
@@ -302,6 +303,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 break;
                             }
+                            case MSG_BARCODE_DECODED:
+                                last_decoded_char = (char)n_msg.data.decoded_char;
+
+                                // Map detected character to instruction, then add to instruction array
+                                for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                    if (last_decoded_char == barcode_characters[i]) {
+                                        instructions[instruction_idx_barcode] = barcode_instructions[i];
+                                        instruction_idx_barcode++;
+                                    }
+                                }
+
+                                break;
                             case MSG_OBSTACLE_DETECTED:
 
                                 last_obstacle_dist_cm = n_msg.data.obstacle_distance_cm;
@@ -408,6 +421,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE: {
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
+
+                                // If no new instruction, linger on latest one
+                                if (instructions[instruction_idx] == DIR_INVALID && instruction_idx > 0) {
+                                    instruction_idx--;
+                                } else if (instructions[instruction_idx] == DIR_INVALID && instruction_idx <= 0) {
+                                    instruction_idx = 0;
+                                }
+
                                 DIRECTION curr_decision = instructions[instruction_idx];
                                 // DIRECTION curr_decision = instructions_fake[instruction_idx];
 
@@ -465,7 +486,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                             m_mode = MODE_LINE_FOLLOWING;
 
                                             // Linger on last instruction on overflow
-                                            if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx = 0; }
+                                            if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx--; }
 
                                             break;
                                     }
@@ -491,7 +512,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         tk_dly_tsk(250);
 
                                         // Linger on last instruction on overflow
-                                        if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx = 0; }
+                                        if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx--; }
 
                                         // Reset variables
                                         num_rotations = 0;

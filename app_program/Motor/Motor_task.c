@@ -14,7 +14,7 @@
 #define BRAKE_STEP_PCT          200  /* BRAKE: immediate stop */
 #define STALL_MIN_PCT           10   /* only check stall above this power */
 #define STALL_PERIODS           125   /* 50 x 20 ms = 1.0 s with no ticks = stall */
-#define KP_TRIM                 2    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
+#define KP_TRIM                 0    /* Closed-loop straight-line wheel trim gain (% PWM per tick diff) */
 #define MAX_TRIM_PCT            10   /* Maximum closed-loop trim adjustment (% PWM) */
 
 typedef enum { MS_IDLE, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
@@ -314,6 +314,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
 			while(tk_rcv_mbf(motor_mbfid, &cmd, TMO_POL) == (INT)sizeof(cmd)){
 				if(new_cmd) buffer_drop_count++;
 				new_cmd = TRUE;
+
+				if (cmd.target_speed_right != 0) cmd.target_speed_right -= 3;
 			}
 
 			// Periodic tick logging when wheels rotate or power applied
