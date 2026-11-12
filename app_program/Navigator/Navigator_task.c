@@ -62,7 +62,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = { DIR_LEFT };          // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                    // incrementing index for syncing barcode and instruction arrays
     DIRECTION instructions[NUMBER_OF_COMMANDS] = {};                            // Instructions scanned from barcodes
-    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_FRONT };
+    DIRECTION instructions_fake[NUMBER_OF_COMMANDS] = { DIR_RIGHT };
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) instructions[i] = DIR_INVALID;     // Preset all instructions as DIR_INVALID
 
     // Decision making

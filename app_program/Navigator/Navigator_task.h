@@ -17,11 +17,11 @@
 // Stop / brake
 #define STOP_SPEED              0
 
-// Smooth differential steering for line following
-#define LEFT_TURN_L_BASE        18
-#define LEFT_TURN_R_BASE        30
-#define RIGHT_TURN_L_BASE       30
-#define RIGHT_TURN_R_BASE       18
+// Smooth differential steering for line following (no sudden jerks)
+#define LEFT_TURN_L_BASE        20
+#define LEFT_TURN_R_BASE        28
+#define RIGHT_TURN_L_BASE       28
+#define RIGHT_TURN_R_BASE       20
 
 #define LEFT_TURN_L_BARCODE     18
 #define LEFT_TURN_R_BARCODE     28
