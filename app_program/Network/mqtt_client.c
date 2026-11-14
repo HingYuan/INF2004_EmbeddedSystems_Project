@@ -387,6 +387,16 @@ static void json_float(char *output, SZ capacity, SZ *length, float value)
     json_number(output, capacity, length, (uint32_t)frac);
 }
 
+static const char *heading_to_cardinal(int16_t deg)
+{
+    static const char *const dirs[8] = {
+        "N", "NE", "E", "SE", "S", "SW", "W", "NW"
+    };
+    int normalized = ((int)deg % 360 + 360) % 360;
+    int idx = ((normalized + 22) / 45) & 7;
+    return dirs[idx];
+}
+
 SZ telemetry_json(char *output, SZ capacity)
 {
     SZ length = 0U;
@@ -440,6 +450,11 @@ SZ telemetry_json(char *output, SZ capacity)
     json_float(output, capacity, &length, telemetry_snapshot.pitch_deg);
     json_text(output, capacity, &length, ",\"roll\":");
     json_float(output, capacity, &length, telemetry_snapshot.roll_deg);
+    json_text(output, capacity, &length, ",\"heading\":");
+    json_signed_number(output, capacity, &length, (int32_t)telemetry_snapshot.heading_deg);
+    json_text(output, capacity, &length, ",\"heading_dir\":\"");
+    json_text(output, capacity, &length, heading_to_cardinal(telemetry_snapshot.heading_deg));
+    json_text(output, capacity, &length, "\"");
     json_text(output, capacity, &length, ",\"height_mm\":");
     json_float(output, capacity, &length, telemetry_snapshot.estimated_height_mm);
     json_text(output, capacity, &length, ",\"imu_state\":");
@@ -610,10 +625,6 @@ SZ mqtt_dashboard_json(char *output, SZ capacity)
 void mqtt_dashboard_poll(struct netif *netif)
 {
     (void)netif;
-}
-
-void mqtt_dashboard_link_down(void)
-{
 }
 
 SZ mqtt_dashboard_json(char *output, SZ capacity)

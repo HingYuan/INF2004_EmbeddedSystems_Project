@@ -523,18 +523,6 @@ void cyw43_utk_task(int32_t stacd, void *exinf)
 #if TM_WIFI_NETIF
         sys_check_timeouts();
         update_netif_status();
-    #if TM_WIFI_JOIN
-        /* The CYW43 can notice an AP disappearing before lwIP receives a
-         * link-down callback.  Reconcile both views so reconnect is not
-         * gated forever by a stale NETIF_FLAG_LINK_UP. */
-        if(radio_status.netif_link_up
-           && cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA)
-              <= CYW43_LINK_DOWN) {
-            netif_set_link_down(&cyw43_state.netif[CYW43_ITF_STA]);
-            mqtt_dashboard_link_down();
-            update_netif_status();
-        }
-    #endif
 #endif
 #if TM_WIFI_DHCP
         update_dhcp_status();

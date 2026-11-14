@@ -15,38 +15,33 @@
 // #define FORWARD_SPEED_BARCODE   30
 #define FORWARD_SPEED           30
 #define FORWARD_SPEED_BARCODE   30
+#define FORWARD_SPEED_HUMP      45
 
 // Stop / brake
 #define STOP_SPEED              0
 
-// turning (maintain forward speed)
-// #define LEFT_TURN_L_BASE        15
-// #define LEFT_TURN_R_BASE        45
-// #define RIGHT_TURN_L_BASE       55
-// #define RIGHT_TURN_R_BASE       0
-#define LEFT_TURN_L_BASE        15
+// Smooth differential steering for line following (no sudden jerks)
+#define LEFT_TURN_L_BASE        10
 #define LEFT_TURN_R_BASE        45
 #define RIGHT_TURN_L_BASE       45
-#define RIGHT_TURN_R_BASE       0
+#define RIGHT_TURN_R_BASE       10
 
-#define LEFT_TURN_L_BARCODE     20
-#define LEFT_TURN_R_BARCODE     40
-#define RIGHT_TURN_L_BARCODE    40
-#define RIGHT_TURN_R_BARCODE    20
+#define LEFT_TURN_L_BARCODE     18
+#define LEFT_TURN_R_BARCODE     28
+#define RIGHT_TURN_L_BARCODE    28
+#define RIGHT_TURN_R_BARCODE    18
 
-// turning w/ max rampup
-#define LEFT_TURN_L_RAMP        0
-#define LEFT_TURN_R_RAMP        50
-// #define RIGHT_TURN_L_RAMP       65
-#define RIGHT_TURN_L_RAMP       50
-// #define RIGHT_TURN_R_RAMP       0
-#define RIGHT_TURN_R_RAMP       -30
+// Turning w/ max rampup (keep inner wheel moving at 15% instead of locking to 0!)
+#define LEFT_TURN_L_RAMP        10
+#define LEFT_TURN_R_RAMP        55
+#define RIGHT_TURN_L_RAMP       55
+#define RIGHT_TURN_R_RAMP       10
 
 // pivoting / turning on the spot
-#define LEFT_PIVOT_L            28
-#define LEFT_PIVOT_R            28
-#define RIGHT_PIVOT_L           28
-#define RIGHT_PIVOT_R           28
+#define LEFT_PIVOT_L            25
+#define LEFT_PIVOT_R            25
+#define RIGHT_PIVOT_L           25
+#define RIGHT_PIVOT_R           25
 
 /* 
 =========================================
@@ -62,7 +57,7 @@ typedef enum {
     STATE_NULL,
 } IR_STATE;
 
-#define TURNING_RAMPUP_LIMIT 10
+#define TURNING_RAMPUP_LIMIT 50
 
 /* 
 =========================================
@@ -133,8 +128,7 @@ typedef enum {
     IMU_MSG_NONE,
     IMU_MSG_NO_HUMP,
     IMU_MSG_HUMP_DETECTED,
-    IMU_MSG_TILT_WARNING,
-    IMU_MSG_SHOCK_DETECTED,
+    IMU_MSG_LIFTED_OVERTURNED,
 } IMU_EVENT_TYPE;
 
 typedef struct {
@@ -151,8 +145,8 @@ typedef struct {
 =========================================
 */
 
-#define NUMBER_OF_COMMANDS 2
-// #define NUMBER_OF_COMMANDS 5
+// #define NUMBER_OF_COMMANDS 2
+#define NUMBER_OF_COMMANDS 5
 
 typedef enum {
     MODE_BARCODE_SCANNING,          // Slow speed barcode scanning
@@ -246,6 +240,7 @@ typedef struct {
     // Sensor Specific: IMU
     float    pitch_deg;         // Vehicle pitch
     float    roll_deg;          // Vehicle roll
+    int16_t  heading_deg;       // Magnetometer compass heading (0-359 deg)
     uint8_t  imu_state;             // IMU_FSM_STATE enum
     float    estimated_height_mm;   // Peak/current hump height in mm
     uint8_t  imu_event;         // IMU_EVENT_TYPE enum

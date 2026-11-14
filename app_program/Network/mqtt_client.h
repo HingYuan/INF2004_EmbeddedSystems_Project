@@ -9,7 +9,6 @@
 struct netif;
 
 void mqtt_dashboard_poll(struct netif *netif);
-void mqtt_dashboard_link_down(void);
 SZ mqtt_dashboard_json(char *output, SZ capacity);
 SZ telemetry_json(char *output, SZ capacity);
 BOOL mqtt_get_movement_for_barcode(char barcode, MOTOR_COMMAND *command);
