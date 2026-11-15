@@ -325,13 +325,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
                             case MSG_IMU_UPDATE:
                                 if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_HUMP_DETECTED) {
-                                    m_mode = MODE_GOING_OVER_HUMP;
                                     mot_cmd.target_speed_left =     FORWARD_SPEED_HUMP;
                                     mot_cmd.target_speed_right =   -FORWARD_SPEED_HUMP;
                                     mot_cmd.turn_ticks_left =       0;
                                     mot_cmd.turn_ticks_right =      0;
 
                                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    
+                                    m_mode = MODE_GOING_OVER_HUMP;
                                 }
 
                                 break;
@@ -431,7 +432,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
 
                                 // If no new instruction, linger on latest one
-                                if (instructions[instruction_idx] == DIR_INVALID && instruction_idx > 0) {
+                                if (instructions[instruction_idx_barcode] == DIR_INVALID && instruction_idx > 0) {
                                     instruction_idx--;
                                 } else if (instructions[instruction_idx] == DIR_INVALID && instruction_idx <= 0) {
                                     instruction_idx = 0;

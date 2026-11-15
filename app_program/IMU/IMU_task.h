@@ -24,7 +24,8 @@
 
 /* Detection Thresholds */
 #define OVERTURN_TILT_DEG       25.0f   // >25 deg pitch/roll or Z-axis inversion triggers immediate stop
-#define LIFT_ACCEL_DEV_G        0.14f   // Sustained (80ms) |total_g - baseline_g| deviation triggers lift stop
+#define LIFT_ACCEL_DEV_G        1.0f   // Sustained (80ms) |total_g - baseline_g| deviation triggers lift stop
+// #define LIFT_ACCEL_DEV_G        0.14f
 #define HUMP_TILT_THRESHOLD_DEG 5.5f    // Minimum filtered tilt (deg) to trigger hump detection (single-wheel ramp)
 #define HUMP_TRACK_WIDTH_MM     68.0f   // Track width between left and right wheels (mm)
 #define HUMP_CHASSIS_SCALE_MM   60.0f   // Effective chassis wheelbase length (mm)
