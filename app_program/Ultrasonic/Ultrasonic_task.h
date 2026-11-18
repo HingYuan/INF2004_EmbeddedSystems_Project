@@ -18,6 +18,7 @@
 #define SONAR_PROBE_RIGHT_FLAG  (1U << 4)
 #define SONAR_TRACK_LEFT_FLAG   (1U << 5)
 #define SONAR_TRACK_RIGHT_FLAG  (1U << 6)
+#define SONAR_PROFILE_RAYS       7U // -45, -30, -15, 0, +15, +30, +45 degrees.
 
 typedef enum {
     SONAR_INVALID,

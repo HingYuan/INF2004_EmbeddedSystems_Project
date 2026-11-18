@@ -71,6 +71,8 @@ typedef struct {
     UW right_scan_cm;         // Measured -45-degree ray; meaningful only with SONAR_OK.
     SONAR_STATUS left_scan_status;
     SONAR_STATUS right_scan_status;
+    UW ray_cm[SONAR_PROFILE_RAYS]; // Preserve missing echoes separately from invalid measurements.
+    SONAR_STATUS ray_status[SONAR_PROFILE_RAYS];
 
     W left_edge_deg;
     W right_edge_deg;
@@ -94,38 +96,56 @@ typedef struct {
 } OBSTACLE_PROFILE;
 
 /*
- * Simple rectangular bypass:
- * IDLE -> TURN_OUT (90 degrees) -> SHIFT_OUT (sideways) -> TURN_PARALLEL (90 degrees back)
- *      -> ADVANCE (past the whole box) -> TURN_IN (90 degrees toward line) -> FIND_LINE -> LINE_FOUND.
- * Keep the original numeric IDs for telemetry. The old diagonal/reverse/acquisition phases are unused.
+ * Scan -> reverse 2 cm -> scan -> restore 2 cm -> choose one side.
+ * TURN_OUT -> SHIFT_OUT -> TURN_PARALLEL -> WIDTH_CHECK; extend sideways if needed.
+ * ADVANCE in 5 cm steps, tracking the side -> TURN_IN -> RETURN_CHECK.
+ * If blocked, turn parallel and step forward. If clear, advance the rear clearance and check again.
+ * Existing phase numbers are retained for telemetry; new phases are appended.
  */
 typedef enum {
-    BYPASS_IDLE = 0,          // Wait for the initial stop acknowledgement and left/right scan.
+    BYPASS_IDLE = 0,          // Wait for the initial stop acknowledgement and first scan.
     BYPASS_TURN_OUT = 1,      // Turn 90 degrees toward the chosen side; do not wait for a tracking reply.
-    BYPASS_SHIFT_OUT = 3,     // Drive sideways far enough for the measured box width and turning body.
+    BYPASS_SHIFT_OUT = 3,     // Drive the lateral offset estimated from both scans.
     BYPASS_TURN_PARALLEL = 4, // Turn 90 degrees back to face along the original track.
-    BYPASS_ADVANCE = 7,       // Drive straight past the box; only steer outward if the side gets too close.
+    BYPASS_ADVANCE = 7,       // Follow the unknown depth in 5 cm forward steps.
     BYPASS_TURN_IN = 10,      // Turn 90 degrees toward the black line after the rear has cleared.
     BYPASS_FIND_LINE = 12,    // Drive toward the line until two consecutive IR readings contain black.
     BYPASS_LINE_FOUND = 13,   // Stop and hand over to the teammate's MODE_REENTRY_ADVANCE.
-    BYPASS_ABORT = 17         // Hardware or communication fault; never silently advance to the next move.
+    BYPASS_ABORT = 17,        // Hardware or communication fault; never silently advance to the next move.
+    BYPASS_WAIT_RELEASE = 18, // Wait until Motor releases the initial stop before the 2 cm scan reverse.
+    BYPASS_SCAN_BACK = 19,    // The only reverse: 2 cm to obtain a second viewing position.
+    BYPASS_SCAN_SECOND = 20,  // Stationary second profile; never reverse again for missing echoes.
+    BYPASS_SCAN_RETURN = 21,  // Restore the original position before choosing and entering the detour.
+    BYPASS_WIDTH_CHECK = 22,  // Stationary forward probe before approaching the box's side.
+    BYPASS_WIDTH_TURN_OUT = 23,
+    BYPASS_WIDTH_EXTEND = 24, // Extend outward when the selected edge was outside the original scan.
+    BYPASS_WIDTH_ALIGN = 25,  // Face parallel again and repeat the width check.
+    BYPASS_DEPTH_TURN_BACK = 26, // Face parallel after a blocked or provisional return check.
+    BYPASS_RETURN_CHECK = 27, // Two clear front probes while facing the line; no full depth scan.
+    BYPASS_REAR_CLEAR = 28    // Move the swept radius + gap beyond the first verified clear cross-section.
 } BYPASS_PHASE;
 
-#define BYPASS_SPEED                 30  // Keep the current forward power setting.
-#define BYPASS_PIVOT_SPEED           35  // Keep the current pivot power setting.
-// shortcut: these are timed moves; verify travel time at power 30 and both 90-degree turns on the car.
-#define BYPASS_MS_PER_CM            110U // Starting estimate: old 80 ms/cm at power 40, scaled for power 30.
-#define BYPASS_LEFT_90_MS           800U // User's starting value; calibrate left and right independently.
-#define BYPASS_RIGHT_90_MS          800U
-// shortcut: this route assumes the measured box size below; update it before using a larger obstacle.
-#define BYPASS_OBSTACLE_WIDTH_CM     15U // Measured box width across the track.
-#define BYPASS_OBSTACLE_LENGTH_CM    10U // Measured box depth along the track.
+#define BYPASS_API_POWER             25 // Telemetry only: the existing motor functions choose their own power.
+#define BYPASS_LEFT_TURN_DEG         90U // Argument to turnLeft(); tune here if the physical turn differs.
+#define BYPASS_RIGHT_TURN_DEG        90U // Argument to turnRight(); calibrate each direction independently.
+#define BYPASS_TURN_TIMEOUT_MS     5000U // Fault limits only; encoders finish each movement.
+#define BYPASS_MOVE_MARGIN_MS      3000U
+#define BYPASS_MOVE_TIMEOUT_MS_CM   500U
+#define BYPASS_SCAN_BACK_MM          20U
+#define BYPASS_FORWARD_STEP_MM       50U
+#define BYPASS_WIDTH_STEP_MM        100U
+#define BYPASS_PROBE_MS            2000U
+#define BYPASS_CLEAR_CONFIRM          2U // Each stationary probe already takes three sonar pings.
+#define BYPASS_WALL_CONFIRM           3U
+#define BYPASS_EDGE_CONFIRM           3U
+#define BYPASS_EDGE_JUMP_MM         150U
+#define BYPASS_PROFILE_DEPTH_CM      10U // Reject background echoes beyond the front face.
+// Exploration limits are fault bounds, not assumed obstacle dimensions.
+#define BYPASS_MAX_SIDE_MM         1500U
+#define BYPASS_MAX_FORWARD_MM      3000U
 #define BYPASS_PIVOT_FROM_FRONT_CM   10U // Front sensor/body edge to the pivot between the driven wheels.
 #define BYPASS_SWEPT_RADIUS_CM       12U // Covers the 12 x 20 cm body while it turns.
-#define BYPASS_SIDE_CM (BYPASS_OBSTACLE_WIDTH_CM + BYPASS_SWEPT_RADIUS_CM + WALL_BODY_GAP_CM)
-// Use the full box width above, so an obstacle off-centre on the line still has clearance.
-#define BYPASS_CLOSE_CM             12U // Too close to the parked +/-45 degree sonar: steer outward.
-#define BYPASS_STEER_LIMIT           10  // Outward correction around BYPASS_SPEED; no inward wall search.
+#define BYPASS_TURN_CLEAR_MM ((BYPASS_SWEPT_RADIUS_CM + WALL_BODY_GAP_CM) * 10U)
 #define BYPASS_TRACK_STALE_MS     1000U // Missing messages are a fault; a no-echo message is still a reply.
 #define BYPASS_RESPONSE_MS        1000U // Wait limit for the initial stop acknowledgement.
 #define BYPASS_SCAN_MS           15000U // Wait limit for the stationary scan.
@@ -136,12 +156,30 @@ typedef struct {
     BYPASS_PHASE phase;           // Current step of the rectangular detour.
     INT side;                     // +1: pass left, sonar right; -1: pass right, sonar left. Never zero once moving.
     UW phase_started_us;          // Start of the current movement.
-    UW deadline_us;               // End of a timed movement; zero means wait for line detection.
+    UW deadline_us;               // Fault deadline, never evidence that movement completed.
     UW requested_us;              // Time side tracking was requested; older replies are discarded.
     UW last_tracking_us;          // Last fresh reply, including no echo.
     UW last_sample_us;            // Reject duplicate samples.
-    UW shift_us;                  // Duration of the sideways drive.
-    UW forward_us;                // Front standoff + pivot offset + box depth + turning radius + body gap.
+    OBSTACLE_PROFILE first_scan;  // Compare the second scan without pretending missing ranges are distances.
+    UW front_cm;                  // Standoff at the restored starting position; detection remains 30 cm.
+    UW planned_shift_mm;          // Selected edge bound + swept radius + gap.
+    UW shift_mm;                  // Completed lateral travel, including outward extensions.
+    UW forward_mm;                // Completed travel parallel to the original track.
+    UW leg_mm;                    // Distance of the one outstanding translation.
+    INT leg_start_mm;             // Motor odometry baseline for locating streaming side observations.
+    UW extend_mm;                 // Next sideways extension, or extra margin after an unknown edge.
+    UW wall_hits;
+    UW edge_misses;
+    UW lookahead_mm;              // Last valid diagonal distance projected along the track.
+    UW edge_check_mm;             // Earliest inward check after the confirmed loss of a tracked wall.
+    UW probe_clear_count;
+    UW probe_attempts;
+    BOOL tracking_active;         // Watchdog applies only while side tracking was requested.
+    BOOL width_needs_margin;      // Unknown edge: add turning clearance after finding an empty forward ray.
+    BOOL wall_seen;               // Never confuse 'wall never observed' with 'wall ended'.
+    BOOL clear_after_turn;        // A provisional clear check requires a parallel rear-clearance move.
+    BOOL rear_clear_done;         // A final forward check is still required after rear clearance.
+    BOOL move_pending;            // One API call at a time: Motor's completion message has no ID.
     UW black_count;               // Consecutive IR readings containing black during FIND_LINE.
     BOOL owns_obstacle_stop;      // Release the scan stop only; never release a later hardware fault.
 } BYPASS_CONTEXT;
@@ -216,7 +254,7 @@ typedef enum {
     MSG_OBSTACLE_PROFILED,      // Left/center/right scan completed
     MSG_TRACKING_OBSTACLE,
     MSG_SONAR_PROBED,
-    MSG_MOTOR_MOVE_DONE,
+    MSG_MOTOR_MOVE_DONE,        // Existing Motor notification; no payload or command ID.
     MSG_IMU_UPDATE,
     MSG_REMOTE_CMD,             // Remote motor command from MQTT
     MSG_SONAR_DISTANCE,

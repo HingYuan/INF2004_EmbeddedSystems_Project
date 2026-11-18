@@ -20,7 +20,7 @@
 #define OBSTACLE_CONFIRM_COUNT      2U
 
 // Coarse/fine profiling
-#define COARSE_COUNT                7
+#define COARSE_COUNT                SONAR_PROFILE_RAYS
 #define FINE_PASSES                 2
 #define EDGE_DEPTH_GAP_CM         10U
 
@@ -282,6 +282,8 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
                 return FALSE;
         }
         valid[i] = status[i] == SONAR_OK;
+        profile->ray_cm[i] = cm[i];
+        profile->ray_status[i] = status[i];
 
         if (valid[i]) {
             valid_count++;
@@ -485,9 +487,7 @@ LOCAL BOOL handle_probe(UINT flags)
     else if (flags & SONAR_PROBE_RIGHT_FLAG)
         angle = -45;
 
-    // Probes are only allowed after stopping
-    if (!motor_estop)
-        return FALSE;
+    // Navigator requests probes only after MOVE_DONE; a normal stopped motor needs no estop latch.
 
     SONAR_STATUS status = scan_angle(angle, &cm);
 
@@ -669,6 +669,28 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
                 break;
             }
 
+            // Stationary requests end streaming. Navigator waits for the reply before moving again.
+            if (pattern & SONAR_SCAN_REQUEST) {
+                tracking = FALSE;
+                message = (NAVIGATOR_MESSAGE){0};
+                message.type = MSG_OBSTACLE_PROFILED;
+                scan_obstacle(&message.data.obstacle_profile);
+                if (!send_to_navigator(&message)) {
+                    hardware_fault(SONAR_SENSOR_FAULT);
+                    return;
+                }
+                continue;
+            }
+
+            if (pattern & (SONAR_PROBE_FRONT_FLAG | SONAR_PROBE_LEFT_FLAG | SONAR_PROBE_RIGHT_FLAG)) {
+                tracking = FALSE;
+                if (!handle_probe(pattern)) {
+                    hardware_fault(SONAR_SENSOR_FAULT);
+                    return;
+                }
+                continue;
+            }
+
             if (pattern & (SONAR_TRACK_LEFT_FLAG | SONAR_TRACK_RIGHT_FLAG)) {
                 W angle = (pattern & SONAR_TRACK_LEFT_FLAG) ? 45 : -45;
                 if (!tracking || angle != tracking_angle) {
@@ -683,25 +705,6 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
                 continue;
             }
 
-            // Sweeps and one-shot probes belong to assessment, before side tracking starts.
-            if (tracking)
-                continue;
-            if (pattern & SONAR_SCAN_REQUEST) {
-                message = (NAVIGATOR_MESSAGE){0};
-                message.type = MSG_OBSTACLE_PROFILED;
-                scan_obstacle(&message.data.obstacle_profile);
-                if (!send_to_navigator(&message)) {
-                    hardware_fault(SONAR_SENSOR_FAULT);
-                    return;
-                }
-                continue;
-            }
-
-            if (!handle_probe(pattern)) {
-                hardware_fault(SONAR_SENSOR_FAULT);
-                tm_printf((UB *)"[sonar] Probe failed\n");
-                return;
-            }
         }
 
         confirmations = 0;
