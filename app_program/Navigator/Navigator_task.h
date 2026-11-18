@@ -98,17 +98,17 @@ typedef struct {
 /*
  * Scan -> reverse 2 cm -> scan -> restore 2 cm -> choose one side.
  * TURN_OUT -> SHIFT_OUT -> TURN_PARALLEL -> WIDTH_CHECK; extend sideways if needed.
- * ADVANCE in 5 cm steps, tracking the side -> TURN_IN -> RETURN_CHECK.
+ * ADVANCE to the front face, then check the return path every 5 cm.
  * If blocked, turn parallel and step forward. If clear, advance the rear clearance and check again.
  * Existing phase numbers are retained for telemetry; new phases are appended.
  */
 typedef enum {
     BYPASS_IDLE = 0,          // Wait for the initial stop acknowledgement and first scan.
     BYPASS_TURN_OUT = 1,      // Turn 90 degrees toward the chosen side; do not wait for a tracking reply.
-    BYPASS_SHIFT_OUT = 3,     // Drive the lateral offset estimated from both scans.
+    BYPASS_SHIFT_OUT = 3,     // Drive a bounded edge offset, or start a short outward search.
     BYPASS_TURN_PARALLEL = 4, // Turn 90 degrees back to face along the original track.
-    BYPASS_ADVANCE = 7,       // Follow the unknown depth in 5 cm forward steps.
-    BYPASS_TURN_IN = 10,      // Turn 90 degrees toward the black line after the rear has cleared.
+    BYPASS_ADVANCE = 7,       // Approach the front face, then search the depth in 5 cm steps.
+    BYPASS_TURN_IN = 10,      // Face the line to check the cross-section before committing to the return.
     BYPASS_FIND_LINE = 12,    // Drive toward the line until two consecutive IR readings contain black.
     BYPASS_LINE_FOUND = 13,   // Stop and hand over to the teammate's MODE_REENTRY_ADVANCE.
     BYPASS_ABORT = 17,        // Hardware or communication fault; never silently advance to the next move.
@@ -133,12 +133,9 @@ typedef enum {
 #define BYPASS_MOVE_TIMEOUT_MS_CM   500U
 #define BYPASS_SCAN_BACK_MM          20U
 #define BYPASS_FORWARD_STEP_MM       50U
-#define BYPASS_WIDTH_STEP_MM        100U
+#define BYPASS_WIDTH_STEP_MM        60U
 #define BYPASS_PROBE_MS            2000U
 #define BYPASS_CLEAR_CONFIRM          2U // Each stationary probe already takes three sonar pings.
-#define BYPASS_WALL_CONFIRM           3U
-#define BYPASS_EDGE_CONFIRM           3U
-#define BYPASS_EDGE_JUMP_MM         150U
 #define BYPASS_PROFILE_DEPTH_CM      10U // Reject background echoes beyond the front face.
 // Exploration limits are fault bounds, not assumed obstacle dimensions.
 #define BYPASS_MAX_SIDE_MM         1500U
@@ -161,22 +158,17 @@ typedef struct {
     UW last_tracking_us;          // Last fresh reply, including no echo.
     UW last_sample_us;            // Reject duplicate samples.
     OBSTACLE_PROFILE first_scan;  // Compare the second scan without pretending missing ranges are distances.
-    UW front_cm;                  // Standoff at the restored starting position; detection remains 30 cm.
-    UW planned_shift_mm;          // Selected edge bound + swept radius + gap.
+    UW front_cm;                  // Measured standoff at the restored starting position.
+    UW planned_shift_mm;          // Bounded edge + clearance, or the first outward search step.
     UW shift_mm;                  // Completed lateral travel, including outward extensions.
     UW forward_mm;                // Completed travel parallel to the original track.
     UW leg_mm;                    // Distance of the one outstanding translation.
-    INT leg_start_mm;             // Motor odometry baseline for locating streaming side observations.
+    INT leg_start_mm;             // Motor odometry baseline; include coast after the commanded distance.
     UW extend_mm;                 // Next sideways extension, or extra margin after an unknown edge.
-    UW wall_hits;
-    UW edge_misses;
-    UW lookahead_mm;              // Last valid diagonal distance projected along the track.
-    UW edge_check_mm;             // Earliest inward check after the confirmed loss of a tracked wall.
     UW probe_clear_count;
     UW probe_attempts;
     BOOL tracking_active;         // Watchdog applies only while side tracking was requested.
     BOOL width_needs_margin;      // Unknown edge: add turning clearance after finding an empty forward ray.
-    BOOL wall_seen;               // Never confuse 'wall never observed' with 'wall ended'.
     BOOL clear_after_turn;        // A provisional clear check requires a parallel rear-clearance move.
     BOOL rear_clear_done;         // A final forward check is still required after rear clearance.
     BOOL move_pending;            // One API call at a time: Motor's completion message has no ID.
@@ -232,7 +224,7 @@ typedef enum {
     MODE_WALL_HUGGING,              // Run the rectangular bypass and return to the line.
     MODE_REENTRY_ADVANCE,           // Teammate's code: advance onto the line after the bypass handoff.
     MODE_REENTRY_PIVOT,             // Teammate's code: pivot to align with the line.
-    MODE_OBSTACLE_ASSESS,           // Stop at 30 cm, scan left/right, choose a side, then start the 90-degree turn.
+    MODE_OBSTACLE_ASSESS,           // Stop at OBSTACLE_TRIGGER_CM, scan, choose a side, then turn.
     MODE_SAFE_STOP                 // Hold stopped after a latched hardware or communication fault.
 } MOVEMENT_MODE;
 

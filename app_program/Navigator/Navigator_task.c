@@ -29,7 +29,7 @@ LOCAL void bypass_pivot(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
 LOCAL void bypass_track_side(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command);
 LOCAL void bypass_probe(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command, BYPASS_PHASE phase);
 LOCAL void bypass_follow_next(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command);
-LOCAL void bypass_side_sample(BYPASS_CONTEXT *bypass, const SONAR_PROBE_RESULT *probe);
+LOCAL BOOL bypass_complete_leg(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command);
 LOCAL void bypass_probe_result(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
                                const SONAR_PROBE_RESULT *probe);
 
@@ -542,10 +542,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 switch (bypass.phase) {
                                     case BYPASS_IDLE:
                                         bypass.first_scan = *p;
-                                        bypass.front_cm = OBSTACLE_TRIGGER_CM;
-                                        if (p->front_cm > bypass.front_cm &&
+                                        bypass.front_cm = last_obstacle_dist_cm;
+                                        if (p->front_cm >= 2U &&
                                             p->front_cm <= OBSTACLE_TRIGGER_CM + BYPASS_PROFILE_DEPTH_CM)
                                             bypass.front_cm = p->front_cm;
+                                        if (bypass.front_cm + BYPASS_PIVOT_FROM_FRONT_CM <
+                                            BYPASS_SWEPT_RADIUS_CM + WALL_BODY_GAP_CM) {
+                                            bypass_abort(&bypass, &mot_cmd, "insufficient room for initial pivot");
+                                            break;
+                                        }
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_WAIT_RELEASE, 0, 0, 0);
                                         break;
                                     case BYPASS_SCAN_SECOND:
@@ -609,6 +614,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 // The unchanged Motor API has no IDs; serialize every call until completion.
                                 if (!bypass.move_pending) break;
                                 bypass.move_pending = FALSE;
+                                if (!bypass_complete_leg(&bypass, &mot_cmd)) break;
                                 switch (bypass.phase) {
                                     case BYPASS_TURN_OUT:
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_SHIFT_OUT,
@@ -646,14 +652,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         break;
                                     case BYPASS_REAR_CLEAR:
                                         bypass.forward_mm += bypass.leg_mm;
-                                        if (bypass.wall_seen) {
-                                            // Any reacquisition invalidates the earlier clear cross-section.
-                                            bypass.rear_clear_done = FALSE;
-                                            bypass_follow_next(&bypass, &mot_cmd);
-                                        } else {
-                                            bypass.rear_clear_done = TRUE;
-                                            bypass_pivot(&bypass, &mot_cmd, BYPASS_TURN_IN, -bypass.side);
-                                        }
+                                        bypass.rear_clear_done = TRUE;
+                                        bypass_pivot(&bypass, &mot_cmd, BYPASS_TURN_IN, -bypass.side);
                                         break;
                                     case BYPASS_FIND_LINE:
                                         bypass_abort(&bypass, &mot_cmd, "line not found within search distance");
@@ -712,15 +712,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     (!probe->valid || probe->distance_cm < 2U || probe->distance_cm > 400U))
                                     break;
                                 bypass.last_sample_us = bypass.last_tracking_us = probe->sampled_at_us;
-                                switch (bypass.phase) {
-                                    case BYPASS_ADVANCE:
-                                    case BYPASS_REAR_CLEAR:
-                                        if ((W)(probe->sampled_at_us - bypass.phase_started_us) >= 0)
-                                            bypass_side_sample(&bypass, probe);
-                                        break;
-                                    default:
-                                        break;
-                                }
                                 break;
                             }
                             case MSG_IMU_UPDATE:
@@ -863,7 +854,7 @@ LOCAL UW bypass_side_offset(const OBSTACLE_PROFILE *first, const OBSTACLE_PROFIL
     }
 
     // The first ray beyond every hit must be open in BOTH scans before it bounds the edge.
-    UW edge_cm = depth; // Unmeasured beyond +/-45: start at the visible bound, then verify/extend sideways.
+    UW edge_cm = 0;
     for (INT ray = occupied + 1; ray <= 3; ray++) {
         INT index = 3 + side * ray;
         BOOL open = TRUE;
@@ -879,6 +870,9 @@ LOCAL UW bypass_side_offset(const OBSTACLE_PROFILE *first, const OBSTACLE_PROFIL
             break;
         }
     }
+
+    // An unbounded scan gives no width: find the edge with short stationary forward checks.
+    if (!*known) return 0;
 
     BOOL fine = side > 0 ? first->left_offset_valid && second->left_offset_valid :
                           first->right_offset_valid && second->right_offset_valid;
@@ -909,12 +903,17 @@ LOCAL void bypass_plan_width(BYPASS_CONTEXT *bypass, const OBSTACLE_PROFILE *sec
     UW right = bypass_side_offset(&bypass->first_scan, second, -1, bypass->front_cm, &right_known);
     UW left_room = bypass_side_room(second->left_scan_status, second->left_scan_cm);
     UW right_room = bypass_side_room(second->right_scan_status, second->right_scan_cm);
-    bypass->side = left < right || (left == right && left_room >= right_room) ? 1 : -1;
-    bypass->planned_shift_mm = bypass->side > 0 ? left : right;
+    if (left_known != right_known)
+        bypass->side = left_known ? 1 : -1;
+    else
+        bypass->side = left < right || (left == right && left_room >= right_room) ? 1 : -1;
     bypass->width_needs_margin = !(bypass->side > 0 ? left_known : right_known);
-    tm_printf((UB *)"[bypass] Dynamic offsets L=%u R=%u mm; pass %s, edge=%s, front=%u cm\n",
+    bypass->planned_shift_mm = bypass->width_needs_margin ? BYPASS_WIDTH_STEP_MM :
+                               (bypass->side > 0 ? left : right);
+    tm_printf((UB *)"[bypass] Dynamic offsets L=%u R=%u mm (0=unknown); pass %s, edge=%s, front=%u cm, first step=%u mm\n",
               left, right, bypass->side > 0 ? "left" : "right",
-              bypass->width_needs_margin ? "unmeasured: verify outward" : "bounded by both scans", bypass->front_cm);
+              bypass->width_needs_margin ? "unmeasured: verify outward" : "bounded by both scans",
+              bypass->front_cm, bypass->planned_shift_mm);
 }
 
 // Wiring uses opposite signs for forward, but the SAME signs for an in-place pivot.
@@ -935,12 +934,12 @@ LOCAL BOOL bypass_self_check(void)
 {
     OBSTACLE_PROFILE first = {.front_cm = 30U}, second = {.front_cm = 32U};
     BOOL known;
-    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 490U && !known);
+    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 0U && !known);
     first.ray_status[4] = second.ray_status[4] = SONAR_NO_ECHO;
     BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 260U && known);
     first.ray_status[6] = second.ray_status[6] = SONAR_OK;
     first.ray_cm[6] = 43U; second.ray_cm[6] = 45U;
-    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) >= 490U && !known);
+    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 0U && !known);
     BYPASS_CHECK(bypass_pivot_command(0).raw == 0U);
     for (INT side = -1; side <= 1; side += 2) {
         MOTOR_COMMAND pivot = bypass_pivot_command(side);
@@ -1098,8 +1097,6 @@ LOCAL void bypass_track_side(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command)
     if (bypass->phase == BYPASS_ABORT) return;
     bypass->requested_us = time_us();
     bypass->last_tracking_us = bypass->last_sample_us = bypass->requested_us;
-    bypass->wall_hits = bypass->edge_misses = bypass->lookahead_mm = bypass->edge_check_mm = 0;
-    bypass->wall_seen = FALSE;
     bypass->tracking_active = TRUE;
     if (tk_set_flg(ranger_flgid, bypass->side > 0 ? SONAR_TRACK_RIGHT_FLAG : SONAR_TRACK_LEFT_FLAG) < E_OK)
         bypass_abort(bypass, command, "side tracking request");
@@ -1118,51 +1115,31 @@ LOCAL void bypass_probe(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command, BYPASS_P
         bypass_abort(bypass, command, "stationary probe request");
 }
 
-// Locate an edge observation along the current encoder-controlled leg, not at the leg's start.
-LOCAL void bypass_side_sample(BYPASS_CONTEXT *bypass, const SONAR_PROBE_RESULT *probe)
+// MOVE_DONE arrives after the wheels settle, so include braking/coast in the route position.
+LOCAL BOOL bypass_complete_leg(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command)
 {
-    UW position = bypass->forward_mm;
+    if (!bypass->leg_mm) return TRUE;
     INT moved = motor_get_avg_dist_mm() - bypass->leg_start_mm;
-    if (bypass->move_pending && moved > 0)
-        position += (UW)moved < bypass->leg_mm ? (UW)moved : bypass->leg_mm;
-    UW lookahead = (probe->distance_cm * 707U + 99U) / 100U; // r*cos(45), centimetres -> millimetres.
-    BOOL wall = probe->status == SONAR_TOO_CLOSE ||
-                (probe->status == SONAR_OK && lookahead <= bypass->shift_mm + WALL_BODY_GAP_CM * 10U &&
-                 (!bypass->wall_seen || lookahead <= bypass->lookahead_mm + BYPASS_EDGE_JUMP_MM));
-    if (wall) {
-        if (bypass->wall_hits < BYPASS_WALL_CONFIRM) bypass->wall_hits++;
-        if (bypass->wall_hits >= BYPASS_WALL_CONFIRM) bypass->wall_seen = TRUE;
-        if (probe->status == SONAR_OK) bypass->lookahead_mm = lookahead;
-        bypass->edge_misses = bypass->edge_check_mm = 0;
-    } else {
-        bypass->wall_hits = 0;
-        if (bypass->wall_seen && (probe->status == SONAR_NO_ECHO || probe->status == SONAR_OK)) {
-            if (bypass->edge_misses < BYPASS_EDGE_CONFIRM) bypass->edge_misses++;
-            if (bypass->edge_misses >= BYPASS_EDGE_CONFIRM && !bypass->edge_check_mm) {
-                // The diagonal looks ahead of the sensor, and the pivot is behind it by another 10 cm.
-                bypass->edge_check_mm = position + bypass->lookahead_mm + BYPASS_PIVOT_FROM_FRONT_CM * 10U;
-                tm_printf((UB *)"[bypass] Side edge candidate: check at %u mm (now=%u lookahead=%u)\n",
-                          bypass->edge_check_mm, position, bypass->lookahead_mm);
-            }
-        } else {
-            bypass->edge_misses = bypass->edge_check_mm = 0;
-        }
+    if (moved <= 0) {
+        bypass_abort(bypass, command, "no forward odometry at movement completion");
+        return FALSE;
     }
+    tm_printf((UB *)"[bypass] %s travelled=%d mm (requested=%u mm)\n",
+              bypass_phase_name(bypass->phase), moved, bypass->leg_mm);
+    bypass->leg_mm = (UW)moved;
+    return TRUE;
 }
 
 LOCAL void bypass_follow_next(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command)
 {
     if (bypass->phase == BYPASS_ABORT) return;
-    UW minimum = (bypass->front_cm + BYPASS_PIVOT_FROM_FRONT_CM + WALL_BODY_GAP_CM) * 10U;
-    BOOL candidate = bypass->forward_mm >= minimum &&
-                     (!bypass->wall_seen || (bypass->edge_misses >= BYPASS_EDGE_CONFIRM &&
-                                            bypass->forward_mm >= bypass->edge_check_mm));
-    if (candidate) {
-        // Never seeing a side wall permits an active front check, not an assumption that the box ended.
+    UW minimum = (bypass->front_cm + BYPASS_PIVOT_FROM_FRONT_CM) * 10U;
+    if (bypass->forward_mm >= minimum) {
+        // Check the actual cross-section; a diagonal echo is not a measurement of box depth.
         bypass_pivot(bypass, command, BYPASS_TURN_IN, -bypass->side);
     } else {
         bypass_begin(bypass, command, BYPASS_ADVANCE,
-                     BYPASS_API_POWER, -BYPASS_API_POWER, BYPASS_FORWARD_STEP_MM);
+                     BYPASS_API_POWER, -BYPASS_API_POWER, minimum - bypass->forward_mm);
     }
 }
 

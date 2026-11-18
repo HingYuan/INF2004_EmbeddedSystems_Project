@@ -7,7 +7,7 @@
 #define SERVO_PIN          15
 #define SONAR_TRIG_PIN      5
 #define SONAR_ECHO_PIN      4
-#define OBSTACLE_TRIGGER_CM 30U
+#define OBSTACLE_TRIGGER_CM 20U
 
 // Event flags shared with Navigator
 #define SONAR_RESUME_FLAG       (1U << 0)
