@@ -487,21 +487,23 @@ void mqtt_dashboard_poll(struct netif *netif)
     }
 
     if(mqtt_connected) {
-        if((int32_t)(now - mqtt_next_telemetry_ms) >= 0) {
-            char telem_buf[320];
-            SZ len = telemetry_json(telem_buf, sizeof(telem_buf));
-            if(len > 0) {
-                err_t result = mqtt_publish(
-                    mqtt_client, MQTT_PUBLISH_TOPIC, telem_buf, (u16_t)len,
-                    MQTT_QOS, 0, mqtt_request_done, NULL);
-                if(result != ERR_OK) {
-                    mqtt_last_error = result;
-                    tm_printf((UB *)"[mqtt] telemetry publish failed: %d\n",
-                              result);
-                }
-            }
-            mqtt_next_telemetry_ms = now + 500U;
-        }
+
+        //robot topic, not needed to be removed
+        // if((int32_t)(now - mqtt_next_telemetry_ms) >= 0) {
+        //     char telem_buf[320];
+        //     SZ len = telemetry_json(telem_buf, sizeof(telem_buf));
+        //     if(len > 0) {
+        //         err_t result = mqtt_publish(
+        //             mqtt_client, MQTT_PUBLISH_TOPIC, telem_buf, (u16_t)len,
+        //             MQTT_QOS, 0, mqtt_request_done, NULL);
+        //         if(result != ERR_OK) {
+        //             mqtt_last_error = result;
+        //             tm_printf((UB *)"[mqtt] telemetry publish failed: %d\n",
+        //                       result);
+        //         }
+        //     }
+        //     mqtt_next_telemetry_ms = now + 500U;
+        // }
 
         if((int32_t)(now - mqtt_next_status_ms) >= 0) {
             char status_payload[96];
