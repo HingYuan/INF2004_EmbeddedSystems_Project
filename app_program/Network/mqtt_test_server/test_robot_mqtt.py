@@ -1,6 +1,7 @@
 """
 Simple interactive command & telemetry test CLI for the Pico W robot.
-Listens to robot/telemetry and allows typing L,R,T commands to send to robot/command.
+Listens to robot/telemetry and robot/status, and allows typing L,R,T commands
+to send to robot/command.
 """
 
 import sys
@@ -12,12 +13,14 @@ BROKER = "127.0.0.1"  # Or your PC's IP if connecting Pico W
 PORT = 1883
 
 SUB_TOPIC = "robot/telemetry"
+STATUS_TOPIC = "robot/status"
 PUB_TOPIC = "robot/command"
 
 def on_connect(client, userdata, flags, rc, properties=None):
     print(f"[MQTT] Connected to broker (rc={rc})")
     client.subscribe(SUB_TOPIC)
-    print(f"[MQTT] Subscribed to '{SUB_TOPIC}'")
+    client.subscribe(STATUS_TOPIC)
+    print(f"[MQTT] Subscribed to '{SUB_TOPIC}' and '{STATUS_TOPIC}'")
 
 def on_message(client, userdata, msg):
     print(f"\n[TELEMETRY] {msg.topic}: {msg.payload.decode('utf-8', errors='ignore')}")

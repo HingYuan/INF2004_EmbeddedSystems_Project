@@ -16,6 +16,38 @@ From a clean machine to a Pico W running both cores. Roughly 15 minutes.
 
 # ```CONSOLE=usb_cdc``` for micro-USB connection and ```CONSOLE=uart``` for debugger.
 
+## MQTT communication
+
+The MQTT profile publishes robot telemetry every 500 ms and a retained
+connection status message every 5 seconds:
+
+| Topic | Direction | Payload |
+|---|---|---|
+| `robot/telemetry` | Pico -> broker | JSON telemetry snapshot |
+| `robot/status` | Pico -> broker | Retained `{"online":true,...}` heartbeat |
+| `robot/command` | Broker -> Pico | `left_speed,right_speed,turn_ticks` |
+| `robot/config/movement` | Broker -> Pico | JSON barcode-to-command mapping |
+
+The MQTT client uses `robot/status` as its Last Will topic and publishes
+`{"online":false}` if the connection ends unexpectedly. It retries the broker
+connection every 5 seconds after WiFi or MQTT loss.
+
+To enable the profile, copy the example configuration files, set the local
+WiFi and broker values, and build:
+
+```sh
+cp config/wifi_credentials.example.h config/wifi_credentials.h
+cp config/mqtt_config.example.h config/mqtt_config.h
+# edit both local files and set their *_CONFIG_SET guard to 1
+mingw32-make -C build_make E2U=tools/elf2uf2.exe SMP=1 \
+  CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 \
+  WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 -j8
+```
+
+For a local demonstration, start `app_program/Network/mqtt_test_server/mqtt_broker.py`
+and then `app_program/Network/mqtt_test_server/test_robot_mqtt.py`, passing the
+broker host to the test client when it is not running on the same machine.
+
 ---
 
 ## 1. Prerequisites

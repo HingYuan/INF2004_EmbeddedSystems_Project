@@ -49,9 +49,7 @@ typedef enum {
     STATE_INITIALIZE,
     STATE_CALIBRATING,
     STATE_MONITORING,
-    STATE_TILT_WARNING,
-    STATE_HUMP_INTEGRATING,
-    STATE_SHOCK_DETECTED
+    STATE_LIFTED_OVERTURNED
 } IMU_FSM_STATE;
 
 // --- Magnetometer (LSM303DLHC at 0x1E) ---
@@ -66,8 +64,6 @@ typedef enum {
 #define OUT_X_L_A             0x28
 
 LOCAL ID imu_dd = 0;
-
-#define RP2040_UART0_BASE   (0x40034000UL)
 
 LOCAL void imu_route_pins(void)
 {
@@ -134,6 +130,47 @@ LOCAL void imu_compute_pitch_roll(float gx, float gy, float gz, float *pitch_out
     *roll_out  = imu_atan2f(gx, imu_sqrtf(SQ(gy) + SQ(gz))) * 180.0f / 3.14159f;
 }
 
+LOCAL bool imu_read_mag_raw(int16_t *mx, int16_t *my, int16_t *mz)
+{
+    UB data[6];
+    SZ asz = 0;
+    UB reg = OUT_X_H_M; // 0x03
+
+    if (tk_swri_dev(imu_dd, LSM303_MAG_ADDR, &reg, 1, &asz) < E_OK) return false;
+    if (tk_srea_dev(imu_dd, LSM303_MAG_ADDR, data, 6, &asz) < E_OK) return false;
+
+    // On LSM303DLHC, magnetometer register order is X, Z, Y (big-endian)
+    *mx = (int16_t)(((uint16_t)data[0] << 8) | data[1]);
+    *mz = (int16_t)(((uint16_t)data[2] << 8) | data[3]);
+    *my = (int16_t)(((uint16_t)data[4] << 8) | data[5]);
+    return true;
+}
+
+// Returns compass heading in degrees (0 to 359)
+LOCAL int16_t imu_get_heading_deg(void)
+{
+    int16_t mx = 0, my = 0, mz = 0;
+    if (!imu_read_mag_raw(&mx, &my, &mz)) return telemetry_snapshot.heading_deg;
+
+    // IMU mounted with +Y pointing backward (-Y = car forward) and +X pointing left:
+    // North along forward = -my, East/90 deg CW puts North along left (+mx) -> atan2(+mx, -my)
+    float rad = imu_atan2f((float)mx, -(float)my);
+    float deg = rad * 180.0f / 3.14159265f;
+
+    if (deg < 0.0f) deg += 360.0f;
+    if (deg >= 360.0f) deg -= 360.0f;
+    return (int16_t)deg;
+}
+
+/* Return median of 3 float samples to reject single-sample vibration/drop spikes */
+LOCAL float imu_median3(float a, float b, float c)
+{
+    if (a > b) { float t = a; a = b; b = t; }
+    if (b > c) { float t = b; b = c; c = t; }
+    if (a > b) { b = a; }
+    return b;
+}
+
 EXPORT void imu_task(INT stacd, void *exinf)
 {
     (void)stacd; (void)exinf;
@@ -142,18 +179,24 @@ EXPORT void imu_task(INT stacd, void *exinf)
     float baseline_z = 1.0f;
     float baseline_pitch = 0.0f;
     float baseline_roll = 0.0f;
-    float vertical_velocity = 0.0f;
     float hump_peak_height = 0.0f;
     INT telemetry_timer = 0;
 
-    // Fast threshold constants pre-calculated for the loop
-    // SAFE_TILT_LIMIT_DEG = 30. sin(30) = 0.5. sin^2(30) = 0.25. 
-    // Since IMU is rotated 90 deg, pitch is along sensor Y (gy).
-    const float SHOCK_G_SQ = SQ(SHOCK_THRESHOLD_G);
-    const float TILT_30_RATIO = 0.25f; 
+    // Median-of-3 + EMA smoothing state and precomputed acceleration windows around baseline_g
+    float p_hist[3] = {0.0f, 0.0f, 0.0f};
+    float r_hist[3] = {0.0f, 0.0f, 0.0f};
+    INT hist_idx = 0;
+    float filt_pitch = 0.0f;
+    float filt_roll = 0.0f;
+    float lift_low_g_sq = SQ(1.0f - LIFT_ACCEL_DEV_G);
+    float lift_high_g_sq = SQ(1.0f + LIFT_ACCEL_DEV_G);
+    float static_low_g_sq = SQ(1.0f - 0.15f);
+    float static_high_g_sq = SQ(1.0f + 0.15f);
 
     BOOL hump_active = FALSE;
     INT tilt_debounce = 0;
+    INT safety_debounce = 0;
+    INT recovery_debounce = 0;
 
     while (1) {
         switch (state) {
@@ -179,6 +222,11 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                 ER er2 = (er1 >= E_OK) ? imu_write_reg(accel_addr, CTRL_REG4_A, 0x08) : er1;
 
+                // Configure LSM303DLHC Magnetometer for compass heading
+                (void)imu_write_reg(LSM303_MAG_ADDR, CRA_REG_M, 0x14); // 30 Hz data rate
+                (void)imu_write_reg(LSM303_MAG_ADDR, CRB_REG_M, 0x20); // +/- 1.3 Gauss range
+                (void)imu_write_reg(LSM303_MAG_ADDR, MR_REG_M,  0x00); // Continuous measurement mode
+
                 if (er1 >= E_OK && er2 >= E_OK) {
                     active_accel_addr = accel_addr;
                     tm_printf((UB *)"[IMU STATUS] CONNECTED!\n");
@@ -194,6 +242,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 tk_dly_tsk(200); // Allow sensor ADC & filters to stabilize after power-on
 
                 float sum_z = 0.0f;
+                float sum_g = 0.0f;
                 float sum_pitch = 0.0f;
                 float sum_roll = 0.0f;
                 int valid_samples = 0;
@@ -208,6 +257,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         float raw_p, raw_r;
                         imu_compute_pitch_roll(gx, gy, gz, &raw_p, &raw_r);
                         sum_z += gz;
+                        sum_g += imu_sqrtf(SQ(gx) + SQ(gy) + SQ(gz));
                         sum_pitch += raw_p;
                         sum_roll += raw_r;
                         valid_samples++;
@@ -216,8 +266,10 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     tk_dly_tsk(10);
                 }
 
+                float baseline_g = 1.0f;
                 if (valid_samples > 0) {
                     baseline_z = sum_z / (float)valid_samples;
+                    baseline_g = sum_g / (float)valid_samples;
                     baseline_pitch = sum_pitch / (float)valid_samples;
                     baseline_roll = sum_roll / (float)valid_samples;
                 } else {
@@ -225,6 +277,24 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     baseline_pitch = 0.0f;
                     baseline_roll = 0.0f;
                 }
+
+                float lift_low = baseline_g - LIFT_ACCEL_DEV_G;
+                if (lift_low < 0.0f) lift_low = 0.0f;
+                lift_low_g_sq = SQ(lift_low);
+                lift_high_g_sq = SQ(baseline_g + LIFT_ACCEL_DEV_G);
+
+                float low_g = baseline_g - 0.15f;
+                if (low_g < 0.0f) low_g = 0.0f;
+                static_low_g_sq = SQ(low_g);
+                static_high_g_sq = SQ(baseline_g + 0.15f);
+
+                for (INT i = 0; i < 3; i++) {
+                    p_hist[i] = 0.0f;
+                    r_hist[i] = 0.0f;
+                }
+                hist_idx = 0;
+                filt_pitch = 0.0f;
+                filt_roll = 0.0f;
 
                 tm_printf((UB *)"[IMU] Calibrated! Offsets -> P:%d R:%d (samples:%d)\n",
                           (INT)baseline_pitch, (INT)baseline_roll, valid_samples);
@@ -245,15 +315,27 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 // Zero-calibrated Pitch and Roll (reads 0 on flat ground)
                 float pitch = raw_pitch - baseline_pitch;
                 float roll  = raw_roll  - baseline_roll;
-                float current_height_mm = 0.0f;
 
-                BOOL is_tilted = (fabsf(roll) >= HUMP_TILT_THRESHOLD_DEG || fabsf(pitch) >= HUMP_TILT_THRESHOLD_DEG);
+                // Spike rejection (median-of-3) + EMA low-pass filter for smooth height estimation
+                p_hist[hist_idx] = pitch;
+                r_hist[hist_idx] = roll;
+                hist_idx = (hist_idx + 1) % 3;
+
+                float med_pitch = imu_median3(p_hist[0], p_hist[1], p_hist[2]);
+                float med_roll  = imu_median3(r_hist[0], r_hist[1], r_hist[2]);
+                filt_pitch += 0.22f * (med_pitch - filt_pitch);
+                filt_roll  += 0.22f * (med_roll  - filt_roll);
+
+                BOOL is_quasi_static = (total_g_sq >= static_low_g_sq && total_g_sq <= static_high_g_sq);
+                float current_height_mm = 0.0f;
+                BOOL is_tilted = (fabsf(filt_roll) >= HUMP_TILT_THRESHOLD_DEG ||
+                                  fabsf(filt_pitch) >= HUMP_TILT_THRESHOLD_DEG);
 
                 if (is_tilted) {
-                    // Geometric height using calibrated tilt angles:
+                    // Geometric height using smoothed calibrated tilt angles:
                     const float DEG_TO_RAD = 3.14159265f / 180.0f;
-                    float sin_roll  = fabsf(roll) * DEG_TO_RAD;
-                    float sin_pitch = fabsf(pitch) * DEG_TO_RAD;
+                    float sin_roll  = fabsf(filt_roll) * DEG_TO_RAD;
+                    float sin_pitch = fabsf(filt_pitch) * DEG_TO_RAD;
                     if (sin_roll > 1.0f)  sin_roll = 1.0f;
                     if (sin_pitch > 1.0f) sin_pitch = 1.0f;
 
@@ -261,23 +343,19 @@ EXPORT void imu_task(INT stacd, void *exinf)
                     float h_pitch = HUMP_CHASSIS_SCALE_MM * sin_pitch;
                     current_height_mm = (h_roll > h_pitch) ? h_roll : h_pitch;
 
-                    if (current_height_mm > hump_peak_height) {
-                        hump_peak_height = current_height_mm;
-                    }
-
                     telemetry_snapshot.estimated_height_mm = current_height_mm;
-                    telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
 
                     // Debounce: require tilt to persist for 4 consecutive samples (80 ms)
                     // and notify Navigator ONCE on entering the hump (no queue flooding)
                     if (++tilt_debounce >= 4) {
                         tilt_debounce = 4;
+                        telemetry_snapshot.imu_event = IMU_MSG_HUMP_DETECTED;
                         if (!hump_active) {
                             hump_active = TRUE;
                             IMU_TELEMETRY_MSG msg = {
                                 .event = IMU_MSG_HUMP_DETECTED,
-                                .pitch_deg = pitch,
-                                .roll_deg = roll,
+                                .pitch_deg = filt_pitch,
+                                .roll_deg = filt_roll,
                                 .estimated_height_mm = current_height_mm,
                             };
                             NAVIGATOR_MESSAGE n_msg = {
@@ -285,10 +363,18 @@ EXPORT void imu_task(INT stacd, void *exinf)
                                 .data.imu_telemetry_msg = msg,
                             };
                             tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
-                            tm_printf((UB *)"[IMU HUMP] Detected! Tilt P:%d R:%d\n", (INT)pitch, (INT)roll);
+                            tm_printf((UB *)"[IMU HUMP] Detected! Tilt P:%d R:%d\n", (INT)filt_pitch, (INT)filt_roll);
                         }
                     }
+
+                    // Update cumulative peak only after hump is confirmed and acceleration is quasi-static
+                    if (hump_active && is_quasi_static && current_height_mm > hump_peak_height) {
+                        hump_peak_height = current_height_mm;
+                    }
                 } else {
+                    // Always reset live height telemetry when flat (prevents stale height after short spikes)
+                    telemetry_snapshot.estimated_height_mm = 0.0f;
+
                     if (tilt_debounce > 0) tilt_debounce--;
                     if (tilt_debounce == 0 && hump_active) {
                         hump_active = FALSE;
@@ -296,8 +382,8 @@ EXPORT void imu_task(INT stacd, void *exinf)
 
                         IMU_TELEMETRY_MSG msg = {
                             .event = IMU_MSG_NO_HUMP,
-                            .pitch_deg = pitch,
-                            .roll_deg = roll,
+                            .pitch_deg = filt_pitch,
+                            .roll_deg = filt_roll,
                             .estimated_height_mm = final_peak_height,
                         };
                         NAVIGATOR_MESSAGE n_msg = {
@@ -307,9 +393,7 @@ EXPORT void imu_task(INT stacd, void *exinf)
                         tk_snd_mbf(navigator_mbfid, &n_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
                         tm_printf((UB *)"[IMU HUMP] Returned to flat. Peak:%dmm\n", (INT)final_peak_height);
 
-                        hump_peak_height = 0.0f;
-                        vertical_velocity = 0.0f;
-                        telemetry_snapshot.estimated_height_mm = 0.0f;
+                        // Keep hump_peak_height cumulative across all humps/stages; reset live height only
                         telemetry_snapshot.imu_event = IMU_MSG_NO_HUMP;
                     }
                 }
@@ -317,77 +401,117 @@ EXPORT void imu_task(INT stacd, void *exinf)
                 // Record telemetry every 500ms (single compact serial log <= 32B FIFO)
                 if (++telemetry_timer >= 25) {
                     telemetry_timer = 0;
-                    telemetry_snapshot.pitch_deg = pitch;
-                    telemetry_snapshot.roll_deg = roll;
+                    telemetry_snapshot.pitch_deg = filt_pitch;
+                    telemetry_snapshot.roll_deg = filt_roll;
+                    telemetry_snapshot.heading_deg = imu_get_heading_deg();
                     telemetry_snapshot.imu_state = (uint8_t)state;
                     if (!is_tilted) {
+                        telemetry_snapshot.estimated_height_mm = 0.0f;
                         telemetry_snapshot.imu_event = IMU_MSG_NONE;
                     }
                     tm_printf((UB *)"[IMU] Pitch:%d Roll:%d H:%dmm\n",
-                              (INT)pitch, (INT)roll, (INT)current_height_mm);
+                              (INT)filt_pitch, (INT)filt_roll, (INT)current_height_mm);
                 }
 
-                // Priority 1: Shock Detection 
-                if (total_g_sq > SHOCK_G_SQ) {
-                    state = STATE_SHOCK_DETECTED;
-                    break;
-                }
+                // Priority: Lifted or Overturned Detection -> immediate motor stop
+                // Require 4 samples (80ms) so brief 1cm ramp bumps/drops (<=45ms) never trigger a false lift stop
+                BOOL is_overturned = (fabsf(pitch) > OVERTURN_TILT_DEG) ||
+                                     (fabsf(roll) > OVERTURN_TILT_DEG) ||
+                                     ((gz * baseline_z) < (0.5f * SQ(baseline_z)));
+                BOOL is_lifted = (total_g_sq > lift_high_g_sq) || (total_g_sq < lift_low_g_sq);
 
-                // Priority 2: Tilt Warning (Pitch > 30 deg equivalent on swapped axis gy)
-                if (SQ(gy) > (total_g_sq * TILT_30_RATIO) && fabsf(pitch) > SAFE_TILT_LIMIT_DEG) {
-                    state = STATE_TILT_WARNING;
-                    break;
+                if (is_overturned || is_lifted) {
+                    if (++safety_debounce >= 4) {
+                        motor_estop = TRUE;
+                        hump_active = FALSE;
+                        tilt_debounce = 0;
+                        safety_debounce = 0;
+                        recovery_debounce = 0;
+                        telemetry_snapshot.pitch_deg = filt_pitch;
+                        telemetry_snapshot.roll_deg = filt_roll;
+                        telemetry_snapshot.estimated_height_mm = 0.0f;
+                        state = STATE_LIFTED_OVERTURNED;
+                        telemetry_snapshot.imu_state = (uint8_t)state;
+                        telemetry_snapshot.imu_event = IMU_MSG_LIFTED_OVERTURNED;
+
+                        if (navigator_mbfid > E_OK) {
+                            IMU_TELEMETRY_MSG msg = {
+                                .event = IMU_MSG_LIFTED_OVERTURNED,
+                                .pitch_deg = telemetry_snapshot.pitch_deg,
+                                .roll_deg = telemetry_snapshot.roll_deg,
+                            };
+                            NAVIGATOR_MESSAGE nav_msg = {
+                                .type = MSG_IMU_UPDATE,
+                                .data.imu_telemetry_msg = msg,
+                            };
+                            (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+                        }
+                        tm_printf((UB *)"[IMU] LIFTED/OVERTURNED -> STOP\n");
+                        break;
+                    }
+                } else if (safety_debounce > 0) {
+                    safety_debounce--;
                 }
 
                 break;
             }
 
-            case STATE_TILT_WARNING: {
+            case STATE_LIFTED_OVERTURNED: {
                 float gx, gy, gz;
                 imu_read_accel_g(&gx, &gy, &gz);
-                
-                // Allow expensive math here because the car is likely stopped/recovering anyway
-                float total_g = imu_sqrtf(SQ(gx) + SQ(gy) + SQ(gz));
+
+                float total_g_sq = SQ(gx) + SQ(gy) + SQ(gz);
                 float raw_pitch, raw_roll;
                 imu_compute_pitch_roll(gx, gy, gz, &raw_pitch, &raw_roll);
+
                 float pitch = raw_pitch - baseline_pitch;
                 float roll  = raw_roll  - baseline_roll;
 
-                IMU_TELEMETRY_MSG msg = {
-                    .event = IMU_MSG_TILT_WARNING,
-                    .pitch_deg = pitch,
-                    .roll_deg = roll,
-                    .peak_g = total_g
-                };
-                if (navigator_mbfid > E_OK) {
-                    telemetry_snapshot.pitch_deg = pitch;
-                    telemetry_snapshot.roll_deg = roll;
-                    telemetry_snapshot.imu_state = (uint8_t)state;
-                    telemetry_snapshot.imu_event = IMU_MSG_TILT_WARNING;
-                    NAVIGATOR_MESSAGE nav_msg = { .type = MSG_IMU_UPDATE, .data.imu_telemetry_msg = msg };
-                    (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
-                }
+                p_hist[hist_idx] = pitch;
+                r_hist[hist_idx] = roll;
+                hist_idx = (hist_idx + 1) % 3;
 
-                if (fabsf(pitch) < (SAFE_TILT_LIMIT_DEG - 5.0f)) {
-                    state = STATE_MONITORING;
-                }
-                break;
-            }
+                float med_pitch = imu_median3(p_hist[0], p_hist[1], p_hist[2]);
+                float med_roll  = imu_median3(r_hist[0], r_hist[1], r_hist[2]);
+                filt_pitch += 0.22f * (med_pitch - filt_pitch);
+                filt_roll  += 0.22f * (med_roll  - filt_roll);
 
-            case STATE_SHOCK_DETECTED: {
                 motor_estop = TRUE;
+                telemetry_snapshot.estimated_height_mm = 0.0f;
                 telemetry_snapshot.imu_state = (uint8_t)state;
-                telemetry_snapshot.imu_event = IMU_MSG_SHOCK_DETECTED;
+                telemetry_snapshot.imu_event = IMU_MSG_LIFTED_OVERTURNED;
 
-                IMU_TELEMETRY_MSG msg = {
-                    .event = IMU_MSG_SHOCK_DETECTED,
-                    .peak_g = SHOCK_THRESHOLD_G
-                };
-                if (navigator_mbfid > E_OK) {
-                    NAVIGATOR_MESSAGE nav_msg = { .type = MSG_IMU_UPDATE, .data.imu_telemetry_msg = msg };
-                    (void)tk_snd_mbf(navigator_mbfid, &nav_msg, sizeof(NAVIGATOR_MESSAGE), TMO_POL);
+                if (++telemetry_timer >= 25) {
+                    telemetry_timer = 0;
+                    telemetry_snapshot.pitch_deg = filt_pitch;
+                    telemetry_snapshot.roll_deg = filt_roll;
+                    telemetry_snapshot.heading_deg = imu_get_heading_deg();
+                    tm_printf((UB *)"[IMU] LIFTED/OVER P:%d R:%d\n",
+                              (INT)filt_pitch, (INT)filt_roll);
                 }
-                while (1) tk_dly_tsk(1000);
+
+                // Recover IMU monitoring once held upright, flat, and steady for 500 ms
+                // (motor_estop / MODE_SAFE_STOP stays latched for safety)
+                BOOL upright_flat = (fabsf(pitch) < (OVERTURN_TILT_DEG - 5.0f)) &&
+                                    (fabsf(roll)  < (OVERTURN_TILT_DEG - 5.0f)) &&
+                                    ((gz * baseline_z) >= (0.7f * SQ(baseline_z))) &&
+                                    (total_g_sq >= lift_low_g_sq) &&
+                                    (total_g_sq <= lift_high_g_sq);
+
+                if (upright_flat) {
+                    if (++recovery_debounce >= 25) {
+                        recovery_debounce = 0;
+                        safety_debounce = 0;
+                        tilt_debounce = 0;
+                        hump_active = FALSE;
+                        telemetry_snapshot.imu_event = IMU_MSG_NONE;
+                        state = STATE_MONITORING;
+                        telemetry_snapshot.imu_state = (uint8_t)state;
+                        tm_printf((UB *)"[IMU] Upright -> Monitoring resumed\n");
+                    }
+                } else if (recovery_debounce > 0) {
+                    recovery_debounce--;
+                }
                 break;
             }
         }
