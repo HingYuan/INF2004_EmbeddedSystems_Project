@@ -76,7 +76,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     UH turning_rampup_count = 0;
 
     // Barcode decoding
-    B instruction_idx = 0;                                                          // Iterate through instructions for each intersection
+    B instruction_idx = 0;                                                          // Track instructions for navigating intersections
+    B instruction_idx_barcode = 0;                                                  // Same as above, but for adding new instructions from decoded barcodes along the track
     B barcode_characters[NUMBER_OF_COMMANDS] = {};                                  // Character key, sent from wifi
     DIRECTION barcode_instructions[NUMBER_OF_COMMANDS] = {};                        // Instruction mapping, sent from wifi
     B mapping_increment = 0;                                                        // incrementing index for syncing barcode and instruction arrays
@@ -143,16 +144,15 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                 }
-            } else if (!bypass_active && n_msg.type == MSG_IMU_UPDATE &&
-                      (n_msg.data.imu_telemetry_msg.event == IMU_MSG_SHOCK_DETECTED ||
-                       n_msg.data.imu_telemetry_msg.event == IMU_MSG_TILT_WARNING)) {
-                // motor_estop = TRUE;
-                // m_mode = MODE_SAFE_STOP;
-                // mot_cmd.target_speed_left = STOP_SPEED;
-                // mot_cmd.target_speed_right = STOP_SPEED;
-                // tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
-                // tm_printf((UB *)"[nav] EMERGENCY STOP triggered by IMU event %d\n", n_msg.data.imu_telemetry_msg.event);
-            } else if (!bypass_active && n_msg.type == MSG_SONAR_DISTANCE) {
+            } else if (n_msg.type == MSG_IMU_UPDATE &&
+                       n_msg.data.imu_telemetry_msg.event == IMU_MSG_LIFTED_OVERTURNED) {
+                motor_estop = TRUE;
+                m_mode = MODE_SAFE_STOP;
+                mot_cmd.target_speed_left = STOP_SPEED;
+                mot_cmd.target_speed_right = STOP_SPEED;
+                tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
+                tm_printf((UB *)"[nav] STOP: robot lifted/overturned\n");
+            } else if (n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
                 
                 if (live_sonar_distance_valid) {
@@ -187,7 +187,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 mapping_increment++;
 
                                 if (mapping_increment >= NUMBER_OF_COMMANDS) {
-                                    m_mode = MODE_BARCODE_SCANNING;
+                                    m_mode = MODE_LINE_FOLLOWING;
                                 }
 
                                 break;
@@ -198,70 +198,70 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         }
 
                         break;
-                    case MODE_BARCODE_SCANNING:
-                        switch (n_msg.type) {
-                            case MSG_IR_UPDATE:
-                                switch (n_msg.data.ir_state) {
-                                    case STATE_W_B:
-                                        mot_cmd.target_speed_left =     RIGHT_TURN_L_BARCODE;
-                                        mot_cmd.target_speed_right =   -RIGHT_TURN_R_BARCODE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    // case MODE_BARCODE_SCANNING:
+                    //     switch (n_msg.type) {
+                    //         case MSG_IR_UPDATE:
+                    //             switch (n_msg.data.ir_state) {
+                    //                 case STATE_W_B:
+                    //                     mot_cmd.target_speed_left =     RIGHT_TURN_L_BARCODE;
+                    //                     mot_cmd.target_speed_right =   -RIGHT_TURN_R_BARCODE;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        break;
-                                    case STATE_B_W:
-                                        mot_cmd.target_speed_left =     LEFT_TURN_L_BARCODE;
-                                        mot_cmd.target_speed_right =   -LEFT_TURN_R_BARCODE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    //                     break;
+                    //                 case STATE_B_W:
+                    //                     mot_cmd.target_speed_left =     LEFT_TURN_L_BARCODE;
+                    //                     mot_cmd.target_speed_right =   -LEFT_TURN_R_BARCODE;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        break;
-                                    default:
-                                        mot_cmd.target_speed_left =     FORWARD_SPEED_BARCODE;
-                                        mot_cmd.target_speed_right =   -FORWARD_SPEED_BARCODE;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    //                     break;
+                    //                 default:
+                    //                     mot_cmd.target_speed_left =     FORWARD_SPEED_BARCODE;
+                    //                     mot_cmd.target_speed_right =   -FORWARD_SPEED_BARCODE;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        break;
-                                }
+                    //                     break;
+                    //             }
 
-                                break;
-                            case MSG_BARCODE_DECODED:
-                                last_decoded_char = (char)n_msg.data.decoded_char;
+                    //             break;
+                    //         case MSG_BARCODE_DECODED:
+                    //             last_decoded_char = (char)n_msg.data.decoded_char;
 
-                                // Map detected character to instruction, then add to instruction array
-                                for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
-                                    if (last_decoded_char == barcode_characters[i]) {
-                                        instructions[instruction_idx] = barcode_instructions[i];
-                                        instruction_idx++;
-                                    }
+                    //             // Map detected character to instruction, then add to instruction array
+                    //             for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
+                    //                 if (last_decoded_char == barcode_characters[i]) {
+                    //                     instructions[instruction_idx] = barcode_instructions[i];
+                    //                     instruction_idx++;
+                    //                 }
 
-                                    // If max instructions recorded
-                                    if (instruction_idx >= NUMBER_OF_COMMANDS) {
-                                        m_mode = MODE_LINE_FOLLOWING;
-                                        instruction_idx = 0;
+                    //                 // If max instructions recorded
+                    //                 if (instruction_idx >= NUMBER_OF_COMMANDS) {
+                    //                     m_mode = MODE_LINE_FOLLOWING;
+                    //                     instruction_idx = 0;
 
-                                        mot_cmd.target_speed_left =     STOP_SPEED;
-                                        mot_cmd.target_speed_right =   -STOP_SPEED;
-                                        mot_cmd.turn_ticks_left =       0;
-                                        mot_cmd.turn_ticks_right =      0;
+                    //                     mot_cmd.target_speed_left =     STOP_SPEED;
+                    //                     mot_cmd.target_speed_right =   -STOP_SPEED;
+                    //                     mot_cmd.turn_ticks_left =       0;
+                    //                     mot_cmd.turn_ticks_right =      0;
 
-                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                    //                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        tk_dly_tsk(1000);
-                                    }
-                                }
+                    //                     tk_dly_tsk(1000);
+                    //                 }
+                    //             }
 
-                                break;
-                        }
+                    //             break;
+                    //     }
 
-                        break;
+                    //     break;
                     case MODE_LINE_FOLLOWING:
                         switch (n_msg.type) {
                             case MSG_IR_UPDATE: {
@@ -343,6 +343,18 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 break;
                             }
+                            case MSG_BARCODE_DECODED:
+                                last_decoded_char = (char)n_msg.data.decoded_char;
+
+                                // Map detected character to instruction, then add to instruction array
+                                for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
+                                    if (last_decoded_char == barcode_characters[i]) {
+                                        instructions[instruction_idx_barcode] = barcode_instructions[i];
+                                        instruction_idx_barcode++;
+                                    }
+                                }
+
+                                break;
                             case MSG_OBSTACLE_DETECTED:
 
                                 last_obstacle_dist_cm = n_msg.data.obstacle_distance_cm;
@@ -361,6 +373,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
                             case MSG_IMU_UPDATE:
                                 if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_HUMP_DETECTED) {
+                                    mot_cmd.target_speed_left =     FORWARD_SPEED_HUMP;
+                                    mot_cmd.target_speed_right =   -FORWARD_SPEED_HUMP;
+                                    mot_cmd.turn_ticks_left =       0;
+                                    mot_cmd.turn_ticks_right =      0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                    
                                     m_mode = MODE_GOING_OVER_HUMP;
                                 }
 
@@ -373,10 +392,55 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                         break;
 
                     case MODE_GOING_OVER_HUMP: {
-                        if (n_msg.type == MSG_IMU_UPDATE &&
-                            n_msg.data.imu_telemetry_msg.event == IMU_MSG_NO_HUMP) {
-                            prev_ir_state = STATE_NULL;
-                            m_mode = MODE_LINE_FOLLOWING;
+                        if (n_msg.type == MSG_IMU_UPDATE) {
+                            VB left_speed =     FORWARD_SPEED_HUMP;
+                            VB right_speed =   -FORWARD_SPEED_HUMP;
+
+                            VB pitch = n_msg.data.imu_telemetry_msg.pitch_deg;
+                            VB roll = n_msg.data.imu_telemetry_msg.roll_deg;
+
+                            switch (n_msg.data.imu_telemetry_msg.event) {
+                                case IMU_MSG_HUMP_DETECTED:
+                                    if (pitch < 0) {
+                                        mot_cmd.target_speed_left =  (left_speed + pitch) > 10 ? left_speed + pitch : 10;
+                                        mot_cmd.target_speed_right = right_speed;
+                                    } else {
+                                        mot_cmd.target_speed_left =  left_speed;
+                                        mot_cmd.target_speed_right = (right_speed + pitch) < -10 ? right_speed + pitch : -10;
+                                    }
+
+                                    if (roll < -10 && hump_pop != 1) {
+                                        hump_pop = 1;
+                                    } else if (roll > 10 && hump_pop != 0) {
+                                        hump_pop = 0;
+                                    }
+                                    
+                                    mot_cmd.turn_ticks_left =        0;
+                                    mot_cmd.turn_ticks_right =       0;
+
+                                    spam_mitigation++;
+                                    if (spam_mitigation > spam_mitigation_threshold) {
+                                        tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+                                        spam_mitigation = 0;
+                                    }
+
+                                    break;
+                                case IMU_MSG_NO_HUMP:
+                                    // tm_printf("NO HUMP RECEIVED\n");
+                                    hump_pop = 0;
+                                    prev_ir_state = STATE_NULL;
+                                    m_mode = MODE_LINE_FOLLOWING;
+                                    mot_cmd.target_speed_left =     FORWARD_SPEED;
+                                    mot_cmd.target_speed_right =   -FORWARD_SPEED;
+                                    mot_cmd.turn_ticks_left =       0;
+                                    mot_cmd.turn_ticks_right =      0;
+
+                                    tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
+
+                                    break;
+                                default:
+                                    break;
+                            }
                         }
                         break;
                     }
@@ -414,6 +478,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE: {
 
                                 IR_STATE curr_ir_state = n_msg.data.ir_state;
+
+                                // If no new instruction, linger on latest one
+                                if (instructions[instruction_idx_barcode] == DIR_INVALID && instruction_idx > 0) {
+                                    instruction_idx--;
+                                } else if (instructions[instruction_idx] == DIR_INVALID && instruction_idx <= 0) {
+                                    instruction_idx = 0;
+                                }
+
                                 DIRECTION curr_decision = instructions[instruction_idx];
                                 // DIRECTION curr_decision = instructions_fake[instruction_idx];
 
@@ -471,7 +543,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                             m_mode = MODE_LINE_FOLLOWING;
 
                                             // Linger on last instruction on overflow
-                                            if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx = 0; }
+                                            if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx--; }
 
                                             break;
                                     }
@@ -497,7 +569,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         tk_dly_tsk(250);
 
                                         // Linger on last instruction on overflow
-                                        if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx = 0; }
+                                        if (++instruction_idx >= NUMBER_OF_COMMANDS) { instruction_idx--; }
 
                                         // Reset variables
                                         num_rotations = 0;

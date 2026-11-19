@@ -2,50 +2,1228 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pico W MQTT dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NASA JPL // LINE ROVER MISSION TELEMETRY</title>
   <style>
-    body { margin: 2rem; font: 1rem system-ui, sans-serif; color: #17324d; background: #eef5f7; }
-    main { max-width: 46rem; margin: 0 auto; padding: 2rem; background: white; border: 1px solid #c7d9df; border-radius: 8px; }
-    h1 { margin-top: 0; }
-    section { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #d8e5e8; }
-    dt { font-weight: 700; margin-top: .7rem; }
-    dd { margin: .2rem 0; word-break: break-word; }
-    pre { white-space: pre-wrap; background: #f2f7f8; padding: 1rem; border-radius: 4px; min-height: 3rem; }
-    .ok { color: #087f4b; }
-    .bad { color: #a52a2a; }
+    /* ============================================================
+       NASA / ANALOG MISSION CONTROL CRT DESIGN SYSTEM
+       ROBOT CALL-SIGN: LINE ROVER (LR-2004)
+       ============================================================ */
+    :root {
+      --bg-chassis: #090d13;
+      --bg-panel: #111822;
+      --bg-panel-dark: #0a0e16;
+      --bg-inset: #06090e;
+      --border-panel: #223244;
+      --border-highlight: #3a5068;
+      --phosphor-green: #00ff66;
+      --phosphor-glow: rgba(0, 255, 102, 0.25);
+      --telemetry-amber: #ffb000;
+      --amber-glow: rgba(255, 176, 0, 0.25);
+      --radar-cyan: #00e5ff;
+      --cyan-glow: rgba(0, 229, 255, 0.25);
+      --alert-red: #ff3344;
+      --red-glow: rgba(255, 51, 68, 0.35);
+      --text-main: #d0dde8;
+      --text-dim: #6d849c;
+      --font-mono: "Share Tech Mono", "Courier New", Courier, monospace, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-chassis);
+      color: var(--text-main);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.4;
+      padding: 12px;
+      min-height: 100vh;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    /* CRT Scanline & Subtle Vignette Overlay */
+    body::before {
+      content: " ";
+      display: block;
+      position: fixed;
+      top: 0; left: 0; bottom: 0; right: 0;
+      background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.35) 50%),
+                  radial-gradient(circle at center, transparent 65%, rgba(0,0,0,0.65) 100%);
+      background-size: 100% 3px, 100% 100%;
+      z-index: 999;
+      pointer-events: none;
+      opacity: 0.75;
+    }
+
+    /* Chromatic Aberration Text Effects */
+    .chromatic {
+      text-shadow: -1.5px 0 0 rgba(255, 30, 80, 0.75), 1.5px 0 0 rgba(0, 230, 255, 0.75);
+    }
+    .chromatic-glow {
+      text-shadow: -2px 0 0 rgba(255, 40, 80, 0.8), 2px 0 0 rgba(0, 230, 255, 0.8), 0 0 10px var(--phosphor-glow);
+    }
+    .chromatic-amber {
+      text-shadow: -1.5px 0 0 rgba(255, 50, 50, 0.75), 1.5px 0 0 rgba(255, 230, 0, 0.75);
+    }
+
+    /* Main Chassis Container */
+    .mission-frame {
+      max-width: 1280px;
+      margin: 0 auto;
+      border: 2px solid var(--border-panel);
+      background: var(--bg-panel-dark);
+      border-radius: 6px;
+      box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.8), 0 8px 30px rgba(0, 0, 0, 0.7);
+      padding: 16px;
+      position: relative;
+    }
+
+    /* Screw Rivets on Aerospace Insets */
+    .mission-frame::before, .mission-frame::after {
+      content: "+";
+      position: absolute;
+      font-size: 14px;
+      font-weight: bold;
+      color: #3b4d61;
+    }
+    .mission-frame::before { top: 6px; left: 8px; }
+    .mission-frame::after { top: 6px; right: 8px; }
+
+    /* Top Flight Director Banner */
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 2px solid var(--border-panel);
+      margin-bottom: 14px;
+      gap: 12px;
+    }
+
+    .callsign-block {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .nasa-patch {
+      background: #0b3d91;
+      border: 1px solid #e03c31;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-weight: 900;
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      color: #fff;
+      text-shadow: 0 0 4px rgba(255,255,255,0.8);
+      box-shadow: 0 0 8px rgba(11, 61, 145, 0.6);
+    }
+
+    .mission-title h1 {
+      font-size: 1.5rem;
+      letter-spacing: 2px;
+      color: #ffffff;
+      margin: 0;
+      text-transform: uppercase;
+    }
+
+    .mission-sub {
+      font-size: 10px;
+      letter-spacing: 1.2px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+
+    .met-clock {
+      text-align: right;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-panel);
+      padding: 6px 12px;
+      border-radius: 4px;
+    }
+    .met-label { font-size: 9px; color: var(--text-dim); letter-spacing: 1px; }
+    .met-time { font-size: 1.15rem; font-weight: bold; color: var(--phosphor-green); }
+
+    /* ============================================================
+       TWO DISTINCT HEARTBEAT MONITORS (WEB SERVER & MQTT)
+       ============================================================ */
+    .heartbeat-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .hb-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-panel);
+      border-left: 4px solid var(--border-highlight);
+      border-radius: 4px;
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: relative;
+      box-shadow: inset 1px 1px 0 rgba(255,255,255,0.04);
+    }
+
+    .hb-card.web { border-left-color: var(--phosphor-green); }
+    .hb-card.mqtt { border-left-color: var(--radar-cyan); }
+
+    .hb-info { display: flex; flex-direction: column; gap: 2px; }
+    .hb-title { font-size: 10px; font-weight: bold; letter-spacing: 1.2px; color: var(--text-dim); text-transform: uppercase; }
+    .hb-name { font-size: 13px; font-weight: bold; color: #fff; }
+    .hb-metrics { font-size: 11px; color: var(--text-dim); }
+    .hb-metrics span { color: var(--text-main); font-weight: bold; }
+
+    .hb-status-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-align: right;
+    }
+
+    .hb-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 3px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      border: 1px solid transparent;
+    }
+
+    .status-ok {
+      background: rgba(0, 255, 102, 0.12);
+      border-color: var(--phosphor-green);
+      color: var(--phosphor-green);
+      box-shadow: 0 0 10px var(--phosphor-glow);
+    }
+    .status-warn {
+      background: rgba(255, 176, 0, 0.12);
+      border-color: var(--telemetry-amber);
+      color: var(--telemetry-amber);
+      box-shadow: 0 0 10px var(--amber-glow);
+    }
+    .status-err {
+      background: rgba(255, 51, 68, 0.15);
+      border-color: var(--alert-red);
+      color: var(--alert-red);
+      box-shadow: 0 0 10px var(--red-glow);
+    }
+
+    /* Pulsing Heartbeat LED Animation */
+    .hb-pulse-led {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #2a3442;
+      border: 2px solid #141c26;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.8);
+      position: relative;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+
+    .hb-pulse-led.active-web {
+      background: var(--phosphor-green);
+      box-shadow: 0 0 12px var(--phosphor-green);
+      animation: heart-blip 1s infinite ease-out;
+    }
+
+    .hb-pulse-led.active-mqtt {
+      background: var(--radar-cyan);
+      box-shadow: 0 0 12px var(--radar-cyan);
+      animation: heart-blip-cyan 1.2s infinite ease-out;
+    }
+
+    .hb-pulse-led.dead {
+      background: var(--alert-red);
+      box-shadow: 0 0 8px var(--alert-red);
+      animation: blink-err 0.7s infinite alternate;
+    }
+
+    @keyframes heart-blip {
+      0% { transform: scale(1); opacity: 0.9; }
+      15% { transform: scale(1.35); opacity: 1; filter: drop-shadow(0 0 8px #00ff66); }
+      30% { transform: scale(1); opacity: 0.8; }
+      45% { transform: scale(1.2); opacity: 1; }
+      70% { transform: scale(1); opacity: 0.7; }
+      100% { transform: scale(1); opacity: 0.9; }
+    }
+
+    @keyframes heart-blip-cyan {
+      0% { transform: scale(1); opacity: 0.85; }
+      20% { transform: scale(1.3); opacity: 1; filter: drop-shadow(0 0 8px #00e5ff); }
+      40% { transform: scale(1); opacity: 0.75; }
+      100% { transform: scale(1); opacity: 0.85; }
+    }
+
+    @keyframes blink-err {
+      0% { opacity: 0.3; }
+      100% { opacity: 1; }
+    }
+
+    /* ============================================================
+       INSTRUMENT PANELS GRID
+       ============================================================ */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+    }
+
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-panel);
+      border-radius: 4px;
+      padding: 12px;
+      box-shadow: inset 1px 1px 0 rgba(255,255,255,0.03), 0 4px 12px rgba(0,0,0,0.5);
+      position: relative;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-panel);
+      padding-bottom: 6px;
+      margin-bottom: 10px;
+    }
+
+    .panel-tag {
+      font-size: 10px;
+      font-weight: bold;
+      color: var(--radar-cyan);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .panel-subtag {
+      font-size: 9px;
+      color: var(--text-dim);
+      letter-spacing: 0.5px;
+    }
+
+    /* Grid layout spans */
+    .col-4 { grid-column: span 4; }
+    .col-6 { grid-column: span 6; }
+    .col-8 { grid-column: span 8; }
+    .col-12 { grid-column: span 12; }
+
+    @media (max-width: 1024px) {
+      .col-4, .col-6, .col-8 { grid-column: span 12; }
+    }
+
+    /* Analog Instrument Styles */
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 4px 0;
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+    }
+    .data-label { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .data-val { font-size: 13px; font-weight: bold; color: #fff; }
+    .data-val.hl-green { color: var(--phosphor-green); }
+    .data-val.hl-amber { color: var(--telemetry-amber); }
+    .data-val.hl-cyan { color: var(--radar-cyan); }
+    .data-val.hl-red { color: var(--alert-red); }
+
+    /* Mode Banner Highlight */
+    .mode-annunciator {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-highlight);
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .mode-annunciator .title { font-size: 9px; color: var(--text-dim); text-transform: uppercase; }
+    .mode-annunciator .mode-name { font-size: 14px; font-weight: bold; color: var(--telemetry-amber); letter-spacing: 1px; }
+
+    /* IR Track Visualizer */
+    .ir-track-box {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-panel);
+      border-radius: 4px;
+      padding: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      margin: 8px 0;
+    }
+    .ir-sensor-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .ir-light {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #1a222d;
+      border: 2px solid #2f3e50;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.8);
+      transition: all 0.2s ease;
+    }
+    .ir-light.detect-black {
+      background: var(--telemetry-amber);
+      border-color: #ffd270;
+      box-shadow: 0 0 10px var(--amber-glow);
+    }
+    .ir-light.detect-white {
+      background: #ffffff;
+      border-color: #a8d5ff;
+      box-shadow: 0 0 8px rgba(255,255,255,0.7);
+    }
+    .ir-track-line {
+      width: 44px;
+      height: 8px;
+      background: #253344;
+      border-radius: 2px;
+      position: relative;
+    }
+
+    /* Dual Motor Bar Tachometers */
+    .meter-cluster {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 8px 0;
+    }
+    .motor-bar-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .motor-bar-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .analog-scale-bar {
+      height: 14px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-panel);
+      border-radius: 2px;
+      position: relative;
+      overflow: hidden;
+    }
+    .analog-scale-center {
+      position: absolute;
+      top: 0; bottom: 0; left: 50%;
+      width: 2px;
+      background: #3b5066;
+      z-index: 2;
+    }
+    .motor-fill {
+      height: 100%;
+      position: absolute;
+      top: 0;
+      transition: width 0.3s ease, left 0.3s ease;
+    }
+    .motor-fill.fwd {
+      left: 50%;
+      background: linear-gradient(90deg, #00b848, var(--phosphor-green));
+      box-shadow: 0 0 8px var(--phosphor-glow);
+    }
+    .motor-fill.rev {
+      background: linear-gradient(270deg, #d98200, var(--telemetry-amber));
+      box-shadow: 0 0 8px var(--amber-glow);
+    }
+
+    /* Odometer Digit Roller / Nixie Look */
+    .odometer-box {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-panel);
+      padding: 6px 10px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 6px;
+    }
+    .odometer-digits {
+      font-size: 1.2rem;
+      letter-spacing: 3px;
+      color: var(--phosphor-green);
+      font-weight: bold;
+      background: #000;
+      padding: 2px 6px;
+      border: 1px solid #193122;
+      border-radius: 2px;
+      text-shadow: 0 0 6px var(--phosphor-glow);
+    }
+
+    /* Canvas Scopes / Charts */
+    canvas.scope-canvas {
+      display: block;
+      width: 100%;
+      background: var(--bg-inset);
+      border: 1px solid var(--border-panel);
+      border-radius: 4px;
+      box-shadow: inset 0 0 15px rgba(0,0,0,0.9);
+    }
+
+    /* Terminal Command Log */
+    .terminal-window {
+      background: #04070a;
+      border: 1px solid var(--border-panel);
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--phosphor-green);
+      height: 80px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+      line-height: 1.4;
+    }
+
+    /* Barcode Mapping Matrix */
+    .mapping-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .map-chip {
+      background: var(--bg-inset);
+      border: 1px solid var(--border-highlight);
+      border-radius: 3px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: var(--radar-cyan);
+    }
+    .map-chip span { color: #fff; font-weight: bold; }
+
+    /* Footer Mission Ticker */
+    footer {
+      margin-top: 14px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-panel);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      color: var(--text-dim);
+      font-size: 10px;
+      letter-spacing: 0.8px;
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Pico W MQTT dashboard</h1>
-    <p>The µT-Kernel network service is running on port <code>8080</code>.</p>
-    <section>
-      <dl>
-        <dt>Broker</dt><dd id="state">Connecting...</dd>
-        <dt>Messages received</dt><dd id="count">0</dd>
-        <dt>Latest topic</dt><dd id="topic">-</dd>
-        <dt>Latest payload</dt><dd><pre id="payload">-</pre></dd>
-      </dl>
-    </section>
-  </main>
+
+  <div class="mission-frame">
+    <!-- TOP FLIGHT DIRECTOR HEADER -->
+    <header>
+      <div class="callsign-block">
+        <div class="nasa-patch">NASA / JPL</div>
+        <div class="mission-title">
+          <h1 class="chromatic">LINE ROVER // LR-2004</h1>
+          <div class="mission-sub">Autonomous Surface Exploration &amp; Line Guidance System &bull; GNC Flight Telemetry</div>
+        </div>
+      </div>
+      <div class="met-clock">
+        <div class="met-label">MISSION ELAPSED TICKS</div>
+        <div class="met-time" id="met-seq">SEQ #00000</div>
+      </div>
+    </header>
+
+    <!-- TWO DISTINCT HEARTBEAT MONITORS -->
+    <div class="heartbeat-strip">
+      <!-- 1. WEB SERVER HEARTBEAT -->
+      <div class="hb-card web">
+        <div class="hb-info">
+          <div class="hb-title">SYS-COMM 1 // HTTP TELEMETRY UPLINK</div>
+          <div class="hb-name">µT-KERNEL WEB ENGINE (PORT 8080)</div>
+          <div class="hb-metrics">
+            LATENCY: <span id="web-latency">-- ms</span> &bull; 
+            PULSE: <span id="web-pulses">0</span> &bull; 
+            LAST CONTACT: <span id="web-age">0.0s ago</span>
+          </div>
+        </div>
+        <div class="hb-status-wrap">
+          <div class="hb-badge status-ok" id="web-badge">ONLINE</div>
+          <div class="hb-pulse-led active-web" id="web-led" title="Web Uplink Heartbeat"></div>
+        </div>
+      </div>
+
+      <!-- 2. MQTT BROKER HEARTBEAT -->
+      <div class="hb-card mqtt">
+        <div class="hb-info">
+          <div class="hb-title">SYS-COMM 2 // MQTT BROKER LINK</div>
+          <div class="hb-name">MISSION CONTROL TELEMETRY BROKER</div>
+          <div class="hb-metrics">
+            MSGS RCVD: <span id="mqtt-msgs">0</span> &bull; 
+            ERR CODE: <span id="mqtt-err">0</span> &bull; 
+            TOPIC: <span id="mqtt-top">-</span>
+          </div>
+        </div>
+        <div class="hb-status-wrap">
+          <div class="hb-badge status-ok" id="mqtt-badge">CONNECTED</div>
+          <div class="hb-pulse-led active-mqtt" id="mqtt-led" title="MQTT Heartbeat"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN INSTRUMENT PANELS GRID -->
+    <div class="dashboard-grid">
+
+      <!-- SYS-01: GUIDANCE & NAVIGATION -->
+      <div class="panel col-4">
+        <div class="panel-header">
+          <span class="panel-tag">SYS-01 // GUIDANCE &amp; NAVIGATION</span>
+          <span class="panel-subtag">GNC SUBSYSTEM</span>
+        </div>
+
+        <div class="mode-annunciator">
+          <div>
+            <div class="title">CURRENT ACTIVE MOVEMENT MODE</div>
+            <div class="mode-name chromatic-amber" id="mode-text">INITIALIZING...</div>
+          </div>
+          <div class="data-val hl-cyan" id="mode-idx">#--</div>
+        </div>
+
+        <div class="data-row">
+          <span class="data-label">Bypass Phase</span>
+          <span class="data-val hl-green" id="phase-text">IDLE (#0)</span>
+        </div>
+
+        <div class="data-row">
+          <span class="data-label">Active Barcode / Inst</span>
+          <span class="data-val"><span class="hl-amber" id="barcode-val">NONE</span> | STEP #<span id="inst-idx">0</span></span>
+        </div>
+
+        <div class="data-label" style="margin-top:8px">IR Ground Line Sensors (Left / Right)</div>
+        <div class="ir-track-box">
+          <div class="ir-sensor-node">
+            <div class="ir-light" id="ir-light-l"></div>
+            <span class="data-label" id="ir-label-l">LEFT: WHITE</span>
+          </div>
+          <div class="ir-track-line"></div>
+          <div class="ir-sensor-node">
+            <div class="ir-light" id="ir-light-r"></div>
+            <span class="data-label" id="ir-label-r">RIGHT: WHITE</span>
+          </div>
+        </div>
+        <div class="data-row" style="border-bottom:none">
+          <span class="data-label">IR State Enum</span>
+          <span class="data-val hl-cyan" id="ir-state-raw">W_W (0)</span>
+        </div>
+      </div>
+
+      <!-- SYS-02: PROPULSION & ENCODERS -->
+      <div class="panel col-4">
+        <div class="panel-header">
+          <span class="panel-tag">SYS-02 // PROPULSION &amp; ODOMETRY</span>
+          <span class="panel-subtag">TRACTION MOTORS</span>
+        </div>
+
+        <div class="meter-cluster">
+          <!-- Left Motor -->
+          <div class="motor-bar-wrap">
+            <div class="motor-bar-labels">
+              <span>MOTOR LEFT (DRIVE)</span>
+              <span id="speed-l-val" class="hl-cyan">0 %</span>
+            </div>
+            <div class="analog-scale-bar">
+              <div class="analog-scale-center"></div>
+              <div class="motor-fill fwd" id="motor-l-fill" style="left:50%;width:0%"></div>
+            </div>
+          </div>
+
+          <!-- Right Motor -->
+          <div class="motor-bar-wrap">
+            <div class="motor-bar-labels">
+              <span>MOTOR RIGHT (DRIVE)</span>
+              <span id="speed-r-val" class="hl-cyan">0 %</span>
+            </div>
+            <div class="analog-scale-bar">
+              <div class="analog-scale-center"></div>
+              <div class="motor-fill fwd" id="motor-r-fill" style="left:50%;width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="data-row">
+          <span class="data-label">Wheel Encoders (Ticks)</span>
+          <span class="data-val">L: <span class="hl-green" id="enc-l">0</span> | R: <span class="hl-green" id="enc-r">0</span></span>
+        </div>
+
+        <div class="odometer-box">
+          <span class="data-label">TOTAL DISTANCE TRAVELED</span>
+          <div class="odometer-digits" id="odometer">00000 cm</div>
+        </div>
+      </div>
+
+      <!-- SYS-03: ULTRASONIC RADAR SCOPE -->
+      <div class="panel col-4">
+        <div class="panel-header">
+          <span class="panel-tag">SYS-03 // RADAR &amp; OBSTACLE SCOPE</span>
+          <span class="panel-subtag">OAS SONAR</span>
+        </div>
+
+        <canvas id="radar-canvas" class="scope-canvas" height="130"></canvas>
+
+        <div class="data-row" style="margin-top:6px">
+          <span class="data-label">Front Range Echo</span>
+          <span class="data-val"><span class="hl-amber" id="obs-dist">--</span> cm (<span id="obs-valid" class="hl-green">VALID</span>)</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">Closest Target</span>
+          <span class="data-val"><span class="hl-cyan" id="closest-dist">--</span> cm @ <span class="hl-cyan" id="closest-angle">0&deg;</span></span>
+        </div>
+        <div class="data-row" style="border-bottom:none">
+          <span class="data-label">Est. Target Width</span>
+          <span class="data-val"><span class="hl-green" id="obs-width">--</span> cm</span>
+        </div>
+      </div>
+
+      <!-- SYS-04: IMU ATTITUDE & SAFETY -->
+      <div class="panel col-6">
+        <div class="panel-header">
+          <span class="panel-tag">SYS-04 // INERTIAL GYRO &amp; SAFETY</span>
+          <span class="panel-subtag">LSM303 IMU ATTITUDE</span>
+        </div>
+
+        <div style="display:flex;gap:12px;align-items:center;">
+          <!-- Artificial Horizon Canvas -->
+          <div style="flex:1;">
+            <canvas id="horizon-canvas" class="scope-canvas" height="120"></canvas>
+          </div>
+          <!-- Numeric Pitch/Roll & Hump Readout -->
+          <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
+            <div class="data-row">
+              <span class="data-label">Pitch Angle</span>
+              <span class="data-val hl-cyan" id="pitch-val">+0.0&deg;</span>
+            </div>
+            <div class="data-row">
+              <span class="data-label">Roll Angle</span>
+              <span class="data-val hl-cyan" id="roll-val">+0.0&deg;</span>
+            </div>
+            <div class="data-row">
+              <span class="data-label">Terrain Hump Height</span>
+              <span class="data-val hl-amber"><span id="height-val">0</span> mm</span>
+            </div>
+            <div class="data-row">
+              <span class="data-label">IMU State</span>
+              <span class="data-val hl-green" id="imu-state-val">MONITORING (2)</span>
+            </div>
+            <div class="data-row" style="border-bottom:none">
+              <span class="data-label">IMU Event</span>
+              <span class="data-val hl-amber" id="imu-event-val">NONE (0)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SYS-05: ROLLING OSCILLOSCOPE TELEMETRY STRIP CHART -->
+      <div class="panel col-6">
+        <div class="panel-header">
+          <span class="panel-tag">SYS-05 // LIVE PHOSPHOR STRIP CHART</span>
+          <span class="panel-subtag">30-SEC ROLLING OSCILLOSCOPE</span>
+        </div>
+        <canvas id="strip-canvas" class="scope-canvas" height="120"></canvas>
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);margin-top:4px;">
+          <span><span style="color:var(--phosphor-green);font-weight:bold">&mdash;</span> DISTANCE (cm)</span>
+          <span><span style="color:var(--telemetry-amber);font-weight:bold">&mdash;</span> SONAR RANGE (cm)</span>
+          <span><span style="color:var(--radar-cyan);font-weight:bold">&mdash;</span> SPEED AVG (%)</span>
+        </div>
+      </div>
+
+      <!-- SYS-06: ACTIVE BARCODE MAPPING & MQTT TERMINAL -->
+      <div class="panel col-12">
+        <div class="panel-header">
+          <span class="panel-tag">SYS-06 // MISSION CONTROL UPLINK LOG &amp; BARCODE MATRIX</span>
+          <span class="panel-subtag">DOWNLINK PACKET PAYLOAD</span>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <div class="data-label">Active Barcode Command Matrix</div>
+            <div class="mapping-grid" id="mapping-chips">
+              <div class="map-chip">Waiting for mission mapping...</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="data-label">Latest Ground Station Command Log</div>
+            <div class="terminal-window" id="terminal-log">// LINE ROVER GROUND STATION READY
+// LISTENING ON PORT 8080 & MQTT TELEMETRY CHANNEL...</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- MISSION FOOTER -->
+    <footer>
+      <span>µT-KERNEL 3.0 MULTI-TASKING REAL-TIME OS &bull; PICO W DUAL-CORE RP2040</span>
+      <span>NATIONAL AERONAUTICS AND SPACE ADMINISTRATION &bull; LINE ROVER FLIGHT DECK</span>
+    </footer>
+  </div>
+
+  <!-- ============================================================
+       TELEMETRY ENGINE & DUAL HEARTBEAT LOGIC
+       ============================================================ -->
   <script>
-    async function refresh() {
-      try {
-        const response = await fetch('/api/mqtt', { cache: 'no-store' });
-        const data = await response.json();
-        const state = document.getElementById('state');
-        state.textContent = data.enabled ? (data.connected ? 'Connected' : 'Waiting for broker') : 'MQTT disabled';
-        state.className = data.connected ? 'ok' : 'bad';
-        document.getElementById('count').textContent = data.messages;
-        document.getElementById('topic').textContent = data.topic || '-';
-        document.getElementById('payload').textContent = data.payload || '-';
-      } catch (error) {
-        document.getElementById('state').textContent = 'Dashboard unavailable';
+    // -----------------------------------------------------------
+    // BACKEND ENUM TABLES (Accurately synchronized with C source)
+    // -----------------------------------------------------------
+    const MODES = [
+      'MODE_BARCODE_SCANNING',         // 0
+      'MODE_WIFI_SEND_COMMS',          // 1
+      'MODE_LINE_FOLLOWING',           // 2
+      'MODE_GOING_OVER_HUMP',          // 3 (Synchronized with Navigator_task.h)
+      'MODE_DECISION_MAKING_ADVANCE',  // 4
+      'MODE_DECISION_MAKING_TURN',     // 5
+      'MODE_WALL_HUGGING',             // 6
+      'MODE_REENTRY_ADVANCE',          // 7
+      'MODE_REENTRY_PIVOT',            // 8
+      'MODE_OBSTACLE_ASSESS',          // 9
+      'MODE_SAFE_STOP'                 // 10
+    ];
+
+    const IR_STATES = ['W_W', 'W_B', 'B_W', 'B_B', 'NULL'];
+
+    const IMU_STATES = ['INIT', 'CALIBRATING', 'MONITORING', 'TILT_WARN', 'HUMP_INTEG', 'SHOCK'];
+
+    const IMU_EVENTS = ['NONE', 'NO_HUMP', 'HUMP_DETECTED', 'TILT_WARNING', 'SHOCK_DETECTED'];
+
+    const BYPASS_PHASES = [
+      'IDLE', 'TURN_OUT', 'CHECK_OUT', 'SHIFT_OUT', 'TURN_PARALLEL',
+      'CHECK_SIDE', 'CHECK_FORWARD', 'ADVANCE', 'CHECK_CLEAR', 'CLEAR_CORNER',
+      'TURN_IN', 'CHECK_RETURN', 'FIND_LINE', 'LINE_FOUND', 'TURN_ALIGN',
+      'VERIFY_LINE', 'COMPLETE', 'ABORT'
+    ];
+
+    // State Variables for Strip Chart & Heartbeats
+    const chartHistory = {
+      maxPoints: 30,
+      dist: [],
+      sonar: [],
+      speed: []
+    };
+
+    let webPulseCount = 0;
+    let lastWebSuccessTime = 0;
+    let lastMqttMsgCount = -1;
+    let radarSweepAngle = 0;
+
+    // Helper: update element text safely
+    function setTxt(id, val) {
+      const el = document.getElementById(id);
+      if (el && val !== undefined && val !== null) el.textContent = val;
+    }
+
+    // -----------------------------------------------------------
+    // HEARTBEAT 1: DEDICATED WEB SERVER HEARTBEAT
+    // -----------------------------------------------------------
+    async function updateWebHeartbeat(latencyMs, isOk) {
+      const badge = document.getElementById('web-badge');
+      const led = document.getElementById('web-led');
+      const latEl = document.getElementById('web-latency');
+      const pulseEl = document.getElementById('web-pulses');
+      const ageEl = document.getElementById('web-age');
+
+      if (isOk) {
+        webPulseCount++;
+        lastWebSuccessTime = Date.now();
+        badge.className = 'hb-badge status-ok';
+        badge.textContent = 'ONLINE';
+        led.className = 'hb-pulse-led active-web';
+        latEl.textContent = latencyMs + ' ms';
+        pulseEl.textContent = webPulseCount;
+        ageEl.textContent = '0.0s ago';
+      } else {
+        badge.className = 'hb-badge status-err';
+        badge.textContent = 'OFFLINE';
+        led.className = 'hb-pulse-led dead';
+        latEl.textContent = '-- ms';
+        if (lastWebSuccessTime > 0) {
+          const diff = ((Date.now() - lastWebSuccessTime) / 1000).toFixed(1);
+          ageEl.textContent = diff + 's ago';
+        } else {
+          ageEl.textContent = 'NO CONTACT';
+        }
       }
     }
-    refresh();
-    setInterval(refresh, 1000);
+
+    // -----------------------------------------------------------
+    // HEARTBEAT 2: DEDICATED MQTT BROKER HEARTBEAT
+    // -----------------------------------------------------------
+    function updateMqttHeartbeat(d) {
+      const badge = document.getElementById('mqtt-badge');
+      const led = document.getElementById('mqtt-led');
+      const msgsEl = document.getElementById('mqtt-msgs');
+      const errEl = document.getElementById('mqtt-err');
+      const topEl = document.getElementById('mqtt-top');
+
+      msgsEl.textContent = d.messages !== undefined ? d.messages : 0;
+      errEl.textContent = d.error !== undefined ? d.error : 0;
+      topEl.textContent = d.topic || 'none';
+
+      if (d.connected) {
+        badge.className = 'hb-badge status-ok';
+        badge.textContent = 'CONNECTED';
+        led.className = 'hb-pulse-led active-mqtt';
+      } else if (d.enabled) {
+        badge.className = 'hb-badge status-warn';
+        badge.textContent = 'SEARCHING';
+        led.className = 'hb-pulse-led dead';
+      } else {
+        badge.className = 'hb-badge status-err';
+        badge.textContent = 'DISABLED';
+        led.className = 'hb-pulse-led dead';
+      }
+
+      // If new MQTT message arrived, log to terminal
+      if (d.messages > lastMqttMsgCount) {
+        if (lastMqttMsgCount !== -1 && d.payload) {
+          const term = document.getElementById('terminal-log');
+          const time = new Date().toLocaleTimeString();
+          term.textContent = `[${time}] RX [${d.topic || 'cmd'}]: ${d.payload}\n` + term.textContent;
+        }
+        lastMqttMsgCount = d.messages;
+      }
+    }
+
+    // -----------------------------------------------------------
+    // RENDER: ANALOG RADAR / OAS SCOPE
+    // -----------------------------------------------------------
+    function drawRadar(closestCm, closestDeg, frontDistCm, isValid) {
+      const canvas = document.getElementById('radar-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.clientWidth;
+      const h = canvas.height = canvas.clientHeight;
+
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w / 2;
+      const cy = h - 10;
+      const maxRadius = Math.min(w / 2 - 14, h - 20);
+
+      // Radar rings
+      ctx.strokeStyle = 'rgba(0, 229, 255, 0.2)';
+      ctx.lineWidth = 1;
+      for (let r = 1; r <= 3; r++) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, (maxRadius / 3) * r, Math.PI, 0);
+        ctx.stroke();
+      }
+
+      // Range labels
+      ctx.fillStyle = 'rgba(0, 229, 255, 0.5)';
+      ctx.font = '9px monospace';
+      ctx.fillText('30cm', cx + maxRadius * 0.33 + 2, cy - 2);
+      ctx.fillText('60cm', cx + maxRadius * 0.66 + 2, cy - 2);
+      ctx.fillText('100cm', cx + maxRadius - 25, cy - 2);
+
+      // Sweep Ray
+      radarSweepAngle = (radarSweepAngle + 0.08) % Math.PI;
+      const sweepX = cx + Math.cos(Math.PI + radarSweepAngle) * maxRadius;
+      const sweepY = cy + Math.sin(Math.PI + radarSweepAngle) * maxRadius;
+      const grad = ctx.createLinearGradient(cx, cy, sweepX, sweepY);
+      grad.addColorStop(0, 'rgba(0, 255, 102, 0.0)');
+      grad.addColorStop(1, 'rgba(0, 255, 102, 0.4)');
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(sweepX, sweepY);
+      ctx.stroke();
+
+      // Front range cone
+      if (isValid && frontDistCm > 0 && frontDistCm <= 120) {
+        const frontR = Math.min(maxRadius, (frontDistCm / 100) * maxRadius);
+        ctx.strokeStyle = 'rgba(255, 176, 0, 0.6)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, frontR, Math.PI * 1.35, Math.PI * 1.65);
+        ctx.stroke();
+      }
+
+      // Closest Obstacle Blip
+      if (closestCm > 0 && closestCm <= 120) {
+        // Convert closestDeg (-90 to +90, positive is left) to radar angle
+        // In screen coordinates: straight ahead is -90 deg (3*pi/2). Left is towards PI, Right towards 0.
+        const rad = ((90 + closestDeg) * Math.PI) / 180;
+        const distR = Math.min(maxRadius, (closestCm / 100) * maxRadius);
+        const bx = cx - Math.cos(rad) * distR;
+        const by = cy - Math.sin(rad) * distR;
+
+        // Blip glow
+        ctx.fillStyle = '#ff3344';
+        ctx.beginPath();
+        ctx.arc(bx, by, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#ffb000';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(bx, by, 7, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    // -----------------------------------------------------------
+    // RENDER: ARTIFICIAL HORIZON / ATTITUDE INDICATOR
+    // -----------------------------------------------------------
+    function drawHorizon(pitchDeg, rollDeg) {
+      const canvas = document.getElementById('horizon-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.clientWidth;
+      const h = canvas.height = canvas.clientHeight;
+
+      ctx.clearRect(0, 0, w, h);
+      const cx = w / 2;
+      const cy = h / 2;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      // Roll rotation (negated for aircraft/attitude display)
+      ctx.rotate((-rollDeg * Math.PI) / 180);
+
+      // Pitch vertical shift (clamped)
+      const pitchOffset = Math.max(-40, Math.min(40, pitchDeg * 2));
+
+      // Sky and Ground halves
+      ctx.fillStyle = '#081e36'; // Space Sky
+      ctx.fillRect(-w, -h + pitchOffset, w * 2, h);
+      ctx.fillStyle = '#2b1b0b'; // Surface Terrain
+      ctx.fillRect(-w, pitchOffset, w * 2, h);
+
+      // Horizon line
+      ctx.strokeStyle = '#00e5ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-w, pitchOffset);
+      ctx.lineTo(w, pitchOffset);
+      ctx.stroke();
+
+      // Pitch ladder rungs
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.lineWidth = 1;
+      [-20, -10, 10, 20].forEach(deg => {
+        const y = pitchOffset - deg * 2;
+        ctx.beginPath();
+        ctx.moveTo(-16, y);
+        ctx.lineTo(16, y);
+        ctx.stroke();
+      });
+
+      ctx.restore();
+
+      // Fixed Crosshairs
+      ctx.strokeStyle = '#00ff66';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 24, cy); ctx.lineTo(cx - 8, cy);
+      ctx.moveTo(cx + 8, cy); ctx.lineTo(cx + 24, cy);
+      ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
+      ctx.stroke();
+    }
+
+    // -----------------------------------------------------------
+    // RENDER: ROLLING OSCILLOSCOPE STRIP CHART
+    // -----------------------------------------------------------
+    function drawStripChart() {
+      const canvas = document.getElementById('strip-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.clientWidth;
+      const h = canvas.height = canvas.clientHeight;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // Grid lines
+      ctx.strokeStyle = 'rgba(34, 50, 68, 0.5)';
+      ctx.lineWidth = 1;
+      for (let y = 20; y < h; y += 25) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+
+      function drawTrace(arr, maxVal, color) {
+        if (arr.length < 2) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const step = w / (chartHistory.maxPoints - 1);
+        arr.forEach((val, idx) => {
+          const clamped = Math.max(0, Math.min(maxVal, val));
+          const y = h - 6 - (clamped / maxVal) * (h - 16);
+          const x = idx * step;
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      // Draw traces
+      drawTrace(chartHistory.dist, 300, '#00ff66');    // Distance up to 300cm
+      drawTrace(chartHistory.sonar, 100, '#ffb000');   // Sonar range up to 100cm
+      drawTrace(chartHistory.speed, 100, '#00e5ff');   // Speed %
+    }
+
+    // -----------------------------------------------------------
+    // MAIN REFRESH TICKER: FETCH TELEMETRY & MQTT DATA
+    // -----------------------------------------------------------
+    async function refreshTelemetry() {
+      const fetchStart = performance.now();
+
+      try {
+        // 1. Fetch MQTT Status
+        const mqttResp = await fetch('/api/mqtt', { cache: 'no-store' });
+        const mqttData = await mqttResp.json();
+        updateMqttHeartbeat(mqttData);
+
+        // Render Barcode Mapping
+        const m = mqttData.mapping || {};
+        const chipContainer = document.getElementById('mapping-chips');
+        const keys = Object.keys(m);
+        if (keys.length > 0) {
+          chipContainer.innerHTML = keys.sort().map(k =>
+            `<div class="map-chip">CMD <span>'${k}'</span> &rarr; ${m[k]}</div>`
+          ).join('');
+        } else {
+          chipContainer.innerHTML = '<div class="map-chip">No mapping received yet</div>';
+        }
+
+        // 2. Fetch Robot Telemetry Snapshot
+        const telemResp = await fetch('/api/telemetry', { cache: 'no-store' });
+        const t = await telemResp.json();
+        const latency = Math.round(performance.now() - fetchStart);
+
+        // Update Web Server Heartbeat Status
+        updateWebHeartbeat(latency, true);
+
+        // 3. Update Mission Elapsed Seq
+        setTxt('met-seq', 'SEQ #' + String(t.seq !== undefined ? t.seq : 0).padStart(5, '0'));
+
+        // 4. Update Guidance & Navigation
+        const modeName = MODES[t.mode] || `UNKNOWN_MODE_${t.mode}`;
+        setTxt('mode-text', modeName);
+        setTxt('mode-idx', `#[${String(t.mode).padStart(2, '0')}]`);
+
+        const phaseName = BYPASS_PHASES[t.phase] ? `BYPASS_${BYPASS_PHASES[t.phase]}` : `PHASE_${t.phase}`;
+        setTxt('phase-text', `${phaseName} (#${t.phase})`);
+
+        const bc = (t.barcode && t.barcode.trim()) ? `'${t.barcode.trim()}'` : 'NONE';
+        setTxt('barcode-val', bc);
+        setTxt('inst-idx', t.inst_idx || 0);
+
+        // IR Ground Sensors
+        const irName = IR_STATES[t.ir] || `IR_${t.ir}`;
+        setTxt('ir-state-raw', `${irName} (${t.ir})`);
+
+        const irLightL = document.getElementById('ir-light-l');
+        const irLightR = document.getElementById('ir-light-r');
+        const irLabelL = document.getElementById('ir-label-l');
+        const irLabelR = document.getElementById('ir-label-r');
+
+        // IR State: 0: W_W, 1: W_B, 2: B_W, 3: B_B
+        const isLeftBlack = (t.ir === 2 || t.ir === 3);
+        const isRightBlack = (t.ir === 1 || t.ir === 3);
+
+        irLightL.className = 'ir-light ' + (isLeftBlack ? 'detect-black' : 'detect-white');
+        irLightR.className = 'ir-light ' + (isRightBlack ? 'detect-black' : 'detect-white');
+        irLabelL.textContent = isLeftBlack ? 'LEFT: BLACK' : 'LEFT: WHITE';
+        irLabelR.textContent = isRightBlack ? 'RIGHT: BLACK' : 'RIGHT: WHITE';
+
+        // 5. Update Propulsion & Motors
+        setTxt('speed-l-val', (t.speed_l || 0) + ' %');
+        setTxt('speed-r-val', (t.speed_r || 0) + ' %');
+        setTxt('enc-l', t.enc_l || 0);
+        setTxt('enc-r', t.enc_r || 0);
+
+        const dist = t.dist_cm !== null && t.dist_cm !== undefined ? t.dist_cm : 0;
+        setTxt('odometer', String(Math.abs(dist)).padStart(5, '0') + ' cm');
+
+        // Motor Thrust Bars (-100% to +100%)
+        const fillL = document.getElementById('motor-l-fill');
+        const fillR = document.getElementById('motor-r-fill');
+        const spdL = t.speed_l || 0;
+        const spdR = t.speed_r || 0;
+
+        if (spdL >= 0) {
+          fillL.className = 'motor-fill fwd';
+          fillL.style.left = '50%';
+          fillL.style.width = (Math.min(100, spdL) / 2) + '%';
+        } else {
+          fillL.className = 'motor-fill rev';
+          const w = (Math.min(100, -spdL) / 2);
+          fillL.style.left = (50 - w) + '%';
+          fillL.style.width = w + '%';
+        }
+
+        if (spdR >= 0) {
+          fillR.className = 'motor-fill fwd';
+          fillR.style.left = '50%';
+          fillR.style.width = (Math.min(100, spdR) / 2) + '%';
+        } else {
+          fillR.className = 'motor-fill rev';
+          const w = (Math.min(100, -spdR) / 2);
+          fillR.style.left = (50 - w) + '%';
+          fillR.style.width = w + '%';
+        }
+
+        // 6. Update Ultrasonic & Radar
+        const obsDist = t.obs_dist || 0;
+        const isValidEcho = Boolean(t.obs_dist_valid);
+        setTxt('obs-dist', obsDist);
+        setTxt('obs-valid', isValidEcho ? 'VALID' : 'INVALID');
+        document.getElementById('obs-valid').className = isValidEcho ? 'hl-green' : 'hl-red';
+        setTxt('closest-dist', t.closest_cm || 0);
+        setTxt('closest-angle', (t.closest_deg || 0) + '\u00B0');
+        setTxt('obs-width', t.obs_width || 0);
+
+        drawRadar(t.closest_cm || 0, t.closest_deg || 0, obsDist, isValidEcho);
+
+        // 7. Update IMU Attitude & Safety
+        const pitch = t.pitch !== null ? t.pitch : 0.0;
+        const roll = t.roll !== null ? t.roll : 0.0;
+        setTxt('pitch-val', (pitch >= 0 ? '+' : '') + pitch.toFixed(1) + '\u00B0');
+        setTxt('roll-val', (roll >= 0 ? '+' : '') + roll.toFixed(1) + '\u00B0');
+        setTxt('height-val', t.height_mm !== null ? t.height_mm.toFixed(0) : 0);
+
+        const imuStName = IMU_STATES[t.imu_state] || `STATE_${t.imu_state}`;
+        setTxt('imu-state-val', `${imuStName} (${t.imu_state})`);
+
+        const imuEvtName = IMU_EVENTS[t.imu_event] || `EVT_${t.imu_event}`;
+        setTxt('imu-event-val', `${imuEvtName} (${t.imu_event})`);
+
+        drawHorizon(pitch, roll);
+
+        // 8. Push to Rolling Strip Chart History
+        chartHistory.dist.push(dist);
+        chartHistory.sonar.push(isValidEcho ? obsDist : 0);
+        chartHistory.speed.push(Math.abs(spdL + spdR) / 2);
+
+        if (chartHistory.dist.length > chartHistory.maxPoints) {
+          chartHistory.dist.shift();
+          chartHistory.sonar.shift();
+          chartHistory.speed.shift();
+        }
+        drawStripChart();
+
+      } catch (err) {
+        // Web Server unreachable
+        updateWebHeartbeat(0, false);
+      }
+    }
+
+    // Refresh immediately and poll every 1000ms
+    refreshTelemetry();
+    setInterval(refreshTelemetry, 1000);
   </script>
 </body>
 </html>

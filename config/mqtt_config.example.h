@@ -14,6 +14,7 @@
 #define MQTT_SUBSCRIBE_TOPIC  "robot/command"
 #define MQTT_MOVEMENT_CONFIG_TOPIC "robot/config/movement"
 #define MQTT_PUBLISH_TOPIC    "robot/telemetry"
+#define MQTT_STATUS_TOPIC     "robot/status"
 #define MQTT_USERNAME         ""
 #define MQTT_PASSWORD         ""
 #define MQTT_QOS              0
