@@ -720,7 +720,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         bypass_begin(&bypass, &mot_cmd,
                                                      bypass.clear_after_turn ? BYPASS_REAR_CLEAR : BYPASS_ADVANCE,
                                                      BYPASS_API_POWER, -BYPASS_API_POWER,
-                                                     bypass.clear_after_turn ? BYPASS_TURN_CLEAR_MM : BYPASS_FORWARD_STEP_MM);
+                                                     bypass.clear_after_turn ? BYPASS_REAR_CLEAR_MM : BYPASS_FORWARD_STEP_MM);
                                         break;
                                     case BYPASS_REAR_CLEAR:
                                         bypass.forward_mm += bypass.leg_mm;
@@ -960,7 +960,7 @@ LOCAL UW bypass_side_offset(const OBSTACLE_PROFILE *first, const OBSTACLE_PROFIL
         }
     }
     if (observed_x > edge_cm) edge_cm = observed_x;
-    return edge_cm * 10U + BYPASS_TURN_CLEAR_MM;
+    return edge_cm * 10U + BYPASS_WIDTH_CLEAR_MM;
 }
 
 LOCAL void bypass_plan_width(BYPASS_CONTEXT *bypass, const OBSTACLE_PROFILE *second)
@@ -1001,19 +1001,19 @@ LOCAL MOTOR_COMMAND bypass_pivot_command(INT direction)
 
 #ifndef NDEBUG
 #define BYPASS_CHECK(condition) do { if (!(condition)) return FALSE; } while (0)
-// Debug builds check side choice and mirrored motor signs without moving the car.
+// Debug builds check edge offsets with the width margin and mirrored motor signs.
 LOCAL BOOL bypass_self_check(void)
 {
-    OBSTACLE_PROFILE first = {.front_cm = 30U}, second = {.front_cm = 32U};
-    BOOL known;
-    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 0U && !known);
-    first.ray_status[4] = second.ray_status[4] = SONAR_NO_ECHO;
-    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 260U && known);
-    first.ray_status[6] = second.ray_status[6] = SONAR_OK;
-    first.ray_cm[6] = 43U; second.ray_cm[6] = 45U;
-    BYPASS_CHECK(bypass_side_offset(&first, &second, 1, 30U, &known) == 0U && !known);
     BYPASS_CHECK(bypass_pivot_command(0).raw == 0U);
     for (INT side = -1; side <= 1; side += 2) {
+        OBSTACLE_PROFILE first = {.front_cm = 30U}, second = {.front_cm = 32U};
+        BOOL known;
+        BYPASS_CHECK(bypass_side_offset(&first, &second, side, 30U, &known) == 0U && !known);
+        first.ray_status[3 + side] = second.ray_status[3 + side] = SONAR_NO_ECHO;
+        BYPASS_CHECK(bypass_side_offset(&first, &second, side, 30U, &known) == 90U + BYPASS_WIDTH_CLEAR_MM && known);
+        first.ray_status[3 + side * 3] = second.ray_status[3 + side * 3] = SONAR_OK;
+        first.ray_cm[3 + side * 3] = 43U; second.ray_cm[3 + side * 3] = 45U;
+        BYPASS_CHECK(bypass_side_offset(&first, &second, side, 30U, &known) == 0U && !known);
         MOTOR_COMMAND pivot = bypass_pivot_command(side);
         BYPASS_CHECK(pivot.target_speed_left == -side * BYPASS_API_POWER);
         BYPASS_CHECK(pivot.target_speed_right == pivot.target_speed_left);
@@ -1250,7 +1250,7 @@ LOCAL void bypass_probe_result(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
                 bypass_track_side(bypass, command);
                 bypass_follow_next(bypass, command);
             } else {
-                bypass->extend_mm = clear ? BYPASS_TURN_CLEAR_MM : BYPASS_WIDTH_STEP_MM;
+                bypass->extend_mm = clear ? BYPASS_WIDTH_CLEAR_MM : BYPASS_WIDTH_STEP_MM;
                 bypass->width_needs_margin = !clear;
                 bypass_track_side(bypass, command);
                 bypass_pivot(bypass, command, BYPASS_WIDTH_TURN_OUT, bypass->side);
