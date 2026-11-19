@@ -304,6 +304,7 @@ typedef struct {
     // Sensor Specific: Ultrasonic
     uint32_t obstacle_distance_cm; // Direct front obstacle distance
     uint8_t  obstacle_distance_valid; // 1 = valid reading, 0 = no valid echo
+    uint8_t  obstacle_status;       // SONAR_STATUS enum
     uint32_t closest_cm;        // Closest obstacle distance from scan
     int32_t  closest_angle_deg; // Closest obstacle angle
     uint32_t estimated_width_cm;// Obstacle estimated width

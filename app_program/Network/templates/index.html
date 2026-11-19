@@ -793,16 +793,36 @@
 
     const IR_STATES = ['W_W', 'W_B', 'B_W', 'B_B', 'NULL'];
 
-    const IMU_STATES = ['INIT', 'CALIBRATING', 'MONITORING', 'TILT_WARN', 'HUMP_INTEG', 'SHOCK'];
+    const IMU_STATES = ['INIT', 'CALIBRATING', 'MONITORING', 'LIFTED_OVERTURNED'];
 
-    const IMU_EVENTS = ['NONE', 'NO_HUMP', 'HUMP_DETECTED', 'TILT_WARNING', 'SHOCK_DETECTED'];
+    const IMU_EVENTS = ['NONE', 'NO_HUMP', 'HUMP_DETECTED', 'LIFTED_OVERTURNED'];
 
-    const BYPASS_PHASES = [
-      'IDLE', 'TURN_OUT', 'CHECK_OUT', 'SHIFT_OUT', 'TURN_PARALLEL',
-      'CHECK_SIDE', 'CHECK_FORWARD', 'ADVANCE', 'CHECK_CLEAR', 'CLEAR_CORNER',
-      'TURN_IN', 'CHECK_RETURN', 'FIND_LINE', 'LINE_FOUND', 'TURN_ALIGN',
-      'VERIFY_LINE', 'COMPLETE', 'ABORT'
+    const SONAR_STATUSES = [
+      'INVALID', 'OK', 'NO_ECHO', 'TOO_CLOSE', 'SENSOR_FAULT', 'SERVO_FAULT', 'UNSTABLE'
     ];
+
+    const BYPASS_PHASES = {
+      0: 'IDLE',
+      1: 'TURN_OUT',
+      3: 'SHIFT_OUT',
+      4: 'TURN_PARALLEL',
+      7: 'ADVANCE',
+      10: 'TURN_IN',
+      12: 'FIND_LINE',
+      13: 'LINE_FOUND',
+      17: 'ABORT',
+      18: 'WAIT_RELEASE',
+      19: 'SCAN_BACK',
+      20: 'SCAN_SECOND',
+      21: 'SCAN_RETURN',
+      22: 'WIDTH_CHECK',
+      23: 'WIDTH_TURN_OUT',
+      24: 'WIDTH_EXTEND',
+      25: 'WIDTH_ALIGN',
+      26: 'DEPTH_TURN_BACK',
+      27: 'RETURN_CHECK',
+      28: 'REAR_CLEAR'
+    };
 
     // State Variables for Strip Chart & Heartbeats
     const chartHistory = {
@@ -1179,9 +1199,11 @@
         // 6. Update Ultrasonic & Radar
         const obsDist = t.obs_dist || 0;
         const isValidEcho = Boolean(t.obs_dist_valid);
+        const sonarStatus = SONAR_STATUSES[t.obs_status] || `STATUS_${t.obs_status}`;
         setTxt('obs-dist', obsDist);
-        setTxt('obs-valid', isValidEcho ? 'VALID' : 'INVALID');
-        document.getElementById('obs-valid').className = isValidEcho ? 'hl-green' : 'hl-red';
+        setTxt('obs-valid', `${sonarStatus} (${t.obs_status ?? 0})`);
+        document.getElementById('obs-valid').className =
+          isValidEcho ? 'hl-green' : (sonarStatus === 'OK' ? 'hl-red' : 'hl-amber');
         setTxt('closest-dist', t.closest_cm || 0);
         setTxt('closest-angle', (t.closest_deg || 0) + '\u00B0');
         setTxt('obs-width', t.obs_width || 0);
