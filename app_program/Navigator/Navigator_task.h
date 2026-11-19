@@ -260,6 +260,7 @@ typedef enum {
 typedef struct {
     UW distance_cm;
     BOOL valid;
+    SONAR_STATUS status;
 } SONAR_DISTANCE_MSG;
 
 typedef struct {

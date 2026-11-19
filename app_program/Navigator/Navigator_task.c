@@ -91,6 +91,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT curr_speed_right = 0;
     UW live_sonar_distance_cm = 0;
     BOOL live_sonar_distance_valid = FALSE;
+    SONAR_STATUS live_sonar_status = SONAR_INVALID;
     W turn_start_ticks = 0;
 
     // 2s grace period to place car on track, then flush any stale startup sensor messages
@@ -139,6 +140,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                 tm_printf((UB *)"[nav] STOP: robot lifted/overturned\n");
             } else if (!bypass_active && n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
+                live_sonar_status = n_msg.data.sonar_distance.status;
                 
                 if (live_sonar_distance_valid) {
                     live_sonar_distance_cm = n_msg.data.sonar_distance.distance_cm;
@@ -348,6 +350,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 scan_requested = FALSE;
                                 mot_cmd = (MOTOR_COMMAND){0};
                                 live_sonar_distance_valid = FALSE;
+                                live_sonar_distance_cm = 0U;
+                                live_sonar_status = SONAR_INVALID;
                                 motor_stop_ack_requested = TRUE;
                                 m_mode = MODE_OBSTACLE_ASSESS;
                                 reentry = 1;
@@ -598,6 +602,13 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 last_closest_cm = p->closest_cm;
                                 last_closest_angle_deg = p->closest_angle_deg;
                                 last_estimated_width_cm = p->width_valid ? p->estimated_width_cm : 0U;
+                                live_sonar_status = p->ray_status[3];
+                                live_sonar_distance_valid =
+                                    live_sonar_status == SONAR_OK &&
+                                    p->front_cm >= 2U &&
+                                    p->front_cm <= 400U;
+                                live_sonar_distance_cm =
+                                    live_sonar_distance_valid ? p->front_cm : 0U;
 
                                 switch (bypass.phase) {
                                     case BYPASS_IDLE:
@@ -724,6 +735,16 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
 
                             case MSG_SONAR_PROBED:
+                                live_sonar_status = n_msg.data.sonar_probe.status;
+                                live_sonar_distance_valid =
+                                    n_msg.data.sonar_probe.valid &&
+                                    n_msg.data.sonar_probe.status == SONAR_OK &&
+                                    n_msg.data.sonar_probe.distance_cm >= 2U &&
+                                    n_msg.data.sonar_probe.distance_cm <= 400U;
+                                live_sonar_distance_cm =
+                                    live_sonar_distance_valid
+                                        ? n_msg.data.sonar_probe.distance_cm
+                                        : 0U;
                                 bypass_probe_result(&bypass, &mot_cmd, &n_msg.data.sonar_probe);
                                 break;
 
@@ -854,8 +875,11 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             telemetry_snapshot.estimated_width_cm = last_estimated_width_cm;
             telemetry_snapshot.seq++;
             telemetry_snapshot.obstacle_distance_valid = live_sonar_distance_valid;
+            telemetry_snapshot.obstacle_status = (uint8_t)live_sonar_status;
             if (live_sonar_distance_valid) {
                 telemetry_snapshot.obstacle_distance_cm = live_sonar_distance_cm;
+            } else if (bypass_active) {
+                telemetry_snapshot.obstacle_distance_cm = 0U;
             } else {
                 telemetry_snapshot.obstacle_distance_cm = last_obstacle_dist_cm;
             }

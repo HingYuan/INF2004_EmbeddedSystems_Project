@@ -297,6 +297,9 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
 
     center_ok = valid[3];
     profile->front_cm = valid[3] ? cm[3] : 0U;
+    telemetry_snapshot.obstacle_distance_valid = center_ok;
+    telemetry_snapshot.obstacle_status = (uint8_t)status[3];
+    telemetry_snapshot.obstacle_distance_cm = center_ok ? cm[3] : 0U;
     // Compare the actual outer rays when choosing a side; missing edges must not leave side=0.
     profile->left_scan_cm = cm[6];
     profile->right_scan_cm = cm[0];
@@ -460,11 +463,14 @@ LOCAL void send_sonar_distance(UW distance_cm, BOOL valid, SONAR_STATUS status)
     sonar_msg.type = MSG_SONAR_DISTANCE;
     sonar_msg.data.sonar_distance.distance_cm = distance_cm;
     sonar_msg.data.sonar_distance.valid = valid;
+    sonar_msg.data.sonar_distance.status = status;
 
     telemetry_snapshot.obstacle_distance_valid = valid;
     telemetry_snapshot.obstacle_status = (uint8_t)status;
     if (valid) {
         telemetry_snapshot.obstacle_distance_cm = distance_cm;
+    } else {
+        telemetry_snapshot.obstacle_distance_cm = 0U;
     }
 
     // Drop this telemetry update if the message buffer is full.
@@ -509,6 +515,10 @@ LOCAL BOOL handle_probe(UINT flags)
     message.data.sonar_probe.valid = status == SONAR_OK;
     message.data.sonar_probe.status = status;
     message.data.sonar_probe.sampled_at_us = time_us();
+    telemetry_snapshot.obstacle_distance_valid = message.data.sonar_probe.valid;
+    telemetry_snapshot.obstacle_status = (uint8_t)status;
+    telemetry_snapshot.obstacle_distance_cm =
+        message.data.sonar_probe.valid ? cm : 0U;
     hardware_fault(status);
 
     tm_printf(
