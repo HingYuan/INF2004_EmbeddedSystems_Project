@@ -74,6 +74,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     // Line following
     IR_STATE prev_ir_state = STATE_NULL;
     UH turning_rampup_count = 0;
+    BOOL reentry = 0;
+    DIRECTION reentry_dir = DIR_FRONT;
 
     // Barcode decoding
     B instruction_idx = 0;                                                          // Track instructions for navigating intersections
@@ -267,9 +269,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_IR_UPDATE: {
                                 IR_STATE curr_state = n_msg.data.ir_state;
 
-                                    // tm_printf("Current state: %d VS previous state: %d\n", curr_state, prev_ir_state);
-      
-                                    if (curr_state != prev_ir_state) {
+                                    if (curr_state != prev_ir_state || reentry) {
 
                                         if (curr_state == STATE_W_W) {
                                             turning_rampup_count = 0;
@@ -367,6 +367,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 live_sonar_distance_valid = FALSE;
                                 motor_stop_ack_requested = TRUE;
                                 m_mode = MODE_OBSTACLE_ASSESS;
+                                reentry = 1;
 
                                 tm_printf((UB *)"[nav] Obstacle detected\n");
 
@@ -488,6 +489,10 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 DIRECTION curr_decision = instructions[instruction_idx];
                                 // DIRECTION curr_decision = instructions_fake[instruction_idx];
+                                if (reentry) {
+                                    curr_decision = reentry_dir;
+                                    reentry = 0;
+                                }
 
                                 if (prev_ir_state == STATE_B_B) {       // should still be B_B after advance
                                     switch (curr_decision) {
@@ -752,7 +757,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                             scan_requested = FALSE;
                                             prev_ir_state = STATE_NULL;
                                             turning_rampup_count = 0;
-                                            m_mode = MODE_REENTRY_ADVANCE;
+                                            m_mode = MODE_LINE_FOLLOWING;
+                                            
+                                            if (bypass.side == 1) {
+                                                reentry_dir = DIR_LEFT;
+                                            } else if (bypass.side == 0) {
+                                                reentry_dir = DIR_RIGHT;
+                                            }
+
                                             tm_printf((UB *)"[bypass] Line found; reentry side=%d\n", bypass.side);
                                         } else if (bypass.phase != BYPASS_ABORT) {
                                             bypass_abort(&bypass, &mot_cmd, "forward sonar resume");
