@@ -144,7 +144,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                     tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
                 }
-            } else if (n_msg.type == MSG_IMU_UPDATE &&
+            } else if (!bypass_active && n_msg.type == MSG_IMU_UPDATE &&
                        n_msg.data.imu_telemetry_msg.event == IMU_MSG_LIFTED_OVERTURNED) {
                 motor_estop = TRUE;
                 m_mode = MODE_SAFE_STOP;
@@ -152,7 +152,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                 mot_cmd.target_speed_right = STOP_SPEED;
                 tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_POL);
                 tm_printf((UB *)"[nav] STOP: robot lifted/overturned\n");
-            } else if (n_msg.type == MSG_SONAR_DISTANCE) {
+            } else if (!bypass_active && n_msg.type == MSG_SONAR_DISTANCE) {
                 live_sonar_distance_valid = n_msg.data.sonar_distance.valid;
                 
                 if (live_sonar_distance_valid) {
@@ -656,7 +656,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 }
                                 break;
                             case MSG_IMU_UPDATE:
-                                if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_SHOCK_DETECTED)
+                                if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_HUMP_DETECTED)
                                     bypass_abort(&bypass, &mot_cmd, "IMU shock");
                                 break;
                             default:
@@ -787,7 +787,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 break;
                             }
                             case MSG_IMU_UPDATE:
-                                if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_SHOCK_DETECTED)
+                                if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_HUMP_DETECTED)
                                     bypass_abort(&bypass, &mot_cmd, "IMU shock");
                                 break;
                             default:
@@ -1027,7 +1027,7 @@ LOCAL BOOL bypass_self_check(void)
 // These faults belong to the motor, IMU or sonar tasks; bypass must not release them.
 LOCAL BOOL bypass_hardware_fault(void)
 {
-    return sonar_fault || telemetry_snapshot.imu_event == IMU_MSG_SHOCK_DETECTED ||
+    return sonar_fault || telemetry_snapshot.imu_event == IMU_MSG_HUMP_DETECTED ||
            (motor_fault_word & (FAULT_BIT_STALL | FAULT_BIT_ENCODER)) != 0U;
 }
 
