@@ -453,7 +453,7 @@ LOCAL BOOL send_to_navigator(
 }
 
 // Send live front distance without blocking the sonar task
-LOCAL void send_sonar_distance(UW distance_cm, BOOL valid)
+LOCAL void send_sonar_distance(UW distance_cm, BOOL valid, SONAR_STATUS status)
 {
     NAVIGATOR_MESSAGE sonar_msg = {0};
 
@@ -462,6 +462,7 @@ LOCAL void send_sonar_distance(UW distance_cm, BOOL valid)
     sonar_msg.data.sonar_distance.valid = valid;
 
     telemetry_snapshot.obstacle_distance_valid = valid;
+    telemetry_snapshot.obstacle_status = (uint8_t)status;
     if (valid) {
         telemetry_snapshot.obstacle_distance_cm = distance_cm;
     }
@@ -574,7 +575,7 @@ EXPORT void ultrasonic_task(INT stacd, void *exinf)
             front_cm = 1U;
 
         // Send live distance to Navigator on every measurement
-        send_sonar_distance(front_cm, valid);
+        send_sonar_distance(front_cm, valid, status);
 
         // Preserve existing obstacle confirmation logic
         if (valid && front_cm <= OBSTACLE_TRIGGER_CM)

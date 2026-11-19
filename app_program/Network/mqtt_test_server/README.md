@@ -90,6 +90,6 @@ The default firmware topics are defined in `config/mqtt_config.h`:
 
 The web dashboard exposes firmware telemetry at `/api/telemetry` and active
 barcode mappings at `/api/mqtt`. Firmware ultrasonic telemetry includes
-`obs_dist`, `obs_dist_valid`, `closest_cm`, `closest_deg`, and `obs_width`.
+`obs_dist`, `obs_dist_valid`, `obs_status`, `closest_cm`, `closest_deg`, and `obs_width`.
 
 The Pico W must be able to reach the PC's hotspot or LAN IPv4 address.
