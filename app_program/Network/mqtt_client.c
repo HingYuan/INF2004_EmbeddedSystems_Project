@@ -438,6 +438,8 @@ SZ telemetry_json(char *output, SZ capacity)
     json_number(output, capacity, &length, telemetry_snapshot.obstacle_distance_cm);
     json_text(output, capacity, &length, ",\"obs_dist_valid\":");
     json_number(output, capacity, &length, telemetry_snapshot.obstacle_distance_valid);
+    json_text(output, capacity, &length, ",\"obs_status\":");
+    json_number(output, capacity, &length, (uint32_t)telemetry_snapshot.obstacle_status);
     json_text(output, capacity, &length, ",\"closest_cm\":");
     json_number(output, capacity, &length, telemetry_snapshot.closest_cm);
     json_text(output, capacity, &length, ",\"closest_deg\":");
