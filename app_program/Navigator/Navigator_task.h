@@ -145,7 +145,7 @@ typedef enum {
 #define BYPASS_MAX_FORWARD_MM      3000U
 #define BYPASS_PIVOT_FROM_FRONT_CM   10U // Front sensor/body edge to the pivot between the driven wheels.
 #define BYPASS_SWEPT_RADIUS_CM       12U // Covers the 12 x 20 cm body while it turns.
-#define BYPASS_WIDTH_CLEAR_MM        90U // Extra sideways room for the pivot after finding the edge.
+#define BYPASS_WIDTH_CLEAR_MM        50U // Extra sideways room for the pivot after finding the edge.
 #define BYPASS_REAR_CLEAR_MM ((BYPASS_SWEPT_RADIUS_CM + WALL_BODY_GAP_CM) * 10U)
 #define BYPASS_TRACK_STALE_MS     1000U // Missing messages are a fault; a no-echo message is still a reply.
 #define BYPASS_RESPONSE_MS        1000U // Wait limit for the initial stop acknowledgement.
