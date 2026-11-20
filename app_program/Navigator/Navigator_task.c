@@ -696,12 +696,20 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         bypass_pivot(&bypass, &mot_cmd, BYPASS_TURN_PARALLEL, -bypass.side);
                                         break;
                                     case BYPASS_TURN_PARALLEL:
-                                    case BYPASS_WIDTH_ALIGN:
                                         bypass_probe(&bypass, &mot_cmd, BYPASS_WIDTH_CHECK);
+                                        break;
+                                    case BYPASS_WIDTH_ALIGN:
+                                        if (bypass.width_clearance_pending) {
+                                            bypass.width_clearance_pending = FALSE;
+                                            bypass_follow_next(&bypass, &mot_cmd);
+                                        } else {
+                                            bypass_probe(&bypass, &mot_cmd, BYPASS_WIDTH_CHECK);
+                                        }
                                         break;
                                     case BYPASS_WIDTH_TURN_OUT:
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_WIDTH_EXTEND,
-                                                     BYPASS_API_POWER, -BYPASS_API_POWER, bypass.extend_mm);
+                                                     BYPASS_API_POWER, -BYPASS_API_POWER,
+                                                     bypass.width_clearance_pending ? BYPASS_PIVOT_CLEAR_MM : BYPASS_WIDTH_STEP_MM);
                                         break;
                                     case BYPASS_WIDTH_EXTEND:
                                         bypass.shift_mm += bypass.leg_mm;
@@ -712,19 +720,21 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         bypass_follow_next(&bypass, &mot_cmd);
                                         break;
                                     case BYPASS_TURN_IN:
-                                        bypass_probe(&bypass, &mot_cmd, BYPASS_RETURN_CHECK);
+                                        if (bypass.depth_clearance_pending) {
+                                            bypass.depth_clearance_pending = FALSE;
+                                            bypass.black_count = 0;
+                                            bypass_begin(&bypass, &mot_cmd, BYPASS_FIND_LINE,
+                                                         BYPASS_API_POWER, -BYPASS_API_POWER,
+                                                         bypass.shift_mm + ROBOT_LENGTH_CM * 10U);
+                                        } else {
+                                            bypass_probe(&bypass, &mot_cmd, BYPASS_RETURN_CHECK);
+                                        }
                                         break;
                                     case BYPASS_DEPTH_TURN_BACK:
                                         bypass_track_side(&bypass, &mot_cmd);
-                                        bypass_begin(&bypass, &mot_cmd,
-                                                     bypass.clear_after_turn ? BYPASS_REAR_CLEAR : BYPASS_ADVANCE,
+                                        bypass_begin(&bypass, &mot_cmd, BYPASS_ADVANCE,
                                                      BYPASS_API_POWER, -BYPASS_API_POWER,
-                                                     bypass.clear_after_turn ? BYPASS_REAR_CLEAR_MM : BYPASS_FORWARD_STEP_MM);
-                                        break;
-                                    case BYPASS_REAR_CLEAR:
-                                        bypass.forward_mm += bypass.leg_mm;
-                                        bypass.rear_clear_done = TRUE;
-                                        bypass_pivot(&bypass, &mot_cmd, BYPASS_TURN_IN, -bypass.side);
+                                                     bypass.depth_clearance_pending ? BYPASS_DEPTH_CLEAR_MM : BYPASS_FORWARD_STEP_MM);
                                         break;
                                     case BYPASS_FIND_LINE:
                                         bypass_abort(&bypass, &mot_cmd, "line not found within search distance");

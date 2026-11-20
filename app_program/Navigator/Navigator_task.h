@@ -100,9 +100,11 @@ typedef struct {
 
 /*
  * Scan -> reverse 2 cm -> scan -> restore 2 cm -> choose one side.
- * TURN_OUT -> SHIFT_OUT -> TURN_PARALLEL -> WIDTH_CHECK; add the width margin if still needed.
+ * TURN_OUT -> SHIFT_OUT -> TURN_PARALLEL -> WIDTH_CHECK; extend sideways if blocked.
+ * Once clear, move outward another 6 cm once, turn parallel, then ADVANCE without another width scan.
  * ADVANCE to the front face, then check the return path in forward steps.
- * If blocked, turn parallel and step forward. If clear, advance the rear clearance and check again.
+ * If the return path is blocked, turn parallel and step forward 15 cm.
+ * Once clear, turn parallel, add 5 cm once, then turn inward and search for the line without another depth check.
  * Existing phase numbers are retained for telemetry; new phases are appended.
  */
 typedef enum {
@@ -110,8 +112,8 @@ typedef enum {
     BYPASS_TURN_OUT = 1,      // Turn 90 degrees toward the chosen side; do not wait for a tracking reply.
     BYPASS_SHIFT_OUT = 3,     // Drive a bounded edge offset, or start a short outward search.
     BYPASS_TURN_PARALLEL = 4, // Turn 90 degrees back to face along the original track.
-    BYPASS_ADVANCE = 7,       // Approach the front face, then search the depth in forward steps.
-    BYPASS_TURN_IN = 10,      // Face the line to check the cross-section before committing to the return.
+    BYPASS_ADVANCE = 7,       // Approach/search the depth, or perform the final 5 cm forward clearance move.
+    BYPASS_TURN_IN = 10,      // Face the line to check depth; after the extra 5 cm, start the return directly.
     BYPASS_FIND_LINE = 12,    // Drive toward the line until two consecutive IR readings contain black.
     BYPASS_LINE_FOUND = 13,   // Stop and hand over to the teammate's MODE_REENTRY_ADVANCE.
     BYPASS_ABORT = 17,        // Hardware or communication fault; never silently advance to the next move.
@@ -119,13 +121,12 @@ typedef enum {
     BYPASS_SCAN_BACK = 19,    // The only reverse: 2 cm to obtain a second viewing position.
     BYPASS_SCAN_SECOND = 20,  // Stationary second profile; never reverse again for missing echoes.
     BYPASS_SCAN_RETURN = 21,  // Restore the original position before choosing and entering the detour.
-    BYPASS_WIDTH_CHECK = 22,  // Verify forward clearance and the width margin before starting ADVANCE.
+    BYPASS_WIDTH_CHECK = 22,  // Two clear forward probes start the one-time 6 cm outward clearance move.
     BYPASS_WIDTH_TURN_OUT = 23,
-    BYPASS_WIDTH_EXTEND = 24, // Extend outward when the selected edge was outside the original scan.
-    BYPASS_WIDTH_ALIGN = 25,  // Face parallel again and repeat the width check.
-    BYPASS_DEPTH_TURN_BACK = 26, // Face parallel after a blocked or provisional return check.
-    BYPASS_RETURN_CHECK = 27, // Two clear front probes while facing the line; no full depth scan.
-    BYPASS_REAR_CLEAR = 28    // Move the swept radius + gap beyond the first verified clear cross-section.
+    BYPASS_WIDTH_EXTEND = 24, // Search outward 15 cm if blocked; add 6 cm once after the front is clear.
+    BYPASS_WIDTH_ALIGN = 25,  // Recheck after a search step; start ADVANCE after the extra 6 cm.
+    BYPASS_DEPTH_TURN_BACK = 26, // Face parallel for a 15 cm search step or the final 5 cm clearance move.
+    BYPASS_RETURN_CHECK = 27  // Two clear front probes while facing the line start the one-time 5 cm depth allowance.
 } BYPASS_PHASE;
 
 #define BYPASS_API_POWER             25 // Telemetry only: the existing motor functions choose their own power.
@@ -137,6 +138,8 @@ typedef enum {
 #define BYPASS_SCAN_BACK_MM          20U
 #define BYPASS_FORWARD_STEP_MM       150U
 #define BYPASS_WIDTH_STEP_MM        150U
+#define BYPASS_PIVOT_CLEAR_MM         70U // One extra outward move after the forward width check is clear.
+#define BYPASS_DEPTH_CLEAR_MM         50U // One extra forward move parallel to the box after the return check is clear.
 #define BYPASS_PROBE_MS            2000U
 #define BYPASS_CLEAR_CONFIRM          2U // Each stationary probe already takes three sonar pings.
 #define BYPASS_PROFILE_DEPTH_CM      10U // Reject background echoes beyond the front face.
@@ -145,8 +148,7 @@ typedef enum {
 #define BYPASS_MAX_FORWARD_MM      3000U
 #define BYPASS_PIVOT_FROM_FRONT_CM   10U // Front sensor/body edge to the pivot between the driven wheels.
 #define BYPASS_SWEPT_RADIUS_CM       12U // Covers the 12 x 20 cm body while it turns.
-#define BYPASS_WIDTH_CLEAR_MM        50U // Extra sideways room for the pivot after finding the edge.
-#define BYPASS_REAR_CLEAR_MM ((BYPASS_SWEPT_RADIUS_CM + WALL_BODY_GAP_CM) * 10U)
+#define BYPASS_WIDTH_CLEAR_MM       100U // Original allowance added to a scan-measured edge before the width check.
 #define BYPASS_TRACK_STALE_MS     1000U // Missing messages are a fault; a no-echo message is still a reply.
 #define BYPASS_RESPONSE_MS        1000U // Wait limit for the initial stop acknowledgement.
 #define BYPASS_SCAN_MS           15000U // Wait limit for the stationary scan.
@@ -163,18 +165,16 @@ typedef struct {
     UW last_sample_us;            // Reject duplicate samples.
     OBSTACLE_PROFILE first_scan;  // Compare the second scan without pretending missing ranges are distances.
     UW front_cm;                  // Measured standoff at the restored starting position.
-    UW planned_shift_mm;          // Bounded edge + width margin, or the first outward search step.
+    UW planned_shift_mm;          // Confirmed edge + original width allowance, or the first outward search step.
     UW shift_mm;                  // Completed lateral travel, including outward extensions.
     UW forward_mm;                // Completed travel parallel to the original track.
     UW leg_mm;                    // Distance of the one outstanding translation.
     INT leg_start_mm;             // Motor odometry baseline; include coast after the commanded distance.
-    UW extend_mm;                 // Next sideways search step or the missing width margin.
     UW probe_clear_count;
     UW probe_attempts;
+    BOOL width_clearance_pending; // Extra 6 cm is in progress; the following WIDTH_ALIGN skips another width check.
+    BOOL depth_clearance_pending; // Extra 5 cm is in progress; the following TURN_IN starts FIND_LINE without rechecking.
     BOOL tracking_active;         // Watchdog applies only while side tracking was requested.
-    BOOL width_needs_margin;      // Unknown edge: add the width margin after finding a clear forward ray.
-    BOOL clear_after_turn;        // A provisional clear check requires a parallel rear-clearance move.
-    BOOL rear_clear_done;         // A final forward check is still required after rear clearance.
     BOOL move_pending;            // One API call at a time: Motor's completion message has no ID.
     UW black_count;               // Consecutive IR readings containing black during FIND_LINE.
     BOOL owns_obstacle_stop;      // Release the scan stop only; never release a later hardware fault.
