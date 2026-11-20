@@ -5,6 +5,8 @@
 
 // Called by Navigator; the bypass state machine and context remain owned by Navigator.
 _Static_assert(BYPASS_LEFT_TURN_DEG > 0 && BYPASS_RIGHT_TURN_DEG > 0, "invalid bypass turn angle");
+_Static_assert(BYPASS_PIVOT_CLEAR_MM > 0 && BYPASS_PIVOT_CLEAR_MM <= BYPASS_MAX_SIDE_MM, "invalid pivot clearance move");
+_Static_assert(BYPASS_DEPTH_CLEAR_MM > 0 && BYPASS_DEPTH_CLEAR_MM <= BYPASS_MAX_FORWARD_MM, "invalid depth clearance move");
 _Static_assert(BYPASS_PIVOT_FROM_FRONT_CM <= ROBOT_LENGTH_CM, "invalid pivot position");
 _Static_assert(BYPASS_SWEPT_RADIUS_CM * BYPASS_SWEPT_RADIUS_CM >=
                BYPASS_PIVOT_FROM_FRONT_CM * BYPASS_PIVOT_FROM_FRONT_CM + ROBOT_HALF_WIDTH_CM * ROBOT_HALF_WIDTH_CM &&
@@ -110,6 +112,8 @@ EXPORT void bypass_plan_width(BYPASS_CONTEXT *bypass, const OBSTACLE_PROFILE *se
         bypass->side = left < right || (left == right && left_room >= right_room) ? 1 : -1;
     BOOL known = bypass->side > 0 ? left_known : right_known;
     bypass->planned_shift_mm = known ? (bypass->side > 0 ? left : right) : BYPASS_WIDTH_STEP_MM;
+    bypass->width_clearance_pending = FALSE;
+    bypass->depth_clearance_pending = FALSE;
     tm_printf((UB *)"[bypass] Dynamic offsets L=%u R=%u mm (0=unknown); pass %s, edge=%s, front=%u cm, first step=%u mm\n",
               left, right, bypass->side > 0 ? "left" : "right",
               known ? "bounded by both scans" : "unmeasured: verify outward",
@@ -372,23 +376,18 @@ EXPORT void bypass_probe_result(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
               probe->distance_cm, probe->status, bypass->shift_mm, bypass->forward_mm);
     switch (bypass->phase) {
         case BYPASS_WIDTH_CHECK:
-            if (clear) {
-                bypass_track_side(bypass, command);
-                bypass_follow_next(bypass, command);
-            } else {
-                bypass_track_side(bypass, command);
-                bypass_pivot(bypass, command, BYPASS_WIDTH_TURN_OUT, bypass->side);
-            }
+            bypass->width_clearance_pending = clear;
+            if (clear)
+                tm_printf((UB *)"[bypass] Width clear: add %u mm outward once for pivot clearance\n", BYPASS_PIVOT_CLEAR_MM);
+            bypass_track_side(bypass, command);
+            bypass_pivot(bypass, command, BYPASS_WIDTH_TURN_OUT, bypass->side);
             break;
         case BYPASS_RETURN_CHECK:
-            if (clear) {
-                bypass->black_count = 0;
-                bypass_begin(bypass, command, BYPASS_FIND_LINE, BYPASS_API_POWER, -BYPASS_API_POWER,
-                             bypass->shift_mm + ROBOT_LENGTH_CM * 10U);
-            } else {
-                bypass_track_side(bypass, command);
-                bypass_pivot(bypass, command, BYPASS_DEPTH_TURN_BACK, bypass->side);
-            }
+            bypass->depth_clearance_pending = clear;
+            if (clear)
+                tm_printf((UB *)"[bypass] Depth clear: add %u mm parallel to box once before returning\n", BYPASS_DEPTH_CLEAR_MM);
+            bypass_track_side(bypass, command);
+            bypass_pivot(bypass, command, BYPASS_DEPTH_TURN_BACK, bypass->side);
             break;
         default:
             break;
