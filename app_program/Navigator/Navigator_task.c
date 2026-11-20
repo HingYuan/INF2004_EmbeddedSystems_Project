@@ -690,7 +690,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         break;
                                     case BYPASS_WIDTH_TURN_OUT:
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_WIDTH_EXTEND,
-                                                     BYPASS_API_POWER, -BYPASS_API_POWER, bypass.extend_mm);
+                                                     BYPASS_API_POWER, -BYPASS_API_POWER, BYPASS_WIDTH_STEP_MM);
                                         break;
                                     case BYPASS_WIDTH_EXTEND:
                                         bypass.shift_mm += bypass.leg_mm;
@@ -705,15 +705,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         break;
                                     case BYPASS_DEPTH_TURN_BACK:
                                         bypass_track_side(&bypass, &mot_cmd);
-                                        bypass_begin(&bypass, &mot_cmd,
-                                                     bypass.clear_after_turn ? BYPASS_REAR_CLEAR : BYPASS_ADVANCE,
+                                        bypass_begin(&bypass, &mot_cmd, BYPASS_ADVANCE,
                                                      BYPASS_API_POWER, -BYPASS_API_POWER,
-                                                     bypass.clear_after_turn ? BYPASS_REAR_CLEAR_MM : BYPASS_FORWARD_STEP_MM);
-                                        break;
-                                    case BYPASS_REAR_CLEAR:
-                                        bypass.forward_mm += bypass.leg_mm;
-                                        bypass.rear_clear_done = TRUE;
-                                        bypass_pivot(&bypass, &mot_cmd, BYPASS_TURN_IN, -bypass.side);
+                                                     BYPASS_FORWARD_STEP_MM);
                                         break;
                                     case BYPASS_FIND_LINE:
                                         bypass_abort(&bypass, &mot_cmd, "line not found within search distance");

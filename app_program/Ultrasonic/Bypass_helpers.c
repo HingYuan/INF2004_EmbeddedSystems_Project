@@ -108,12 +108,11 @@ EXPORT void bypass_plan_width(BYPASS_CONTEXT *bypass, const OBSTACLE_PROFILE *se
         bypass->side = left_known ? 1 : -1;
     else
         bypass->side = left < right || (left == right && left_room >= right_room) ? 1 : -1;
-    bypass->width_needs_margin = !(bypass->side > 0 ? left_known : right_known);
-    bypass->planned_shift_mm = bypass->width_needs_margin ? BYPASS_WIDTH_STEP_MM :
-                               (bypass->side > 0 ? left : right);
+    BOOL known = bypass->side > 0 ? left_known : right_known;
+    bypass->planned_shift_mm = known ? (bypass->side > 0 ? left : right) : BYPASS_WIDTH_STEP_MM;
     tm_printf((UB *)"[bypass] Dynamic offsets L=%u R=%u mm (0=unknown); pass %s, edge=%s, front=%u cm, first step=%u mm\n",
               left, right, bypass->side > 0 ? "left" : "right",
-              bypass->width_needs_margin ? "unmeasured: verify outward" : "bounded by both scans",
+              known ? "bounded by both scans" : "unmeasured: verify outward",
               bypass->front_cm, bypass->planned_shift_mm);
 }
 
@@ -186,7 +185,6 @@ LOCAL const char *bypass_phase_name(BYPASS_PHASE phase)
         case BYPASS_WIDTH_EXTEND:  return "WIDTH_EXTEND";
         case BYPASS_WIDTH_ALIGN:   return "WIDTH_ALIGN";
         case BYPASS_DEPTH_TURN_BACK:return "FACE_PARALLEL";
-        case BYPASS_REAR_CLEAR:    return "REAR_CLEARANCE";
         case BYPASS_TURN_OUT:      return "TURN_OUT_90";
         case BYPASS_SHIFT_OUT:     return "SIDE_STEP";
         case BYPASS_TURN_PARALLEL: return "TURN_BACK_90";
@@ -245,12 +243,11 @@ EXPORT void bypass_begin(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
         case BYPASS_ADVANCE:
         case BYPASS_FIND_LINE:
         case BYPASS_WIDTH_EXTEND:
-        case BYPASS_REAR_CLEAR:
         case BYPASS_SCAN_RETURN:
             if (!amount ||
                 ((phase == BYPASS_SHIFT_OUT || phase == BYPASS_WIDTH_EXTEND) &&
                  amount + bypass->shift_mm > BYPASS_MAX_SIDE_MM) ||
-                ((phase == BYPASS_ADVANCE || phase == BYPASS_REAR_CLEAR) &&
+                (phase == BYPASS_ADVANCE &&
                  amount + bypass->forward_mm > BYPASS_MAX_FORWARD_MM)) {
                 bypass_abort(bypass, command, "exploration distance limit");
                 return;
@@ -375,24 +372,20 @@ EXPORT void bypass_probe_result(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
               probe->distance_cm, probe->status, bypass->shift_mm, bypass->forward_mm);
     switch (bypass->phase) {
         case BYPASS_WIDTH_CHECK:
-            if (clear && !bypass->width_needs_margin) {
+            if (clear) {
                 bypass_track_side(bypass, command);
                 bypass_follow_next(bypass, command);
             } else {
-                bypass->extend_mm = clear ? BYPASS_WIDTH_CLEAR_MM : BYPASS_WIDTH_STEP_MM;
-                bypass->width_needs_margin = !clear;
                 bypass_track_side(bypass, command);
                 bypass_pivot(bypass, command, BYPASS_WIDTH_TURN_OUT, bypass->side);
             }
             break;
         case BYPASS_RETURN_CHECK:
-            if (clear && bypass->rear_clear_done) {
+            if (clear) {
                 bypass->black_count = 0;
                 bypass_begin(bypass, command, BYPASS_FIND_LINE, BYPASS_API_POWER, -BYPASS_API_POWER,
                              bypass->shift_mm + ROBOT_LENGTH_CM * 10U);
             } else {
-                bypass->clear_after_turn = clear;
-                bypass->rear_clear_done = FALSE;
                 bypass_track_side(bypass, command);
                 bypass_pivot(bypass, command, BYPASS_DEPTH_TURN_BACK, bypass->side);
             }
