@@ -156,10 +156,10 @@ EXPORT BOOL bypass_self_check(void)
 #undef BYPASS_CHECK
 #endif
 
-// Hump reports are informational during bypass; lifted/overturned remains a fault.
+// Bypass ignores IMU events; motor and sonar faults still abort.
 EXPORT BOOL bypass_hardware_fault(void)
 {
-    return sonar_fault || telemetry_snapshot.imu_event == IMU_MSG_LIFTED_OVERTURNED ||
+    return sonar_fault ||
            (motor_fault_word & (FAULT_BIT_STALL | FAULT_BIT_ENCODER)) != 0U;
 }
 
@@ -206,7 +206,7 @@ EXPORT void bypass_begin(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
                         BYPASS_PHASE phase, INT left, INT right, UW amount)
 {
     if (bypass_hardware_fault() || (motor_estop && !bypass->owns_obstacle_stop)) {
-        bypass_abort(bypass, command, "motor, IMU or sonar fault");
+        bypass_abort(bypass, command, "motor stop or sonar fault");
         return;
     }
     bypass->phase = phase;

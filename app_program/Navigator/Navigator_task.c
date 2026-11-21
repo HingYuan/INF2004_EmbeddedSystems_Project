@@ -654,10 +654,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         break;
                                 }
                                 break;
-                            case MSG_IMU_UPDATE:
-                                if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_LIFTED_OVERTURNED)
-                                    bypass_abort(&bypass, &mot_cmd, "IMU critical fault");
-                                break;
                             default:
                                 break;
                         }
@@ -812,10 +808,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 bypass.last_sample_us = bypass.last_tracking_us = probe->sampled_at_us;
                                 break;
                             }
-                            case MSG_IMU_UPDATE:
-                                if (n_msg.data.imu_telemetry_msg.event == IMU_MSG_LIFTED_OVERTURNED)
-                                    bypass_abort(&bypass, &mot_cmd, "IMU critical fault");
-                                break;
                             default:
                                 break;
                         }
