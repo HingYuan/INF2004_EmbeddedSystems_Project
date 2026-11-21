@@ -156,10 +156,10 @@ EXPORT BOOL bypass_self_check(void)
 #undef BYPASS_CHECK
 #endif
 
-// These faults belong to the motor, IMU or sonar tasks; bypass must not release them.
+// Hump reports are informational during bypass; lifted/overturned remains a fault.
 EXPORT BOOL bypass_hardware_fault(void)
 {
-    return sonar_fault || telemetry_snapshot.imu_event == IMU_MSG_HUMP_DETECTED ||
+    return sonar_fault || telemetry_snapshot.imu_event == IMU_MSG_LIFTED_OVERTURNED ||
            (motor_fault_word & (FAULT_BIT_STALL | FAULT_BIT_ENCODER)) != 0U;
 }
 
