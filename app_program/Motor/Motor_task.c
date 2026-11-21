@@ -1,4 +1,5 @@
 #include <tk/tkernel.h>
+#include <tk/syslib.h>
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 #include "Motor_task.h"
@@ -39,6 +40,7 @@
 #define STALL_MIN_PCT           20   /* Only check stall when PWM >= 20% */
 #define STALL_PERIODS           75   /* 75 x 20 ms = 1.5 s with 0 ticks on BOTH wheels = stall */
 #define ENC_FAIL_TICK_DELTA     90   /* >90 ticks (~3 cm) on one wheel while other is 0 = fault */
+#define ENC_BACKUP_MIN_TICKS     8   /* Filtered B pulses without A progress before switching. */
 #define ENC_CRAWL_PCT           20   /* 20% open-loop crawl fallback on encoder failure */
 
 typedef enum {
@@ -73,11 +75,45 @@ LOCAL volatile INT isr_out_l = 0;
 LOCAL volatile INT isr_out_r = 0;
 LOCAL volatile W isr_ticks_la = 0, isr_ticks_lb = 0;
 LOCAL volatile W isr_ticks_ra = 0, isr_ticks_rb = 0;
+LOCAL volatile BOOL right_encoder_using_b = FALSE;
+LOCAL volatile W right_encoder_last_a = 0;
+LOCAL volatile W right_encoder_b_offset = 0;
 
 LOCAL INT iabs(INT v)
 {
     return v < 0 ? -v : v;
 }
+
+LOCAL W right_encoder_ticks(W a, W b)
+{
+    if (!right_encoder_using_b) {
+        if (a != right_encoder_last_a) {
+            right_encoder_last_a = a;
+            right_encoder_b_offset = a - b;
+        } else if (iabs((INT)(b + right_encoder_b_offset - a)) >= ENC_BACKUP_MIN_TICKS) {
+            // Keep B until restart; intermittent A recovery must not jump the distance count.
+            right_encoder_using_b = TRUE;
+        }
+    }
+    // The offset preserves previous A travel and recovers pulses missed since A stopped.
+    return right_encoder_using_b ? b + right_encoder_b_offset : a;
+}
+
+#ifndef NDEBUG
+LOCAL BOOL right_encoder_self_check(void)
+{
+    BOOL ok = right_encoder_ticks(12, 13) == 12 && !right_encoder_using_b &&
+              right_encoder_ticks(12, 20) == 12 && !right_encoder_using_b &&
+              right_encoder_ticks(12, 21) == 20 && right_encoder_using_b &&
+              right_encoder_ticks(12, 1) == 0 &&
+              right_encoder_ticks(12, -59) == -60 &&
+              right_encoder_ticks(-60, -59) == -60;
+    // Run before enabling the encoder interrupt, then restore the initial counter state.
+    right_encoder_last_a = right_encoder_b_offset = 0;
+    right_encoder_using_b = FALSE;
+    return ok && right_encoder_ticks(0, 0) == 0 && !right_encoder_using_b;
+}
+#endif
 
 // Proven Stage 1 Encoder Filter: 2-sample (1.0 ms) rising-edge counter with NO cooldown ceiling.
 LOCAL void count_clean_rising_edge(
@@ -131,9 +167,9 @@ LOCAL void encoder_alarm_isr(UINT intno)
     count_clean_rising_edge(raw_ra, dir_r, &st_ra, &cnt_ra, &isr_ticks_ra);
     count_clean_rising_edge(raw_rb, dir_r, &st_rb, &cnt_rb, &isr_ticks_rb);
 
-    // Lock strictly to Channel A (GP16 and GP2) so LB's extra bounce pulses never skew count!
+    // Left B has extra bounce; right B provides backup when right A stops counting.
     enc_l_ticks = isr_ticks_la;
-    enc_r_ticks = isr_ticks_ra;
+    enc_r_ticks = right_encoder_ticks(isr_ticks_ra, isr_ticks_rb);
 }
 
 // Drive one motor channel (-100..100%)
@@ -331,6 +367,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
     BOOL move_done_pending = FALSE;
     INT move_stable_periods = 0;
     INT print_timer = 0;
+    BOOL right_backup_reported = FALSE;
 
 #if STAGE2_STANDALONE_PAD_TEST
     INT test_cycles = 0;
@@ -361,6 +398,13 @@ EXPORT void motor_task(INT stacd, void *exinf)
         set_w(GPIO(encoder_pins[i]), GPIO_IE | GPIO_PUE | GPIO_SHEMITT);
     }
 
+#ifndef NDEBUG
+    if (!right_encoder_self_check()) {
+        motor_fault_word |= FAULT_BIT_ENCODER;
+        tm_printf((UB *)"[motors] Encoder self-check failed\n");
+        tk_ext_tsk();
+    }
+#endif
     T_DINT dint = {0};
     dint.intatr = TA_HLNG;
     dint.inthdr = (FP)encoder_alarm_isr;
@@ -388,10 +432,15 @@ EXPORT void motor_task(INT stacd, void *exinf)
 
         // Wait 3.0 seconds (150 x 20ms) after power-on, then start driving straight at 25%
         if (test_cycles == 150) {
+            UINT intsts;
+            DI(intsts);
             enc_l_ticks = 0;
             enc_r_ticks = 0;
             isr_ticks_la = isr_ticks_lb = isr_ticks_ra = isr_ticks_rb = 0;
+            right_encoder_last_a = right_encoder_b_offset = 0;
+            right_encoder_using_b = right_backup_reported = FALSE;
             prev_l = prev_r = 0;
+            EI(intsts);
             cmd.target_speed_left = 25;
             cmd.target_speed_right = -25;
             cmd.turn_ticks_left = 0;
@@ -452,6 +501,11 @@ EXPORT void motor_task(INT stacd, void *exinf)
         }
 #endif
 
+        if (right_encoder_using_b && !right_backup_reported) {
+            right_backup_reported = TRUE;
+            tm_printf((UB *)"[motors] Right encoder A missing; using B (A=%d B=%d)\n",
+                      (INT)isr_ticks_ra, (INT)isr_ticks_rb);
+        }
         dl = enc_l_ticks - prev_l;
         dr = enc_r_ticks - prev_r;
         prev_l = enc_l_ticks;
