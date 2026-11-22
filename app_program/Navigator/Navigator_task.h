@@ -139,7 +139,7 @@ typedef enum {
 #define BYPASS_FORWARD_STEP_MM       150U
 #define BYPASS_WIDTH_STEP_MM        150U
 #define BYPASS_PIVOT_CLEAR_MM         70U // One extra outward move after the forward width check is clear.
-#define BYPASS_DEPTH_CLEAR_MM         50U // One extra forward move parallel to the box after the return check is clear.
+#define BYPASS_DEPTH_CLEAR_MM         70U // One extra forward move parallel to the box after the return check is clear.
 #define BYPASS_PROBE_MS            2000U
 #define BYPASS_CLEAR_CONFIRM          2U // Each stationary probe already takes three sonar pings.
 #define BYPASS_PROFILE_DEPTH_CM      10U // Reject background echoes beyond the front face.
