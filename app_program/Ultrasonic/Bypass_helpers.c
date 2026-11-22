@@ -44,8 +44,8 @@ LOCAL UW bypass_side_offset(const OBSTACLE_PROFILE *first, const OBSTACLE_PROFIL
     for (INT ray = 1; ray <= 3; ray++) {
         INT index = 3 + side * ray;
         for (INT scan = 0; scan < 2; scan++) {
-            UW cm = scans[scan]->ray_cm[index];
-            SONAR_STATUS status = scans[scan]->ray_status[index];
+            UW cm = sonar_ray_cm(scans[scan], index);
+            SONAR_STATUS status = sonar_ray_status(scans[scan], index);
             if (status == SONAR_TOO_CLOSE || (status == SONAR_OK && cm >= 2U && cm <= 400U &&
                 cm * cosine[ray] / 1000U <= reference[scan] + BYPASS_PROFILE_DEPTH_CM)) {
                 occupied = ray;
@@ -62,8 +62,8 @@ LOCAL UW bypass_side_offset(const OBSTACLE_PROFILE *first, const OBSTACLE_PROFIL
         INT index = 3 + side * ray;
         BOOL open = TRUE;
         for (INT scan = 0; scan < 2; scan++) {
-            SONAR_STATUS status = scans[scan]->ray_status[index];
-            UW cm = scans[scan]->ray_cm[index];
+            SONAR_STATUS status = sonar_ray_status(scans[scan], index);
+            UW cm = sonar_ray_cm(scans[scan], index);
             open = open && (status == SONAR_NO_ECHO || (status == SONAR_OK && cm >= 2U && cm <= 400U &&
                    cm * cosine[ray] / 1000U > reference[scan] + BYPASS_PROFILE_DEPTH_CM));
         }
@@ -141,10 +141,12 @@ EXPORT BOOL bypass_self_check(void)
         OBSTACLE_PROFILE first = {.front_cm = 30U}, second = {.front_cm = 32U};
         BOOL known;
         BYPASS_CHECK(bypass_side_offset(&first, &second, side, 30U, &known) == 0U && !known);
-        first.ray_status[3 + side] = second.ray_status[3 + side] = SONAR_NO_ECHO;
+        sonar_ray_set(&first, 3 + side, 0U, SONAR_NO_ECHO);
+        sonar_ray_set(&second, 3 + side, 0U, SONAR_NO_ECHO);
         BYPASS_CHECK(bypass_side_offset(&first, &second, side, 30U, &known) == 90U + BYPASS_WIDTH_CLEAR_MM && known);
-        first.ray_status[3 + side * 3] = second.ray_status[3 + side * 3] = SONAR_OK;
-        first.ray_cm[3 + side * 3] = 43U; second.ray_cm[3 + side * 3] = 45U;
+
+        sonar_ray_set(&first, 3 + side * 3, 43U, SONAR_OK);
+        sonar_ray_set(&second, 3 + side * 3, 45U, SONAR_OK);
         BYPASS_CHECK(bypass_side_offset(&first, &second, side, 30U, &known) == 0U && !known);
         MOTOR_COMMAND pivot = bypass_pivot_command(side);
         BYPASS_CHECK(pivot.target_speed_left == -side * BYPASS_API_POWER);
@@ -166,8 +168,8 @@ EXPORT BOOL bypass_hardware_fault(void)
 // Ordinary no-echo replies do not abort; hardware, delivery and movement faults do.
 EXPORT void bypass_abort(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command, const char *reason)
 {
-    motor_estop = TRUE;
-    motor_stop_ack_requested = FALSE;
+    robot_flag_assign(ROBOT_ESTOP_REQUEST, TRUE);
+    robot_flag_assign(ROBOT_STOP_ACK_REQUEST, FALSE);
     bypass->owns_obstacle_stop = FALSE;
     bypass->phase = BYPASS_ABORT;
     bypass->move_pending = FALSE;
@@ -175,7 +177,7 @@ EXPORT void bypass_abort(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command, const c
     *command = (MOTOR_COMMAND){0};
     (void)stop();
     tm_printf((UB *)"[bypass] Fault: %s (motor=%u sonar=%d IMU=%u)\n",
-              reason, motor_fault_word, sonar_fault, telemetry_snapshot.imu_event);
+              reason, motor_fault_word, sonar_fault, telemetry_imu_event());
 }
 
 // Name each step in serial logs so it can be matched to the physical movement.
@@ -228,8 +230,8 @@ EXPORT void bypass_begin(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
                 return;
             }
             bypass->owns_obstacle_stop = FALSE;
-            motor_stop_ack_requested = FALSE;
-            motor_estop = FALSE;
+            robot_flag_assign(ROBOT_STOP_ACK_REQUEST, FALSE);
+            robot_flag_assign(ROBOT_ESTOP_REQUEST, FALSE);
             result = E_OK;
             timeout_ms = BYPASS_RESPONSE_MS;
             break;
@@ -248,7 +250,7 @@ EXPORT void bypass_begin(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
         case BYPASS_FIND_LINE:
         case BYPASS_WIDTH_EXTEND:
         case BYPASS_SCAN_RETURN:
-            if (!amount ||
+            if (!amount || amount > 4095U ||
                 ((phase == BYPASS_SHIFT_OUT || phase == BYPASS_WIDTH_EXTEND) &&
                  amount + bypass->shift_mm > BYPASS_MAX_SIDE_MM) ||
                 (phase == BYPASS_ADVANCE &&
@@ -322,8 +324,11 @@ EXPORT BOOL bypass_complete_leg(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command)
 {
     if (!bypass->leg_mm) return TRUE;
     INT moved = motor_get_avg_dist_mm() - bypass->leg_start_mm;
-    if (moved <= 0) {
-        bypass_abort(bypass, command, "no forward odometry at movement completion");
+    if (moved <= 0 || moved > 4095 ||
+        ((bypass->phase == BYPASS_SHIFT_OUT || bypass->phase == BYPASS_WIDTH_EXTEND) &&
+         (UW)moved + bypass->shift_mm > 2047U) ||
+        (bypass->phase == BYPASS_ADVANCE && (UW)moved + bypass->forward_mm > 4095U)) {
+        bypass_abort(bypass, command, "invalid or excessive odometry at movement completion");
         return FALSE;
     }
     tm_printf((UB *)"[bypass] %s travelled=%d mm (requested=%u mm)\n",
@@ -364,7 +369,7 @@ EXPORT void bypass_probe_result(BYPASS_CONTEXT *bypass, MOTOR_COMMAND *command,
                  probe->distance_cm >= 2U && probe->distance_cm <= 400U;
     BOOL clear = probe->status == SONAR_NO_ECHO || (valid && probe->distance_cm * 10U > required_mm);
     BOOL blocked = probe->status == SONAR_TOO_CLOSE || (valid && !clear);
-    bypass->probe_attempts++;
+    if (bypass->probe_attempts < 3U) bypass->probe_attempts++;
     bypass->probe_clear_count = clear ? bypass->probe_clear_count + 1U : 0U;
     if ((clear && bypass->probe_clear_count < BYPASS_CLEAR_CONFIRM) ||
         (!clear && !blocked && bypass->probe_attempts < BYPASS_CLEAR_CONFIRM)) {

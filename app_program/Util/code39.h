@@ -3,9 +3,9 @@
 
 #include "tk/tkernel.h"
 
-typedef struct {
-    UH pattern;
-    B character;
+typedef struct __attribute__((packed)) {
+    UH pattern : 9;
+    UB character : 7;
 } CODE_39_ENTRY;
 
 static const CODE_39_ENTRY code39_dict[] = {

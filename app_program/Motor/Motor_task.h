@@ -1,8 +1,9 @@
 #ifndef MOTOR_TASK_H
 #define MOTOR_TASK_H
 
-#include <stdint.h>
+#include <tk/typedef.h>
 #include <tk/tkernel.h>
+#include "../robot_tasks.h"
 
 // DC Motor Pins (From Hardware Integration Table)
 #define MOTOR_LEFT_A        8
@@ -19,40 +20,48 @@
 // Defensive Clamping Macro
 #define CLAMP(x, low, high) (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))
 
-// 32-bit (4-byte) bit-packed motor command
+// 32-bit command: preserve independent 0..255 tick targets for both wheels.
 typedef union {
-    uint32_t raw;
+    UW raw;
     struct {
-        int8_t   target_speed_left;   // Bits 0..7  (-100 to +100%)
-        int8_t   target_speed_right;  // Bits 8..15 (-100 to +100%)
-        uint16_t turn_ticks : 10;     // Bits 16..25 (0 to 1023 ticks)
-        uint16_t turn_dir   : 1;      // Bit 26 (0=Left, 1=Right)
-        uint16_t reserved   : 5;      // Bits 27..31
-    } __attribute__((packed));
-    struct {
-        int8_t   _spd_l;
-        int8_t   _spd_r;
-        uint8_t  turn_ticks_left;     // Preserves compatibility with existing code
-        uint8_t  turn_ticks_right;
+        B target_speed_left;         // -100..100 needs 8 signed bits.
+        B target_speed_right;
+        UB turn_ticks_left;
+        UB turn_ticks_right;
     } __attribute__((packed));
 } MOTOR_COMMAND;
 
 // 3-Bit State Packing (2^3 = 8 states)
 typedef struct {
-    uint8_t state    : 3;
-    uint8_t reserved : 5;
+    UW state : 3;
 } MOTOR_STATE_PACKED;
 
-// Unified 16-Bit Fault Word Bitmask
+typedef enum { MS_IDLE, MS_ACCEL, MS_CRUISE, MS_TURN, MS_BRAKE, MS_FAULT, MS_ESTOP } MOTOR_STATE;
+typedef struct __attribute__((packed)) {
+    UW state : 3;
+    UW move_done_pending : 1;
+    UW right_backup_reported : 1;
+    UW move_stable_periods : 2;
+    UW stop_stable_periods : 2;
+    UW stall_left : 7;
+    UW stall_right : 7;
+    UW print_timer : 5; // 0..25.
+} MOTOR_RUNTIME_STATE;
+typedef struct __attribute__((packed)) {
+    UH filters : 8;    // Four channels, each with stable level and one pending sample.
+    UH using_b : 1;
+} ENCODER_ISR_STATE;
+
+// Motor bits retain their numbers within the shared application fault word.
 #define FAULT_BIT_STALL     (1U << 0)  // Bit 0: Motor Stall
 #define FAULT_BIT_ENCODER   (1U << 1)  // Bit 1: Encoder Failure
 #define FAULT_BIT_ESTOP     (1U << 2)  // Bit 2: Emergency Stop
 
-IMPORT volatile UH motor_fault_word;
-IMPORT volatile BOOL motor_estop;
-IMPORT volatile BOOL motor_stop_ack_requested;
+#define motor_fault_word (robot_flags_get() & (FAULT_BIT_STALL | FAULT_BIT_ENCODER | FAULT_BIT_ESTOP))
+#define motor_estop ((robot_flags_get() & ROBOT_ESTOP_REQUEST) != 0U)
+#define motor_stop_ack_requested ((robot_flags_get() & ROBOT_STOP_ACK_REQUEST) != 0U)
 IMPORT volatile UW buffer_drop_count;
-IMPORT volatile BOOL encoder_degraded;
+#define encoder_degraded ((robot_flags_get() & ROBOT_ENCODER_DEGRADED) != 0U)
 
 // Encoder tick counts, updated by motor_task
 IMPORT volatile W enc_l_ticks;

@@ -19,49 +19,44 @@
 
 #define WEB_SERVER_PORT       8080U
 #define WEB_REQUEST_MAX       512U
-#define WEB_RESPONSE_MAX      1024U
+#define WEB_RESPONSE_MAX      2048U /* Includes all 66 binary mapping entries in dashboard JSON. */
 #define WEB_TX_CHUNK_SIZE     1024U
 
 static struct tcp_pcb *web_listener;
 static struct tcp_pcb *web_client;
 
-static size_t web_request_length;
+static WEB_RUNTIME_STATE web_state;
+_Static_assert(WEB_INDEX_HTML_LEN <= 65535U, "HTTP body length field");
+_Static_assert(WEB_REQUEST_MAX <= 512U && WEB_RESPONSE_MAX <= 65535U, "HTTP buffer fields");
 static char web_request[WEB_REQUEST_MAX];
 static char web_api_response[WEB_RESPONSE_MAX];
 
-static int web_response_sent;
 
 /* Active response state. */
 static const char *web_tx_header;
-static size_t web_tx_header_length;
-static size_t web_tx_header_offset;
 
 static const char *web_tx_body;
-static size_t web_tx_body_length;
-static size_t web_tx_offset;
 
-static int web_tx_active;
-static int web_tx_output_pending;
 
 
 /* Reset state for a new HTTP request. */
 static void web_reset_request(void)
 {
-    web_request_length = 0;
+    web_state.request_length = 0;
     web_request[0] = '\0';
 
-    web_response_sent = 0;
+    web_state.response_sent = 0;
 
     web_tx_header = NULL;
-    web_tx_header_length = 0;
-    web_tx_header_offset = 0;
+    web_state.tx_header_length = 0;
+    web_state.tx_header_offset = 0;
 
     web_tx_body = NULL;
-    web_tx_body_length = 0;
-    web_tx_offset = 0;
+    web_state.tx_body_length = 0;
+    web_state.tx_offset = 0;
 
-    web_tx_active = 0;
-    web_tx_output_pending = 0;
+    web_state.tx_active = 0;
+    web_state.tx_output_pending = 0;
 }
 
 
@@ -76,8 +71,8 @@ static void web_close_client(struct tcp_pcb *pcb)
     if(pcb == web_client)
         web_client = NULL;
 
-    web_tx_active = 0;
-    web_tx_output_pending = 0;
+    web_state.tx_active = 0;
+    web_state.tx_output_pending = 0;
 
     tcp_arg(pcb, NULL);
     tcp_recv(pcb, NULL);
@@ -107,8 +102,8 @@ static void web_error(void *arg, err_t err)
     if(pcb == web_client)
         web_client = NULL;
 
-    web_tx_active = 0;
-    web_tx_output_pending = 0;
+    web_state.tx_active = 0;
+    web_state.tx_output_pending = 0;
 }
 
 
@@ -125,17 +120,17 @@ static err_t web_send_more(struct tcp_pcb *pcb)
     size_t chunk;
     u16_t available;
 
-    while(web_tx_header_offset < web_tx_header_length
-          || web_tx_offset < web_tx_body_length) {
+    while(web_state.tx_header_offset < web_state.tx_header_length
+          || web_state.tx_offset < web_state.tx_body_length) {
 
         available = tcp_sndbuf(pcb);
 
         if(available == 0U)
             break;
 
-        if(web_tx_header_offset < web_tx_header_length) {
+        if(web_state.tx_header_offset < web_state.tx_header_length) {
             remaining =
-                web_tx_header_length - web_tx_header_offset;
+                web_state.tx_header_length - web_state.tx_header_offset;
 
             chunk = remaining;
 
@@ -147,7 +142,7 @@ static err_t web_send_more(struct tcp_pcb *pcb)
 
             result = tcp_write(
                 pcb,
-                web_tx_header + web_tx_header_offset,
+                web_tx_header + web_state.tx_header_offset,
                 (u16_t)chunk,
                 TCP_WRITE_FLAG_COPY);
 
@@ -157,9 +152,9 @@ static err_t web_send_more(struct tcp_pcb *pcb)
             if(result != ERR_OK)
                 return result;
 
-            web_tx_header_offset += chunk;
+            web_state.tx_header_offset += chunk;
         } else {
-            remaining = web_tx_body_length - web_tx_offset;
+            remaining = web_state.tx_body_length - web_state.tx_offset;
 
             chunk = remaining;
 
@@ -171,7 +166,7 @@ static err_t web_send_more(struct tcp_pcb *pcb)
 
             result = tcp_write(
                 pcb,
-                web_tx_body + web_tx_offset,
+                web_tx_body + web_state.tx_offset,
                 (u16_t)chunk,
                 TCP_WRITE_FLAG_COPY);
 
@@ -181,7 +176,7 @@ static err_t web_send_more(struct tcp_pcb *pcb)
             if(result != ERR_OK)
                 return result;
 
-            web_tx_offset += chunk;
+            web_state.tx_offset += chunk;
         }
     }
 
@@ -194,9 +189,9 @@ static err_t web_send_more(struct tcp_pcb *pcb)
     if(result != ERR_OK)
         return result;
 
-    web_tx_output_pending =
-        (web_tx_header_offset < web_tx_header_length
-         || web_tx_offset < web_tx_body_length);
+    web_state.tx_output_pending =
+        (web_state.tx_header_offset < web_state.tx_header_length
+         || web_state.tx_offset < web_state.tx_body_length);
 
     return ERR_OK;
 }
@@ -210,17 +205,17 @@ static err_t web_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
     (void)arg;
     (void)len;
 
-    if(!web_tx_active)
+    if(!web_state.tx_active)
         return ERR_OK;
 
     /*
      * Close only after all response bytes have been queued.
      * tcp_close() queues the FIN after already queued TCP data.
      */
-    if(web_tx_header_offset == web_tx_header_length
-       && web_tx_offset == web_tx_body_length) {
+    if(web_state.tx_header_offset == web_state.tx_header_length
+       && web_state.tx_offset == web_state.tx_body_length) {
 
-        web_tx_active = 0;
+        web_state.tx_active = 0;
         web_close_client(pcb);
 
         return ERR_OK;
@@ -246,7 +241,7 @@ static err_t web_poll(void *arg, struct tcp_pcb *pcb)
 
     (void)arg;
 
-    if(!web_tx_active || !web_tx_output_pending)
+    if(!web_state.tx_active || !web_state.tx_output_pending)
         return ERR_OK;
 
     result = web_send_more(pcb);
@@ -283,6 +278,8 @@ static err_t web_send_response(struct tcp_pcb *pcb)
         "Connection: close\r\n"
         "\r\n";
 
+    _Static_assert(sizeof(html_response_start) <= 128 && sizeof(api_response_start) <= 128 &&
+                   sizeof(not_found_response) <= 128, "HTTP header length field");
     const char *response_start;
     const char *body;
     size_t body_length;
@@ -323,16 +320,16 @@ static err_t web_send_response(struct tcp_pcb *pcb)
               (unsigned int)tcp_sndbuf(pcb));
 
     web_tx_header = response_start;
-    web_tx_header_length = strlen(response_start);
-    web_tx_header_offset = 0;
+    web_state.tx_header_length = strlen(response_start);
+    web_state.tx_header_offset = 0;
 
     web_tx_body = body;
-    web_tx_body_length = body_length;
-    web_tx_offset = 0;
+    web_state.tx_body_length = body_length;
+    web_state.tx_offset = 0;
 
-    web_tx_active = 1;
-    web_tx_output_pending = 0;
-    web_response_sent = 1;
+    web_state.tx_active = 1;
+    web_state.tx_output_pending = 0;
+    web_state.response_sent = 1;
 
     tcp_sent(pcb, web_sent);
     tcp_poll(pcb, web_poll, 2U);
@@ -341,7 +338,7 @@ static err_t web_send_response(struct tcp_pcb *pcb)
 
     if(result != ERR_OK) {
         tm_printf((UB *)"[web] initial send failed: %d\n", result);
-        web_tx_active = 0;
+        web_state.tx_active = 0;
         return result;
     }
 
@@ -350,11 +347,11 @@ static err_t web_send_response(struct tcp_pcb *pcb)
      * body bytes to acknowledge. The sent callback closes normal
      * responses after the header has been queued and acknowledged.
      */
-    if(web_tx_header_offset == web_tx_header_length
-       && web_tx_offset == web_tx_body_length
-       && web_tx_header_length == 0U) {
+    if(web_state.tx_header_offset == web_state.tx_header_length
+       && web_state.tx_offset == web_state.tx_body_length
+       && web_state.tx_header_length == 0U) {
 
-        web_tx_active = 0;
+        web_state.tx_active = 0;
         web_close_client(pcb);
     }
 
@@ -386,18 +383,18 @@ static err_t web_receive(void *arg, struct tcp_pcb *pcb,
 
     packet_length = packet->tot_len;
 
-    if(web_response_sent) {
+    if(web_state.response_sent) {
         tcp_recved(pcb, packet_length);
         pbuf_free(packet);
         return ERR_OK;
     }
 
-    available = WEB_REQUEST_MAX - 1U - web_request_length;
+    available = WEB_REQUEST_MAX - 1U - web_state.request_length;
 
     if((size_t)packet_length > available
        || pbuf_copy_partial(
               packet,
-              &web_request[web_request_length],
+              &web_request[web_state.request_length],
               packet_length,
               0) != packet_length) {
 
@@ -408,8 +405,8 @@ static err_t web_receive(void *arg, struct tcp_pcb *pcb,
         return ERR_OK;
     }
 
-    web_request_length += packet_length;
-    web_request[web_request_length] = '\0';
+    web_state.request_length += packet_length;
+    web_request[web_state.request_length] = '\0';
 
     tcp_recved(pcb, packet_length);
     pbuf_free(packet);

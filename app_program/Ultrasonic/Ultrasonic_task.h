@@ -2,6 +2,7 @@
 #define ULTRASONIC_TASK_H
 
 #include <tk/tkernel.h>
+#include "../robot_tasks.h"
 
 // Hardware pins
 #define SERVO_PIN          15
@@ -35,7 +36,13 @@ typedef enum {
 #define WALL_BODY_GAP_CM          5U
 
 // Latched separately so Navigator cannot release a hardware fault as a scan stop.
-IMPORT volatile BOOL sonar_fault;
+#define sonar_fault ((robot_flags_get() & (ROBOT_FAULT_SONAR | ROBOT_FAULT_SERVO)) != 0U)
+
+typedef struct __attribute__((packed)) {
+    UW confirmations : 2; // 0..2 before switching into assessment.
+    UW tracking : 1;
+    W tracking_angle : 7; // -45..45.
+} SONAR_RUNTIME_STATE;
 
 IMPORT void ultrasonic_task(INT stacd, void *exinf);
 

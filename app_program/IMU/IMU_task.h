@@ -1,7 +1,7 @@
 #ifndef IMU_TASK_H
 #define IMU_TASK_H
 
-#include <stdint.h>
+#include <tk/typedef.h>
 #include <tk/tkernel.h>
 
 /* 
@@ -56,11 +56,19 @@ typedef enum {
 } IMU_STOP_REASON;
 
 /* Continuous elapsed-time confirmation, independent of task scheduling. */
-typedef struct {
+typedef struct __attribute__((packed)) {
     UW since_us;
     UW last_us;
-    BOOL active;
+    UW active : 1;
 } IMU_CONFIRM;
+
+typedef struct __attribute__((packed)) {
+    UW state : 2;
+    UW stop_reason : 3;
+    UW hump_active : 1;
+    UW read_fault : 1;
+    UW hist_idx : 2;
+} IMU_RUNTIME_STATE;
 
 /* 
 =========================================
