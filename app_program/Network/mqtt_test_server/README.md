@@ -52,8 +52,7 @@ sensor telemetry from the Pico W's `/api/telemetry` endpoint.
 Map barcode keys to navigation actions with `--movement-config`:
 
 ```powershell
-python .\mqtt_test_server.py `
-  --host 127.0.0.1 `
+python .\mqtt_test_server.py  --host 127.0.0.1 `
   --movement-config '{"Z":"MOVE_FORWARD","B":"STOP","C":"TURN_LEFT","D":"TURN_RIGHT"}'
 ```
 
