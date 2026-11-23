@@ -60,8 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--movement-topic", default="robot/config/movement")
     parser.add_argument(
         "--movement-config",
-        default='{"w":"MOVE_FORWARD","s":"MOVE_BACKWARD","a":"TURN_LEFT","d":"TURN_RIGHT","e":"STOP"}',
-        help="JSON movement mapping to encode and publish retained",
+        default='{"a":"MOVE_FORWARD","z":"MOVE_BACKWARD","c":"TURN_LEFT","f":"TURN_RIGHT","b":"STOP"}',
+        help="JSON movement mapping to publish retained",
     )
     parser.add_argument("--username")
     parser.add_argument("--password")

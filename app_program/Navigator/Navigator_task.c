@@ -70,7 +70,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     PACKED_ROUTE barcode_instructions = {0};
     PACKED_ROUTE instructions = {0};
 
-    barcode_characters[0] = 'Z';
+    barcode_characters[0] = 'A';
     route_set(&barcode_instructions, 0, DIR_LEFT);
 
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) route_set(&instructions, i, DIR_INVALID);         // Preset all instructions as DIR_INVALID
@@ -318,6 +318,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             }
                             case MSG_BARCODE_DECODED:
                                 nav.last_decoded_char = (char)n_msg.data.decoded_char;
+
+                                tm_printf("HELLO %c\n", (char)n_msg.data.decoded_char);
 
                                 // Map detected character to instruction, then add to instruction array
                                 for (B i=0; i<NUMBER_OF_COMMANDS; i++) {
