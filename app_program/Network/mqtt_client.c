@@ -58,6 +58,7 @@ void mqtt_encode_telemetry(UB bytes[MQTT_TELEMETRY_BYTES],
     FIELD(obstacle_status, 3); FIELD(imu_state, 2); FIELD(imu_event, 2);
 #undef FIELD
     robot_bits_set(bytes, offset, ROBOT_FLAG_BITS, flags);
+    robot_bits_set(bytes, offset + ROBOT_FLAG_BITS, 2U, s->obstacle_width_status);
 }
 
 #ifndef NDEBUG
@@ -84,7 +85,7 @@ BOOL mqtt_codec_self_check(void)
         .heading_deg = 359, .height_dmm = 680, .movement_mode = MODE_SAFE_STOP,
         .bypass_phase = BYPASS_RETURN_CHECK, .ir_state = STATE_NULL, .last_barcode = 127,
         .instruction_idx = 5, .obstacle_distance_valid = 1, .obstacle_status = 6,
-        .imu_state = 3, .imu_event = 3};
+        .imu_state = 3, .imu_event = 3, .obstacle_width_status = WIDTH_ESTIMATED};
     UB bytes[MQTT_TELEMETRY_BYTES];
     mqtt_encode_telemetry(bytes, &s, (1UL << ROBOT_FLAG_BITS) - 1U);
     UINT offset = 8;
@@ -100,7 +101,8 @@ BOOL mqtt_codec_self_check(void)
 #undef CHECK
     return bytes[0] == 0x11U && offset + ROBOT_FLAG_BITS == 273U &&
            robot_bits_get(bytes, offset, ROBOT_FLAG_BITS) == (1UL << ROBOT_FLAG_BITS) - 1U &&
-           (bytes[MQTT_TELEMETRY_BYTES - 1] & 0xfeU) == 0U &&
+           robot_bits_get(bytes, offset + ROBOT_FLAG_BITS, 2U) == WIDTH_ESTIMATED &&
+           (bytes[MQTT_TELEMETRY_BYTES - 1] & 0xf8U) == 0U &&
            robot_sign_extend(0x80000000UL, 32U) == (-2147483647L - 1);
 }
 #endif
@@ -398,7 +400,12 @@ SZ telemetry_json(char *output, SZ capacity)
     json_text(output, capacity, &length, ",\"closest_deg\":");
     json_signed_number(output, capacity, &length, snapshot.closest_angle_deg);
     json_text(output, capacity, &length, ",\"obs_width\":");
-    json_number(output, capacity, &length, snapshot.estimated_width_cm);
+    if (snapshot.obstacle_width_status == WIDTH_ESTIMATED)
+        json_number(output, capacity, &length, snapshot.estimated_width_cm);
+    else
+        json_text(output, capacity, &length, "null");
+    json_text(output, capacity, &length, ",\"obs_width_status\":");
+    json_number(output, capacity, &length, snapshot.obstacle_width_status);
 
     // Sensor Specific: IMU
     json_text(output, capacity, &length, ",\"pitch\":");

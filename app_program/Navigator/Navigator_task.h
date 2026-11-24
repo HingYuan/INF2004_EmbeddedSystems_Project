@@ -67,6 +67,28 @@ typedef enum {
 =========================================
 */
 
+/* Width reporting is independent of the conservative bypass clearance profile. */
+typedef enum {
+    WIDTH_UNAVAILABLE = 0,
+    WIDTH_SCANNING = 1,
+    WIDTH_ESTIMATED = 2,
+    WIDTH_INCONSISTENT = 3
+} OBSTACLE_WIDTH_STATUS;
+
+typedef struct __attribute__((packed)) {
+    UW left_min_mm : 12;    // Bracket of the left edge relative to the sensor centreline.
+    UW left_max_mm : 12;
+    UW right_min_mm : 12;   // Positive distance to the right edge.
+    UW right_max_mm : 12;
+    UW left_valid : 1;
+    UW right_valid : 1;
+} OBSTACLE_WIDTH_SCAN;
+
+typedef struct __attribute__((packed)) {
+    UW cm : 10;            // Full front-face width, excludes robot/gap allowances.
+    UW status : 2;
+} OBSTACLE_WIDTH;
+
 typedef struct __attribute__((packed)) {
     UW closest_cm : 9;           // 0..400 cm, zero means no measured echo.
     W closest_angle_deg : 7;     // -45..45 degrees.
@@ -90,6 +112,7 @@ typedef struct __attribute__((packed)) {
     UW left_clearance_valid : 1;
     UW right_clearance_valid : 1;
     UW profile_valid : 1;
+    OBSTACLE_WIDTH_SCAN measured_width; // Dashboard estimate; never used to command movement.
     UB rays[(SONAR_PROFILE_RAYS * 12U + 7U) / 8U]; // Each ray: 9 distance + 3 status bits.
 } OBSTACLE_PROFILE;
 
@@ -314,6 +337,7 @@ typedef struct __attribute__((packed)) {
     UW obstacle_status : 3;
     UW imu_state : 2;
     UW imu_event : 2;
+    UW obstacle_width_status : 2;
 } TELEMETRY_SNAPSHOT;
 
 /* Writers hold robot_data_lock only around field stores. Readers copy under it. */
@@ -341,7 +365,6 @@ typedef struct __attribute__((packed)) {
     UW last_obstacle_dist_cm : 9;
     UW last_closest_cm : 9;
     W last_closest_angle_deg : 7;
-    UW last_estimated_width_cm : 10;
     UW live_sonar_distance_cm : 9;
 } NAVIGATOR_STATE;
 
@@ -357,8 +380,10 @@ static inline void route_set(PACKED_ROUTE *route, UINT index, DIRECTION directio
         robot_bits_set(route->bits, index * 3U, 3U, direction);
 }
 
-_Static_assert(sizeof(OBSTACLE_PROFILE) == 26, "obstacle profile packing");
-_Static_assert(sizeof(NAVIGATOR_MESSAGE) == 27, "navigator envelope packing");
+_Static_assert(sizeof(OBSTACLE_WIDTH_SCAN) == 7, "width edge brackets packing");
+_Static_assert(sizeof(OBSTACLE_WIDTH) == 2, "width result packing");
+_Static_assert(sizeof(OBSTACLE_PROFILE) == 33, "obstacle profile packing");
+_Static_assert(sizeof(NAVIGATOR_MESSAGE) == 34, "navigator envelope packing");
 _Static_assert(sizeof(TELEMETRY_SNAPSHOT) == 32, "telemetry packing");
 _Static_assert(BYPASS_MAX_SIDE_MM <= 2047U && BYPASS_MAX_FORWARD_MM <= 4095U, "bypass travel bit widths");
 _Static_assert(NUMBER_OF_COMMANDS <= 7 && TURNING_RAMPUP_LIMIT < 63, "navigator counter bit widths");

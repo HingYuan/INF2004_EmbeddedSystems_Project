@@ -83,13 +83,14 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     const UH spam_mitigation_threshold = 10;
 
     // Obstacle
+    OBSTACLE_WIDTH measured_width = {0};
     BYPASS_CONTEXT bypass = {0};  // bypass.side remains available to the reentry cases.
 
     // 2s grace period to place car on track, then flush any stale startup sensor messages
     tk_dly_tsk(2000);
     clear_navigator_mbf();
 #ifndef NDEBUG
-    if (!bypass_self_check() || !mqtt_codec_self_check()) {
+    if (!bypass_self_check() || !obstacle_width_self_check() || !mqtt_codec_self_check()) {
         robot_flag_assign(ROBOT_ESTOP_REQUEST, TRUE);
         tm_printf((UB *)"[bypass] Self-check failed\n");
         return;
@@ -346,6 +347,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                             case MSG_OBSTACLE_DETECTED:
 
                                 nav.last_obstacle_dist_cm = n_msg.data.obstacle_distance_cm;
+                                measured_width = (OBSTACLE_WIDTH){.status = WIDTH_SCANNING};
                                 // Each obstacle starts with a fresh side choice and confirmation counters.
                                 bypass = (BYPASS_CONTEXT){.phase = BYPASS_IDLE,
                                     .owns_obstacle_stop = TRUE,
@@ -609,7 +611,6 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                 const OBSTACLE_PROFILE *p = &n_msg.data.obstacle_profile;
                                 nav.last_closest_cm = p->closest_cm;
                                 nav.last_closest_angle_deg = p->closest_angle_deg;
-                                nav.last_estimated_width_cm = p->width_valid ? p->estimated_width_cm : 0U;
                                 nav.live_sonar_status = sonar_ray_status(p, 3);
                                 nav.live_sonar_distance_valid =
                                     nav.live_sonar_status == SONAR_OK &&
@@ -620,6 +621,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                 switch (bypass.phase) {
                                     case BYPASS_IDLE:
+                                        measured_width = obstacle_width_estimate(p, NULL);
+                                        if (measured_width.status == WIDTH_UNAVAILABLE) measured_width.status = WIDTH_SCANNING;
+                                        obstacle_width_report(measured_width);
                                         bypass.first_scan = *p;
                                         bypass.front_cm = nav.last_obstacle_dist_cm;
                                         if (p->front_cm >= 2U &&
@@ -633,6 +637,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_WAIT_RELEASE, 0, 0, 0);
                                         break;
                                     case BYPASS_SCAN_SECOND:
+                                        measured_width = obstacle_width_estimate(&bypass.first_scan, p);
+                                        obstacle_width_report(measured_width);
                                         bypass_plan_width(&bypass, p);
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_SCAN_RETURN,
                                                      BYPASS_API_POWER, -BYPASS_API_POWER, BYPASS_SCAN_BACK_MM);
@@ -868,6 +874,9 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                 
             }
 
+            if (nav.m_mode != MODE_OBSTACLE_ASSESS && measured_width.status == WIDTH_SCANNING)
+                measured_width.status = WIDTH_UNAVAILABLE;
+
             // Update shared telemetry snapshot
             // telemetry_snapshot.speed_left = curr_speed_left;
             // telemetry_snapshot.speed_right = curr_speed_right;
@@ -886,7 +895,8 @@ EXPORT void navigator_task(INT stacd, void *exinf)
             telemetry_snapshot.obstacle_distance_cm = nav.last_obstacle_dist_cm;
             telemetry_snapshot.closest_cm = nav.last_closest_cm;
             telemetry_snapshot.closest_angle_deg = (W)nav.last_closest_angle_deg;
-            telemetry_snapshot.estimated_width_cm = nav.last_estimated_width_cm;
+            telemetry_snapshot.estimated_width_cm = measured_width.cm;
+            telemetry_snapshot.obstacle_width_status = measured_width.status;
             telemetry_snapshot.seq++;
             telemetry_snapshot.obstacle_distance_valid = nav.live_sonar_distance_valid;
             telemetry_snapshot.obstacle_status = (UB)nav.live_sonar_status;

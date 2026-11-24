@@ -13,7 +13,165 @@ _Static_assert(BYPASS_SWEPT_RADIUS_CM * BYPASS_SWEPT_RADIUS_CM >=
                BYPASS_SWEPT_RADIUS_CM * BYPASS_SWEPT_RADIUS_CM >=
                (ROBOT_LENGTH_CM - BYPASS_PIVOT_FROM_FRONT_CM) * (ROBOT_LENGTH_CM - BYPASS_PIVOT_FROM_FRONT_CM) +
                ROBOT_HALF_WIDTH_CM * ROBOT_HALF_WIDTH_CM, "swept radius must cover the whole body");
+_Static_assert(WIDTH_BEAM_HALF_DDEG < 450U, "beam compensation must fit the scan");
 
+/* The near side of the beam can still hit the box after the axis passes its edge. */
+LOCAL UW width_ray_radians(UW angle)
+{
+    UW ddeg = angle * 10U;
+    if (ddeg <= WIDTH_BEAM_HALF_DDEG) return 0U;
+    return (ddeg - WIDTH_BEAM_HALF_DDEG) * 17453U / 10000U;
+}
+
+/* Fourth-order cosine is sufficient for the compensated -45..45 degree scan. */
+LOCAL UW width_cosine(UW angle)
+{
+    UW rad = width_ray_radians(angle);
+    UW square = rad * rad / 1000U;
+    return 1000U - square / 2U + square * square / 24000U;
+}
+
+EXPORT WIDTH_RAY_CLASS obstacle_width_classify(UW front_cm, W angle, UW cm, SONAR_STATUS status)
+{
+    if (front_cm < 2U || front_cm > 400U || angle < -45 || angle > 45)
+        return WIDTH_RAY_UNCERTAIN;
+    if (status == SONAR_NO_ECHO) {
+        UW cosine = width_cosine(angle < 0 ? -angle : angle);
+        return front_cm * 1000U <= 400U * cosine ? WIDTH_RAY_CLEAR : WIDTH_RAY_UNCERTAIN;
+    }
+    if (status != SONAR_OK || cm < 2U || cm > 400U) return WIDTH_RAY_UNCERTAIN;
+    UW depth_mm = cm * 10U * width_cosine(angle < 0 ? -angle : angle) / 1000U;
+    UW front_mm = front_cm * 10U;
+    UW tolerance_mm = WIDTH_DEPTH_TOLERANCE_CM * 10U;
+    if (depth_mm > front_mm + tolerance_mm) return WIDTH_RAY_CLEAR;
+    if (depth_mm + tolerance_mm < front_mm) return WIDTH_RAY_UNCERTAIN;
+    return WIDTH_RAY_FACE;
+}
+
+EXPORT UW obstacle_width_offset_mm(UW front_cm, UW angle)
+{
+    if (front_cm > 400U || angle > 45U) return 0U;
+    UW rad = width_ray_radians(angle);
+    UW square = rad * rad / 1000U;
+    UW sine = rad - rad * square / 6000U + rad * square * square / 120000000U;
+    UW cosine = width_cosine(angle);
+    return (front_cm * 10U * sine + cosine / 2U) / cosine;
+}
+
+EXPORT BOOL obstacle_width_samples_consistent(UW low_cm, UW middle_cm, UW high_cm)
+{
+    return low_cm <= middle_cm && middle_cm <= high_cm &&
+        (middle_cm - low_cm <= WIDTH_SAMPLE_SPREAD_CM ||
+         high_cm - middle_cm <= WIDTH_SAMPLE_SPREAD_CM);
+}
+
+/* Both scans share the same lateral origin; the 2 cm reverse changes only depth. */
+LOCAL BOOL width_merge_edge(BOOL av, UW amin, UW amax, BOOL bv, UW bmin, UW bmax,
+                            UW *midpoint, BOOL *conflict)
+{
+    av = av && amin <= amax && amax - amin <= WIDTH_MAX_EDGE_SPAN_MM;
+    bv = bv && bmin <= bmax && bmax - bmin <= WIDTH_MAX_EDGE_SPAN_MM;
+    if (!av && !bv) return FALSE;
+    if (av && bv) {
+        UW lo = amin > bmin ? amin : bmin;
+        UW hi = amax < bmax ? amax : bmax;
+        if (lo > hi && lo - hi > WIDTH_REPEAT_TOLERANCE_MM) {
+            *conflict = TRUE;
+            return FALSE;
+        }
+        *midpoint = (lo + hi) / 2U;
+    } else {
+        *midpoint = av ? (amin + amax) / 2U : (bmin + bmax) / 2U;
+    }
+    return TRUE;
+}
+
+EXPORT OBSTACLE_WIDTH obstacle_width_estimate(const OBSTACLE_PROFILE *first,
+                                             const OBSTACLE_PROFILE *second)
+{
+    OBSTACLE_WIDTH result = {0};
+    OBSTACLE_WIDTH_SCAN a = first->measured_width;
+    OBSTACLE_WIDTH_SCAN b = second ? second->measured_width : (OBSTACLE_WIDTH_SCAN){0};
+    /* Reject merging a different front plane after the short reverse. */
+    if (second && first->front_cm >= 2U && second->front_cm >= 2U) {
+        W delta_mm = ((W)second->front_cm - first->front_cm) * 10 - (W)BYPASS_SCAN_BACK_MM;
+        if (delta_mm < -30 || delta_mm > 30) {
+            if (a.left_valid && a.right_valid) b = (OBSTACLE_WIDTH_SCAN){0};
+            else if (b.left_valid && b.right_valid) a = (OBSTACLE_WIDTH_SCAN){0};
+            else return result;
+        }
+    }
+    UW left = 0, right = 0;
+    BOOL conflict = FALSE;
+    BOOL left_ok = width_merge_edge(a.left_valid, a.left_min_mm, a.left_max_mm,
+        b.left_valid, b.left_min_mm, b.left_max_mm, &left, &conflict);
+    BOOL right_ok = width_merge_edge(a.right_valid, a.right_min_mm, a.right_max_mm,
+        b.right_valid, b.right_min_mm, b.right_max_mm, &right, &conflict);
+    if (conflict) result.status = WIDTH_INCONSISTENT;
+    else if (left_ok && right_ok) {
+        UW cm = (left + right + 5U) / 10U;
+        if (cm > 0U && cm <= 800U) {
+            result.cm = cm;
+            result.status = WIDTH_ESTIMATED;
+        }
+    }
+    return result;
+}
+
+/* Report the same result Navigator stores in the dashboard telemetry. */
+EXPORT void obstacle_width_report(OBSTACLE_WIDTH width)
+{
+    switch (width.status) {
+        case WIDTH_ESTIMATED:
+            tm_printf((UB *)"[width] Dashboard: %u cm (estimated)\n", width.cm);
+            break;
+        case WIDTH_SCANNING:
+            tm_printf((UB *)"[width] Dashboard: Scanning... waiting for the second scan\n");
+            break;
+        case WIDTH_INCONSISTENT:
+            tm_printf((UB *)"[width] Dashboard: Inconsistent scans; edge positions disagree\n");
+            break;
+        default:
+            tm_printf((UB *)"[width] Dashboard: Unavailable; both edges could not be established\n");
+            break;
+    }
+}
+
+#ifndef NDEBUG
+EXPORT BOOL obstacle_width_self_check(void)
+{
+    OBSTACLE_PROFILE first = {.front_cm = 20}, second = {.front_cm = 22};
+    first.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 80, .left_max_mm = 100, .left_valid = 1};
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){.right_min_mm = 50, .right_max_mm = 70, .right_valid = 1};
+    OBSTACLE_WIDTH width = obstacle_width_estimate(&first, &second);
+    if (width.status != WIDTH_ESTIMATED || width.cm != 15 ||
+        obstacle_width_estimate(&first, NULL).status != WIDTH_UNAVAILABLE) return FALSE;
+    first.measured_width.right_valid = 1;
+    first.measured_width.right_min_mm = 50;
+    first.measured_width.right_max_mm = 70;
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){0};
+    width = obstacle_width_estimate(&first, &second);
+    if (width.status != WIDTH_ESTIMATED || width.cm != 15) return FALSE;
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 180, .left_max_mm = 200, .left_valid = 1};
+    if (obstacle_width_estimate(&first, &second).status != WIDTH_INCONSISTENT) return FALSE;
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 50, .left_max_mm = 200, .left_valid = 1};
+    width = obstacle_width_estimate(&first, &second);
+    if (width.status != WIDTH_ESTIMATED || width.cm != 15) return FALSE;
+    /* Regression: these broad ranges previously turned a 12 cm box into 23 cm. */
+    first = (OBSTACLE_PROFILE){.front_cm = 18};
+    second = (OBSTACLE_PROFILE){.front_cm = 22};
+    first.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 135, .left_max_mm = 180, .left_valid = 1};
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 89, .left_max_mm = 127, .left_valid = 1,
+        .right_min_mm = 89, .right_max_mm = 107, .right_valid = 1};
+    if (obstacle_width_estimate(&first, &second).status != WIDTH_UNAVAILABLE) return FALSE;
+    return obstacle_width_classify(20, 0, 30, SONAR_OK) == WIDTH_RAY_CLEAR &&
+           obstacle_width_classify(20, 0, 20, SONAR_OK) == WIDTH_RAY_FACE &&
+           obstacle_width_classify(20, 30, 0, SONAR_UNSTABLE) == WIDTH_RAY_UNCERTAIN &&
+           obstacle_width_offset_mm(20, 0) == 0U && obstacle_width_offset_mm(20, 45) <= 201U &&
+           obstacle_width_samples_consistent(20, 21, 60) &&
+           !obstacle_width_samples_consistent(20, 30, 60);
+}
+#endif
 
 // No echo is open space, not a failed scan. Other unavailable readings rank below usable rays.
 LOCAL UW bypass_side_room(SONAR_STATUS status, UW cm)

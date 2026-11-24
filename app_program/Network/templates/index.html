@@ -681,8 +681,8 @@
           <span class="data-val"><span class="hl-cyan" id="closest-dist">--</span> cm @ <span class="hl-cyan" id="closest-angle">0&deg;</span></span>
         </div>
         <div class="data-row" style="border-bottom:none">
-          <span class="data-label">Est. Target Width</span>
-          <span class="data-val"><span class="hl-green" id="obs-width">--</span> cm</span>
+          <span class="data-label" title="Estimated front-face width, excluding bypass clearance">Obstacle Width</span>
+          <span class="data-val"><span class="hl-amber" id="obs-width">Not measured</span></span>
         </div>
       </div>
 
@@ -1098,6 +1098,19 @@
     // -----------------------------------------------------------
     // MAIN REFRESH TICKER: FETCH TELEMETRY & MQTT DATA
     // -----------------------------------------------------------
+    function updateObstacleWidth(t) {
+      const status = Number(t.obs_width_status);
+      const width = Number(t.obs_width);
+      const valid = status === 2 && t.obs_width !== null &&
+                    Number.isFinite(width) && width > 0 && width <= 800;
+      const label = valid ? width + ' cm (estimated)' :
+                    status === 1 ? 'Scanning...' :
+                    status === 3 ? 'Inconsistent scans' : 'Unavailable';
+      setTxt('obs-width', label);
+      const element = document.getElementById('obs-width');
+      if (element) element.className = valid ? 'hl-green' : 'hl-amber';
+    }
+
     async function refreshTelemetry() {
       const fetchStart = performance.now();
 
@@ -1214,7 +1227,7 @@
           isValidEcho ? 'hl-green' : (sonarStatus === 'OK' ? 'hl-red' : 'hl-amber');
         setTxt('closest-dist', t.closest_cm || 0);
         setTxt('closest-angle', (t.closest_deg || 0) + '\u00B0');
-        setTxt('obs-width', t.obs_width || 0);
+        updateObstacleWidth(t);
 
         drawRadar(t.closest_cm || 0, t.closest_deg || 0, obsDist, isValidEcho);
 
