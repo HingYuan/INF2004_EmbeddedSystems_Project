@@ -61,7 +61,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd = {0};
     // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    NAVIGATOR_STATE nav = {.m_mode = MODE_LINE_FOLLOWING, .prev_ir_state = STATE_NULL,
+    NAVIGATOR_STATE nav = {.m_mode = MODE_WIFI_SEND_COMMS, .prev_ir_state = STATE_NULL,
                            .reentry_dir = DIR_FRONT, .live_sonar_status = SONAR_INVALID};
     // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
@@ -72,8 +72,10 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
     // barcode_characters[0] = 'Z';
     // route_set(&barcode_instructions, 0, DIR_LEFT);
-    // barcode_characters[1] = 'A';
-    // route_set(&barcode_instructions, 0, DIR_BACK);
+    // barcode_characters[1] = 'F';
+    // route_set(&barcode_instructions, 1, DIR_RIGHT);
+    // barcode_characters[2] = 'A';
+    // route_set(&barcode_instructions, 2, DIR_BACK);
 
     for (int i=0; i<NUMBER_OF_COMMANDS; i++) route_set(&instructions, i, DIR_INVALID);         // Preset all instructions as DIR_INVALID
 
@@ -443,7 +445,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                        tk_dly_tsk(600);
+                        tk_dly_tsk(900);
 
                         mot_cmd.target_speed_left =     0;
                         mot_cmd.target_speed_right =   -0;
@@ -561,7 +563,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
 
                                         tk_snd_mbf(motor_mbfid, (void *)&mot_cmd, sizeof(MOTOR_COMMAND), TMO_FEVR);
 
-                                        tk_dly_tsk(250);
+                                        tk_dly_tsk(50);
 
                                         // Re-entry alignment does not consume a route instruction.
                                         if (!nav.reentry && ++nav.instruction_idx >= NUMBER_OF_COMMANDS) {

@@ -167,7 +167,7 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
 
 	while(1) {
 		// Wait asleep until a message arrives in the buffer
-		msg_size = tk_rcv_mbf(barcode_mbfid, (void *)&br, TMO_FEVR);
+		msg_size = tk_rcv_mbf(barcode_mbfid, (void *)&br, 500);
 		
         // If timeout passes, reset bars - prevents false reads
         if (msg_size == E_TMOUT) {
