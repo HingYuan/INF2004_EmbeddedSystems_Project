@@ -93,12 +93,21 @@ ER pwm_set_pin(UINT no)
 	return E_OK;
 }
 
-ER pwm_set_divider(UINT no, UINT integer, UINT fraction)
+ER pwm_set_divider (UINT pin_num, UINT integer, UINT fraction)
 {
-	if(no >= GPIO_NUM || integer == 0 || integer > 255 || fraction > 15) return E_PAR;
+    ER ret_err = E_OK;
 
-	out_w(PWM_CH_DIV(PWM_GET_CHNO(no)), (integer << 4) | fraction);
-	return E_OK;
+    if ((pin_num >= GPIO_NUM) || (0u == integer) ||
+        (integer > 255u) || (fraction > 15u))
+    {
+        ret_err = E_PAR;
+    }
+    else
+    {
+        out_w(PWM_CH_DIV(PWM_GET_CHNO(pin_num)), (integer << 4u) | fraction);
+    }
+
+    return ret_err;
 }
 
 ER pwm_set_wrap(UINT no, UW wrap)

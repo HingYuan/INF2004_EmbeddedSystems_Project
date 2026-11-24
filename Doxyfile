@@ -1,0 +1,15 @@
+# Doxygen configuration for INF2004 Embedded Systems Project (BARR-C Rule 2.2.h)
+
+PROJECT_NAME           = "INF2004 Embedded Systems Robot Firmware"
+OUTPUT_DIRECTORY       = build_docs
+INPUT                  = app_program config/mqtt_config.example.h docs
+FILE_PATTERNS          = *.c *.h *.md
+RECURSIVE              = YES
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES

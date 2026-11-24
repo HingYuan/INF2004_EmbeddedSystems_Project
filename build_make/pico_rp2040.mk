@@ -444,7 +444,7 @@ endif
 endif
 
 WIFI_INCLUDES := -I"$(WIFIDIR)" \
-                 -I"../app_program/Network" \
+                 -I"../app_program/network" \
                  -I"../lib/libtm/sysdepend/pico_rp2040/usb" \
                  -I"$(CYW43_DRIVER_PATH)/src" \
                  -I"$(CYW43_DRIVER_PATH)/firmware" \

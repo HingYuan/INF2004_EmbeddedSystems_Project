@@ -1,159 +1,296 @@
-#ifndef ROBOT_TASK_H
-#define ROBOT_TASK_H
+/**
+ * @file robot_tasks.h
+ * @brief Shared synchronization, bit-packing utilities, and task startup API.
+ *
+ * NOTE: Compression baseline preserves compact packed internal structs and
+ * explicit little-endian bit streams for sonar rays, routes, and MQTT v1.
+ * Packed struct layout is internal to this GCC firmware, never the MQTT wire
+ * ABI; MQTT uses explicit bit-stream shifts and masks (see mqtt_client.h).
+ *
+ * BARR-C Deviation (Rules 1.1.a, 1.1.c, 2.1.c.ii, 5.2.a):
+ *   Approver: Project Team (INF2004).
+ *   Rationale:
+ *   1. Rule 1.1.a / 1.1.c: Build requires -std=gnu11 for Pico SDK headers;
+ *      packed internal structs use ROBOT_TASKS_PACKED to save ~7.8 KB RAM on
+ *      RP2040; robot_tasks_flags_get() uses an ARMv6-M DMB memory barrier.
+ *   2. Rule 2.1.c.ii: pico_rp2040.mk defines -DNDEBUG for CONSOLE=usb_cdc
+ *      builds, so intentional operator serial telemetry remains active while
+ *      debug-only checks and diagnostics are wrapped in #ifndef NDEBUG.
+ *   3. Rule 5.2.a: uT-Kernel 3.0 API boundaries retain native RTOS typedefs
+ *      (INT, UINT, ER, ID, SZ, TMO) to avoid incompatible-pointer diagnostics
+ *      against kernel headers where INT is int and int32_t is long on ARM.
+ */
+
+#ifndef ROBOT_TASKS_H
+#define ROBOT_TASKS_H
+
+#include <stdbool.h>
+#include <stdint.h>
 
 #include <tk/tkernel.h>
 #include <tk/typedef.h>
 
-/*
- * Compression baseline (2026-11-22; professor's tk/typedef.h types).
- *
- * Field / valid domain                       Stored bits
- * motor power -100..100 / independent ticks 0..255     8 / 8 per wheel
- * motor state 0..6 / IMU state 0..3 / event 0..3       3 / 2 / 2
- * IR state 0..4 / bar colour 0..1 / ASCII 0..127       3 / 1 / 7
- * barcode duration (wrapping us delta)/100, 0..42949672     26
- * sonar distance 0..400 / status 0..6 / angle -45..45   9 / 3 / 7 signed
- * profile width 0..800 / offset including gap 0..411  10 / 9
- * pitch/roll -180..180 degrees, resolution 0.1       12 signed each
- * heading 0..359 / height 0..68 mm, resolution 0.1     9 / 10
- * Navigator mode 0..10 / bypass phase IDs 0..27        4 / 5
- * route direction 0..5 / route index 0..5             3 / 3
- * bypass side -1..1 / flags / confirmation 0..2        2 signed / 1 / 2
- * side/forward/leg travel incl. coast (guarded)       11 / 12 / 12
- * planned width 0..4220 mm                            13
- * stall counters saturate at 75 / encoder filter      7 each / 2 per channel
- * shared faults/control flags                        13 in one aligned UW
- *
- * Full 32-bit wrapping timers, sequence/encoder counters and signed odometry
- * retain their domains; shortening them would change wrap/freshness behaviour.
- * Native OS/driver arguments and arithmetic intermediates keep their API width.
- * IMU filter calculations remain float: only messages/display data use fixed
- * point. Both tilt axes, lift/overturn, hump and compass features remain.
- * Packed struct layout is internal to this GCC firmware, NOT the MQTT wire ABI.
- * MQTT uses explicit shifts/masks; see Network/mqtt_client.h.
- *
- * ARM GCC 13.3.0, Cortex-M0+, -O2 -DNDEBUG, SMP/MQTT/WEB enabled:
- * Type                        Before -> After bytes
- * MOTOR_COMMAND                    4 -> 4
- * BAR_RECORD                       8 -> 4
- * OBSTACLE_PROFILE               120 -> 26
- * SONAR_PROBE_RESULT              20 -> 7
- * SONAR_DISTANCE_MSG              12 -> 2
- * IMU_TELEMETRY_MSG               20 -> 6
- * NAVIGATOR_MESSAGE              124 -> 27
- * TELEMETRY_SNAPSHOT              68 -> 32
- * BYPASS_CONTEXT                 204 -> 61
- * IMU_CONFIRM                    12 -> 9
- * C_RING_BUFFER                  32 -> 22
- *
- * Static .data + .bss object sizes, same compiler/profile:
- * robot_tasks 9656->2312, Motor 94->52, Navigator 68->32, IR 0->0,
- * IMU 8->8, Ultrasonic 4->0, Bypass_helpers 0->0, MQTT 1692->289,
- * web_server 1584->2584 (larger API buffer fits all 66 mapping entries).
- * Total for those nine modules: 13106->5277 bytes, saving 7829 bytes.
- * Excludes linker alignment, kernel/drivers, heap and reserved task stacks.
- * Queue storage 9640->2288 bytes; capacities are now truly 20/64/10 messages,
- * including the kernel's word-rounded payload and four-byte record header.
- * Navigator payload copying falls 124->27 bytes/message (78.2% fewer bytes).
- * MQTT telemetry is 35 binary bytes; command 5, status 10, mapping 2+ceil(10N/8).
- *
- * Verification: all 13 application C units compile in 8 ARM configurations
- * (SMP 0/1, network 0/1, debug/release). Host C checks use the actual helpers:
- * all 65536 speed pairs, sonar 0..400 at every ray/status, 131072 encoder
- * sequences, malformed/fragmented binary frames, full mapping/dashboard JSON,
- * timer wrap, route/ring bounds, and existing IMU/bypass debug self-checks.
- * 20000 randomized mirrored width calculations match the pre-change algorithm.
- * This is compiler/host evidence, not on-car timing, flash or motion acceptance.
- *
- * Width reporting extension (2026-11-24): four 12-bit edge limits and two valid
- * bits add 7 bytes to OBSTACLE_PROFILE (33), NAVIGATOR_MESSAGE (34) and
- * BYPASS_CONTEXT (68). The 64-message queue grows by 512 bytes after rounding.
- * The result uses 10 width bits + 2 status bits. TELEMETRY_SNAPSHOT remains
- * 32 bytes; MQTT uses two reserved bits and remains 35 bytes. Motion fields
- * and their ranges are unchanged. The size/performance figures above describe
- * the earlier compression baseline, before this extension.
- *
- * Concurrency: common interrupt-preserving lock guards every shared packed
- * telemetry/map write and snapshot read. Shared flags use locked read/modify/
- * write and an aligned word read. Private state has one owner; encoder filters
- * have the ISR as sole writer (startup self-check/reset runs before IRQ use).
- */
+/* Localized compiler attribute for RAM-compressed internal structs (1.1.c). */
+#define ROBOT_TASKS_PACKED              __attribute__((packed))
 
-/* Shared application flags: one aligned word, updated only through the API.
- * No-echo and link loss are diagnostic bits, not motor stop requests.
- * Bits 0..2 retain the existing motor fault values used in serial diagnostics.
- */
-#define ROBOT_FAULT_STALL       (1UL << 0)
-#define ROBOT_FAULT_ENCODER     (1UL << 1)
-#define ROBOT_FAULT_ESTOP       (1UL << 2)
-#define ROBOT_FAULT_SONAR       (1UL << 3)
-#define ROBOT_FAULT_SERVO       (1UL << 4)
-#define ROBOT_FAULT_IMU_READ    (1UL << 5)
-#define ROBOT_FAULT_IMU_TILT    (1UL << 6)
-#define ROBOT_STATUS_NO_ECHO    (1UL << 7)
-#define ROBOT_FAULT_WIFI        (1UL << 8)
-#define ROBOT_FAULT_MQTT        (1UL << 9)
-#define ROBOT_STOP_ACK_REQUEST  (1UL << 10)
-#define ROBOT_ENCODER_DEGRADED  (1UL << 11)
-#define ROBOT_ESTOP_REQUEST     (1UL << 12)
-#define ROBOT_FLAG_BITS         13U
+/* C99-portable compile-time assertion (Rules 1.1.a, 5.5.a, 5.5.b). */
+#define ROBOT_TASKS_STATIC_ASSERT(name, expr) \
+    typedef uint8_t robot_tasks_sa_##name[(expr) ? 1 : -1]
 
-IMPORT UINT robot_data_lock(void);
-IMPORT void robot_data_unlock(UINT saved);
-IMPORT UW robot_flags_get(void);
-IMPORT void robot_flags_update(UW set, UW clear);
-IMPORT void robot_flag_assign(UW mask, BOOL enabled);
+/* Verify RP2040 little-endian bit-field layout assumption (Rule 5.5.b). */
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+ROBOT_TASKS_STATIC_ASSERT(little_endian,
+                          (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__));
+#endif
 
-/* Explicit little-endian bit streams for sonar rays, maps and MQTT.
- * Callers allocate ceil((offset + width)/8) bytes; width is 1..32.
- */
-static inline UW robot_bits_get(const UB *bytes, UINT offset, UINT width)
+/* Shared application fault and control flags (one aligned 32-bit word). */
+#define ROBOT_FAULT_STALL               (1u << 0u)
+#define ROBOT_FAULT_ENCODER             (1u << 1u)
+#define ROBOT_FAULT_ESTOP               (1u << 2u)
+#define ROBOT_FAULT_SONAR               (1u << 3u)
+#define ROBOT_FAULT_SERVO               (1u << 4u)
+#define ROBOT_FAULT_IMU_READ            (1u << 5u)
+#define ROBOT_FAULT_IMU_TILT            (1u << 6u)
+#define ROBOT_STATUS_NO_ECHO            (1u << 7u)
+#define ROBOT_FAULT_WIFI                (1u << 8u)
+#define ROBOT_FAULT_MQTT                (1u << 9u)
+#define ROBOT_STOP_ACK_REQUEST          (1u << 10u)
+#define ROBOT_ENCODER_DEGRADED          (1u << 11u)
+#define ROBOT_ESTOP_REQUEST             (1u << 12u)
+#define ROBOT_FLAG_BITS                 (13u)
+
+/* Fixed-width IEEE-754 single-precision floating-point type (Rule 5.4.b.i). */
+typedef float float32_t;
+
+ROBOT_TASKS_STATIC_ASSERT(float32_size, (4u == sizeof(float32_t)));
+
+typedef union
 {
-    UW value = 0;
-    for (UINT i = 0; i < width; ++i)
-        value |= (UW)((bytes[(offset + i) / 8U] >> ((offset + i) % 8U)) & 1U) << i;
-    return value;
+    float32_t f32_val;
+    uint32_t  u32_bits;
+} robot_tasks_f32_bits_t;
+
+typedef void (*robot_tasks_fn_t)(INT stacd, void * p_exinf);
+
+typedef struct
+{
+    robot_tasks_fn_t fn_task;
+    INT              priority;
+    INT              stacd;
+    uint32_t         assprc;
+    const char *     p_name;
+} robot_tasks_cfg_t;
+
+/**
+ * @brief Acquire the common interrupt-preserving application data lock.
+ * @return Saved interrupt state for robot_tasks_data_unlock().
+ */
+UINT robot_tasks_data_lock (void);
+
+/**
+ * @brief Release the common application data lock.
+ * @param[in] saved_state Saved interrupt state from robot_tasks_data_lock().
+ */
+void robot_tasks_data_unlock (UINT saved_state);
+
+/**
+ * @brief Read the shared fault and control flag word with acquire barrier.
+ * @return Current 32-bit application flag bitmask.
+ */
+uint32_t robot_tasks_flags_get (void);
+
+/**
+ * @brief Atomically set and clear bits in the shared application flag word.
+ * @param[in] set_mask   Bits to set.
+ * @param[in] clear_mask Bits to clear before applying set_mask.
+ */
+void robot_tasks_flags_update (uint32_t set_mask, uint32_t clear_mask);
+
+/**
+ * @brief Assign a single bitmask in the shared application flag word.
+ * @param[in] mask      Flag bitmask to update.
+ * @param[in] b_enabled True to set mask, false to clear mask.
+ */
+void robot_tasks_flag_assign (uint32_t mask, bool b_enabled);
+
+/**
+ * @brief Return the RTOS message buffer handle for barcode bar records.
+ * @return Message buffer ID handle.
+ */
+ID robot_tasks_get_barcode_mbf (void);
+
+/**
+ * @brief Return the RTOS message buffer handle for Navigator messages.
+ * @return Message buffer ID handle.
+ */
+ID robot_tasks_get_nav_mbf (void);
+
+/**
+ * @brief Return the RTOS message buffer handle for motor commands.
+ * @return Message buffer ID handle.
+ */
+ID robot_tasks_get_motor_mbf (void);
+
+/**
+ * @brief Return the RTOS event flag handle shared with ultrasonic task.
+ * @return Event flag ID handle.
+ */
+ID robot_tasks_get_ranger_flg (void);
+
+/**
+ * @brief Read the RP2040 free-running 1-usec hardware timer low word.
+ * @return Current 32-bit microsecond counter value.
+ */
+uint32_t robot_tasks_time_usec (void);
+
+/**
+ * @brief Busy-wait for a bounded microsecond interval using hardware timer.
+ * @param[in] delay_usec Microseconds to wait.
+ */
+void robot_tasks_delay_usec (uint32_t delay_usec);
+
+/**
+ * @brief Create shared IPC objects and start all robot peripheral tasks.
+ * @return E_OK on success, or negative uT-Kernel error code on failure.
+ */
+ER robot_tasks_start (void);
+
+/**
+ * @brief Read a little-endian bit field from a byte buffer.
+ * @param[in] p_bytes    Source byte array.
+ * @param[in] bit_offset Starting bit index.
+ * @param[in] bit_width  Field width in bits (1..32).
+ * @return Extracted unsigned bit field value.
+ */
+static inline uint32_t robot_tasks_bits_get (const uint8_t * p_bytes,
+                                             uint32_t bit_offset,
+                                             uint32_t bit_width)
+{
+    uint32_t result = 0u;
+
+    for (uint32_t bit_idx = 0u; bit_idx < bit_width; bit_idx++)
+    {
+        uint32_t total_bit = bit_offset + bit_idx;
+        uint32_t byte_val  = (uint32_t)p_bytes[total_bit / 8u];
+        uint32_t bit_val   = (byte_val >> (total_bit % 8u)) & 1u;
+
+        result |= (bit_val << bit_idx);
+    }
+
+    return result;
 }
 
-static inline void robot_bits_set(UB *bytes, UINT offset, UINT width, UW value)
+/**
+ * @brief Write a little-endian bit field into a byte buffer.
+ * @param[in,out] p_bytes    Destination byte array.
+ * @param[in]     bit_offset Starting bit index.
+ * @param[in]     bit_width  Field width in bits (1..32).
+ * @param[in]     bit_value  Unsigned value to store.
+ */
+static inline void robot_tasks_bits_set (uint8_t * p_bytes,
+                                         uint32_t bit_offset,
+                                         uint32_t bit_width,
+                                         uint32_t bit_value)
 {
-    for (UINT i = 0; i < width; ++i) {
-        UINT bit = (offset + i) % 8U;
-        UB *byte = &bytes[(offset + i) / 8U];
-        *byte = (UB)((*byte & ~(1U << bit)) | (((value >> i) & 1U) << bit));
+    for (uint32_t bit_idx = 0u; bit_idx < bit_width; bit_idx++)
+    {
+        uint32_t  total_bit = bit_offset + bit_idx;
+        uint32_t  bit_pos   = total_bit % 8u;
+        uint8_t * p_byte    = &p_bytes[total_bit / 8u];
+        uint32_t  cleared   = ((uint32_t)(*p_byte)) & (~(1u << bit_pos));
+        uint32_t  inserted  = ((bit_value >> bit_idx) & 1u) << bit_pos;
+
+        /* Range-safe: cleared | inserted fits within 8 bits (0..255). */
+        *p_byte = (uint8_t)(cleared | inserted);
     }
 }
 
-static inline W robot_sign_extend(UW value, UINT width)
+/**
+ * @brief Sign-extend an N-bit two's-complement value to int32_t.
+ * @param[in] raw_value Unsigned N-bit field value.
+ * @param[in] bit_width Field width in bits (1..32).
+ * @return Sign-extended 32-bit signed integer.
+ */
+static inline int32_t robot_tasks_sign_extend (uint32_t raw_value,
+                                               uint32_t bit_width)
 {
-    UW sign = 1UL << (width - 1U);
-    return (W)((value ^ sign) - sign);
+    uint32_t sign_bit = 1u << (bit_width - 1u);
+    uint32_t extended = (raw_value ^ sign_bit) - sign_bit;
+
+    /* Range-safe: two's-complement bit pattern maps directly on ARMv6-M. */
+    return (int32_t)extended;
 }
 
-static inline H robot_fixed10(float value, H minimum, H maximum)
+/**
+ * @brief Pack a signed integer into an unsigned N-bit two's-complement field.
+ * @param[in] signed_val Signed value fitting within bit_width bits.
+ * @param[in] bit_width  Field width in bits (1..32).
+ * @return Masked unsigned bit pattern suitable for unsigned bit-fields.
+ */
+static inline uint32_t robot_tasks_pack_signed (int32_t signed_val,
+                                                uint32_t bit_width)
 {
-    float scaled = value * 10.0f;
-    if (!(scaled >= minimum)) return minimum;
-    if (scaled >= maximum) return maximum;
-    return (H)(scaled < 0.0f ? scaled - 0.5f : scaled + 0.5f);
+    uint32_t mask = (32u == bit_width)
+                    ? 0xFFFFFFFFu
+                    : ((1u << bit_width) - 1u);
+
+    /* Range-safe: C99 modulo-2^32 unsigned conversion preserves low bits. */
+    return (((uint32_t)signed_val) & mask);
 }
 
-typedef void (*PERIPHERAL_TASK)(INT stacd, void *exinf);
-typedef struct {
-    PERIPHERAL_TASK task;
-    INT priority; /* OS API value; not an application state. */
-    INT stacd;
-    UW assprc;
-    const char *name;
-} TASK_START;
+/**
+ * @brief Test whether an IEEE-754 float32_t is finite (not NaN or Inf).
+ * @param[in] float_val Single-precision floating-point value to inspect.
+ * @return True if finite, false if NaN or infinite.
+ */
+static inline bool robot_tasks_is_finite_f32 (float32_t float_val)
+{
+    robot_tasks_f32_bits_t ieee_bits = { 0.0f };
 
-IMPORT ID barcode_mbfid;
-IMPORT ID navigator_mbfid;
-IMPORT ID motor_mbfid;
-IMPORT ID ranger_flgid;
+    ieee_bits.f32_val = float_val;
 
-IMPORT UW time_us(void);
-IMPORT void delay_us(UW delay);
-IMPORT ER robot_tasks_start(void);
+    return (0x7F800000u != (ieee_bits.u32_bits & 0x7F800000u));
+}
 
-#endif
+/**
+ * @brief Convert a float32_t to clamped tenths fixed-point int16_t.
+ * @param[in] float_val Input floating-point value.
+ * @param[in] min_val   Lower clamp bound in tenths.
+ * @param[in] max_val   Upper clamp bound in tenths.
+ * @return Rounded and clamped fixed-point value.
+ */
+static inline int16_t robot_tasks_fixed10 (float32_t float_val,
+                                           int16_t min_val,
+                                           int16_t max_val)
+{
+    int16_t   result = min_val;
+    float32_t scaled = float_val * 10.0f;
+
+    if (!robot_tasks_is_finite_f32(scaled))
+    {
+        result = (scaled > 0.0f) ? max_val : min_val;
+    }
+    else if (scaled < (float32_t)min_val)
+    {
+        result = min_val;
+    }
+    else if (scaled >= (float32_t)max_val)
+    {
+        result = max_val;
+    }
+    else
+    {
+        float32_t rounded = (scaled < 0.0f)
+                            ? (scaled - 0.5f)
+                            : (scaled + 0.5f);
+
+        /* Range-safe: scaled is bounded within [min_val, max_val). */
+        result = (int16_t)rounded;
+    }
+
+    return result;
+}
+
+#endif /* ROBOT_TASKS_H */
+
+/*** end of file ***/
