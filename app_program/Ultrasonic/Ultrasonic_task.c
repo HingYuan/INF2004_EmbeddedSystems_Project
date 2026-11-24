@@ -98,7 +98,7 @@ LOCAL UW servo_pulse_from_angle(W angle)
 }
 
 // Move servo and obtain a stable distance measurement
-LOCAL SONAR_STATUS scan_angle(W angle, UW *distance_cm)
+LOCAL SONAR_STATUS scan_angle_samples(W angle, UW *distance_cm, BOOL width_measurement)
 {
     UW readings[3];
     INT count = 0;
@@ -137,7 +137,7 @@ LOCAL SONAR_STATUS scan_angle(W angle, UW *distance_cm)
             ? readings[0] - readings[1]
             : readings[1] - readings[0];
 
-        if (gap > 15U)
+        if (gap > (width_measurement ? WIDTH_SAMPLE_SPREAD_CM : 15U))
             return SONAR_UNSTABLE;
 
         *distance_cm = (readings[0] + readings[1]) / 2U;
@@ -155,8 +155,15 @@ LOCAL SONAR_STATUS scan_angle(W angle, UW *distance_cm)
         }
     }
 
+    if (width_measurement && !obstacle_width_samples_consistent(readings[0], readings[1], readings[2]))
+        return SONAR_UNSTABLE;
     *distance_cm = readings[1];
     return SONAR_OK;
+}
+
+LOCAL SONAR_STATUS scan_angle(W angle, UW *distance_cm)
+{
+    return scan_angle_samples(angle, distance_cm, FALSE);
 }
 
 // Keep the closest observed point
@@ -276,16 +283,16 @@ LOCAL BOOL measure_width_edge(const OBSTACLE_PROFILE *profile, INT side, UW *lo_
     for (UINT pass = 0; pass < WIDTH_REFINE_PASSES; ++pass) {
         UW middle = (near_angle + far_angle) / 2U, cm = 0;
         if (middle == near_angle) break;
-        SONAR_STATUS status = scan_angle(side * (W)middle, &cm);
+        SONAR_STATUS status = scan_angle_samples(side * (W)middle, &cm, TRUE);
         if (hardware_fault(status)) return FALSE;
         WIDTH_RAY_CLASS ray = obstacle_width_classify(profile->front_cm, side * (W)middle, cm, status);
         if (ray == WIDTH_RAY_FACE) near_angle = middle;
         else if (ray == WIDTH_RAY_CLEAR) far_angle = middle;
-        else break; // Keep the known bracket if refinement is noisy.
+        // An uncertain sample consumes a pass without shrinking the bracket.
     }
     *lo_mm = obstacle_width_offset_mm(profile->front_cm, near_angle);
     *hi_mm = obstacle_width_offset_mm(profile->front_cm, far_angle);
-    return TRUE;
+    return *hi_mm > *lo_mm && *hi_mm - *lo_mm <= WIDTH_MAX_EDGE_SPAN_MM;
 }
 
 LOCAL void measure_width(OBSTACLE_PROFILE *profile)
@@ -482,23 +489,18 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
         valid_count, COARSE_COUNT);
 
     tm_printf(
-        (UB *)"[sonar] Profile=%d Right=%d Left=%d Width=%d\n",
+        (UB *)"[sonar] Clearance profile=%d Right=%d Left=%d\n",
         profile->profile_valid,
         profile->right_edge_valid,
-        profile->left_edge_valid,
-        profile->width_valid);
+        profile->left_edge_valid);
 
-    if (profile->width_valid) {
-        tm_printf(
-            (UB *)"[sonar] Approx width: %u cm\n",
-            profile->estimated_width_cm);
-    } else {
-        tm_printf((UB *)"[sonar] Clearance profile width unknown\n");
-    }
-
-    OBSTACLE_WIDTH width = obstacle_width_estimate(profile, NULL);
-    tm_printf((UB *)"[width] Left=%u Right=%u estimate=%u cm status=%u\n",
-              profile->measured_width.left_valid, profile->measured_width.right_valid, width.cm, width.status);
+    // Edge validity is diagnostic; Navigator reports the combined dashboard width.
+    tm_printf((UB *)"[width] Scan front=%u cm; left edge=%u [%u..%u] mm; right edge=%u [%u..%u] mm\n",
+              profile->front_cm,
+              profile->measured_width.left_valid, profile->measured_width.left_min_mm,
+              profile->measured_width.left_max_mm,
+              profile->measured_width.right_valid, profile->measured_width.right_min_mm,
+              profile->measured_width.right_max_mm);
     return profile->profile_valid;
 }
 

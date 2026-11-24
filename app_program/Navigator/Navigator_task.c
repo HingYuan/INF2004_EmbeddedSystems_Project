@@ -61,7 +61,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
     INT message_size;
     MOTOR_COMMAND mot_cmd = {0};
     // MOVEMENT_MODE m_mode = MODE_WIFI_SEND_COMMS;
-    NAVIGATOR_STATE nav = {.m_mode = MODE_WIFI_SEND_COMMS, .prev_ir_state = STATE_NULL,
+    NAVIGATOR_STATE nav = {.m_mode = MODE_LINE_FOLLOWING, .prev_ir_state = STATE_NULL,
                            .reentry_dir = DIR_FRONT, .live_sonar_status = SONAR_INVALID};
     // MOVEMENT_MODE m_mode = MODE_BARCODE_SCANNING;
 
@@ -605,6 +605,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                     case BYPASS_IDLE:
                                         measured_width = obstacle_width_estimate(p, NULL);
                                         if (measured_width.status == WIDTH_UNAVAILABLE) measured_width.status = WIDTH_SCANNING;
+                                        obstacle_width_report(measured_width);
                                         bypass.first_scan = *p;
                                         bypass.front_cm = nav.last_obstacle_dist_cm;
                                         if (p->front_cm >= 2U &&
@@ -619,7 +620,7 @@ EXPORT void navigator_task(INT stacd, void *exinf)
                                         break;
                                     case BYPASS_SCAN_SECOND:
                                         measured_width = obstacle_width_estimate(&bypass.first_scan, p);
-                                        tm_printf((UB *)"[width] Estimate=%u cm status=%u\n", measured_width.cm, measured_width.status);
+                                        obstacle_width_report(measured_width);
                                         bypass_plan_width(&bypass, p);
                                         bypass_begin(&bypass, &mot_cmd, BYPASS_SCAN_RETURN,
                                                      BYPASS_API_POWER, -BYPASS_API_POWER, BYPASS_SCAN_BACK_MM);

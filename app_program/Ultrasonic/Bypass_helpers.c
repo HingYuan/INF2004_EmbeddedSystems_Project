@@ -13,10 +13,20 @@ _Static_assert(BYPASS_SWEPT_RADIUS_CM * BYPASS_SWEPT_RADIUS_CM >=
                BYPASS_SWEPT_RADIUS_CM * BYPASS_SWEPT_RADIUS_CM >=
                (ROBOT_LENGTH_CM - BYPASS_PIVOT_FROM_FRONT_CM) * (ROBOT_LENGTH_CM - BYPASS_PIVOT_FROM_FRONT_CM) +
                ROBOT_HALF_WIDTH_CM * ROBOT_HALF_WIDTH_CM, "swept radius must cover the whole body");
-/* Fourth-order cosine is sufficient for the integer -45..45 degree scan. */
+_Static_assert(WIDTH_BEAM_HALF_DDEG < 450U, "beam compensation must fit the scan");
+
+/* The near side of the beam can still hit the box after the axis passes its edge. */
+LOCAL UW width_ray_radians(UW angle)
+{
+    UW ddeg = angle * 10U;
+    if (ddeg <= WIDTH_BEAM_HALF_DDEG) return 0U;
+    return (ddeg - WIDTH_BEAM_HALF_DDEG) * 17453U / 10000U;
+}
+
+/* Fourth-order cosine is sufficient for the compensated -45..45 degree scan. */
 LOCAL UW width_cosine(UW angle)
 {
-    UW rad = angle * 17453U / 1000U;
+    UW rad = width_ray_radians(angle);
     UW square = rad * rad / 1000U;
     return 1000U - square / 2U + square * square / 24000U;
 }
@@ -41,18 +51,27 @@ EXPORT WIDTH_RAY_CLASS obstacle_width_classify(UW front_cm, W angle, UW cm, SONA
 EXPORT UW obstacle_width_offset_mm(UW front_cm, UW angle)
 {
     if (front_cm > 400U || angle > 45U) return 0U;
-    UW rad = angle * 17453U / 1000U;
+    UW rad = width_ray_radians(angle);
     UW square = rad * rad / 1000U;
     UW sine = rad - rad * square / 6000U + rad * square * square / 120000000U;
     UW cosine = width_cosine(angle);
     return (front_cm * 10U * sine + cosine / 2U) / cosine;
 }
 
+EXPORT BOOL obstacle_width_samples_consistent(UW low_cm, UW middle_cm, UW high_cm)
+{
+    return low_cm <= middle_cm && middle_cm <= high_cm &&
+        (middle_cm - low_cm <= WIDTH_SAMPLE_SPREAD_CM ||
+         high_cm - middle_cm <= WIDTH_SAMPLE_SPREAD_CM);
+}
+
 /* Both scans share the same lateral origin; the 2 cm reverse changes only depth. */
 LOCAL BOOL width_merge_edge(BOOL av, UW amin, UW amax, BOOL bv, UW bmin, UW bmax,
                             UW *midpoint, BOOL *conflict)
 {
-    if ((!av && !bv) || (av && amin > amax) || (bv && bmin > bmax)) return FALSE;
+    av = av && amin <= amax && amax - amin <= WIDTH_MAX_EDGE_SPAN_MM;
+    bv = bv && bmin <= bmax && bmax - bmin <= WIDTH_MAX_EDGE_SPAN_MM;
+    if (!av && !bv) return FALSE;
     if (av && bv) {
         UW lo = amin > bmin ? amin : bmin;
         UW hi = amax < bmax ? amax : bmax;
@@ -99,6 +118,25 @@ EXPORT OBSTACLE_WIDTH obstacle_width_estimate(const OBSTACLE_PROFILE *first,
     return result;
 }
 
+/* Report the same result Navigator stores in the dashboard telemetry. */
+EXPORT void obstacle_width_report(OBSTACLE_WIDTH width)
+{
+    switch (width.status) {
+        case WIDTH_ESTIMATED:
+            tm_printf((UB *)"[width] Dashboard: %u cm (estimated)\n", width.cm);
+            break;
+        case WIDTH_SCANNING:
+            tm_printf((UB *)"[width] Dashboard: Scanning... waiting for the second scan\n");
+            break;
+        case WIDTH_INCONSISTENT:
+            tm_printf((UB *)"[width] Dashboard: Inconsistent scans; edge positions disagree\n");
+            break;
+        default:
+            tm_printf((UB *)"[width] Dashboard: Unavailable; both edges could not be established\n");
+            break;
+    }
+}
+
 #ifndef NDEBUG
 EXPORT BOOL obstacle_width_self_check(void)
 {
@@ -116,10 +154,22 @@ EXPORT BOOL obstacle_width_self_check(void)
     if (width.status != WIDTH_ESTIMATED || width.cm != 15) return FALSE;
     second.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 180, .left_max_mm = 200, .left_valid = 1};
     if (obstacle_width_estimate(&first, &second).status != WIDTH_INCONSISTENT) return FALSE;
-    return obstacle_width_classify(20, 30, 30, SONAR_OK) == WIDTH_RAY_CLEAR &&
-           obstacle_width_classify(20, 30, 23, SONAR_OK) == WIDTH_RAY_FACE &&
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 50, .left_max_mm = 200, .left_valid = 1};
+    width = obstacle_width_estimate(&first, &second);
+    if (width.status != WIDTH_ESTIMATED || width.cm != 15) return FALSE;
+    /* Regression: these broad ranges previously turned a 12 cm box into 23 cm. */
+    first = (OBSTACLE_PROFILE){.front_cm = 18};
+    second = (OBSTACLE_PROFILE){.front_cm = 22};
+    first.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 135, .left_max_mm = 180, .left_valid = 1};
+    second.measured_width = (OBSTACLE_WIDTH_SCAN){.left_min_mm = 89, .left_max_mm = 127, .left_valid = 1,
+        .right_min_mm = 89, .right_max_mm = 107, .right_valid = 1};
+    if (obstacle_width_estimate(&first, &second).status != WIDTH_UNAVAILABLE) return FALSE;
+    return obstacle_width_classify(20, 0, 30, SONAR_OK) == WIDTH_RAY_CLEAR &&
+           obstacle_width_classify(20, 0, 20, SONAR_OK) == WIDTH_RAY_FACE &&
            obstacle_width_classify(20, 30, 0, SONAR_UNSTABLE) == WIDTH_RAY_UNCERTAIN &&
-           obstacle_width_offset_mm(20, 45) >= 199U && obstacle_width_offset_mm(20, 45) <= 201U;
+           obstacle_width_offset_mm(20, 0) == 0U && obstacle_width_offset_mm(20, 45) <= 201U &&
+           obstacle_width_samples_consistent(20, 21, 60) &&
+           !obstacle_width_samples_consistent(20, 30, 60);
 }
 #endif
 

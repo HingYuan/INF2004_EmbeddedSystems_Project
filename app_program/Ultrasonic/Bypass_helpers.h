@@ -4,15 +4,25 @@
 #include "../Navigator/Navigator_task.h"
 
 /* Rectangular front-face estimate, using each scan's own measured standoff. */
+/* Nominal 15-degree HC-SR04 cone: subtract 7.5 degrees at each detected edge.
+ * This is a starting estimate, not a measured calibration of this sensor.
+ * Keep servo PWM and bypass clearance calculations independent of this value. */
+#ifndef WIDTH_BEAM_HALF_DDEG
+#define WIDTH_BEAM_HALF_DDEG    75U
+#endif
 #define WIDTH_DEPTH_TOLERANCE_CM 2U
 #define WIDTH_REFINE_PASSES      3U
 #define WIDTH_REPEAT_TOLERANCE_MM 20U
+#define WIDTH_MAX_EDGE_SPAN_MM  20U
+#define WIDTH_SAMPLE_SPREAD_CM   2U
 
 typedef enum { WIDTH_RAY_UNCERTAIN, WIDTH_RAY_FACE, WIDTH_RAY_CLEAR } WIDTH_RAY_CLASS;
 IMPORT WIDTH_RAY_CLASS obstacle_width_classify(UW front_cm, W angle, UW cm, SONAR_STATUS status);
 IMPORT UW obstacle_width_offset_mm(UW front_cm, UW angle);
+IMPORT BOOL obstacle_width_samples_consistent(UW low_cm, UW middle_cm, UW high_cm);
 IMPORT OBSTACLE_WIDTH obstacle_width_estimate(const OBSTACLE_PROFILE *first,
                                              const OBSTACLE_PROFILE *second);
+IMPORT void obstacle_width_report(OBSTACLE_WIDTH width);
 #ifndef NDEBUG
 IMPORT BOOL obstacle_width_self_check(void);
 #endif
