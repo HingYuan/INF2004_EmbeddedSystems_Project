@@ -38,8 +38,7 @@ In a second PowerShell window, use the PC's LAN IPv4 address or hotspot IP
 (for example, `192.168.137.1`):
 
 ```powershell
-python .\mqtt_test_server.py `
-  --host 192.168.137.1 `
+python .\mqtt_test_server.py --host 192.168.137.1 `
   --port 1883
 ```
 

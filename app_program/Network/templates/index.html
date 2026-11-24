@@ -835,6 +835,7 @@
     let webPulseCount = 0;
     let lastWebSuccessTime = 0;
     let lastMqttMsgCount = -1;
+    let lastBarcodeLog = '';
     let radarSweepAngle = 0;
 
     // Helper: update element text safely
@@ -1140,6 +1141,13 @@
         const bc = (t.barcode && t.barcode.trim()) ? `'${t.barcode.trim()}'` : 'NONE';
         setTxt('barcode-val', bc);
         setTxt('inst-idx', t.inst_idx || 0);
+        const scannedBarcode = t.barcode && t.barcode.trim();
+        if (scannedBarcode && scannedBarcode !== lastBarcodeLog) {
+          const term = document.getElementById('terminal-log');
+          const time = new Date().toLocaleTimeString();
+          term.textContent = `[${time}] RX BARCODE: '${scannedBarcode}' | STEP #${t.inst_idx || 0}\n` + term.textContent;
+          lastBarcodeLog = scannedBarcode;
+        }
 
         // IR Ground Sensors
         const irName = IR_STATES[t.ir] || `IR_${t.ir}`;
