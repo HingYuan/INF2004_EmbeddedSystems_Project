@@ -141,6 +141,8 @@ EXPORT void ir_barcode_task(INT stacd, void *exinf)
                 ir.previous_state,
                 (current_time - previous_time) / 100,
             };
+
+            // tm_printf("\n%d\n", ir.previous_state);
             
             // Push to message buffer
             tk_snd_mbf(barcode_mbfid, (void *)&br, sizeof(BAR_RECORD), TMO_FEVR);
@@ -165,7 +167,7 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
 
 	while(1) {
 		// Wait asleep until a message arrives in the buffer
-		msg_size = tk_rcv_mbf(barcode_mbfid, (void *)&br, 250);
+		msg_size = tk_rcv_mbf(barcode_mbfid, (void *)&br, TMO_FEVR);
 		
         // If timeout passes, reset bars - prevents false reads
         if (msg_size == E_TMOUT) {
@@ -211,6 +213,8 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
                         break;
                     }
                 }
+
+                tm_printf("\ndecoded char: %c\n", decoded_char);
 
                 tm_printf((UB *)"[decoder] Matched pattern 0x%03X to character: %c\n", current_pattern, decoded_char);
 
