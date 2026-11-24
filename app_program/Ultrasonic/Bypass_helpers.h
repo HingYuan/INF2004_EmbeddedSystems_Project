@@ -3,6 +3,20 @@
 
 #include "../Navigator/Navigator_task.h"
 
+/* Rectangular front-face estimate, using each scan's own measured standoff. */
+#define WIDTH_DEPTH_TOLERANCE_CM 2U
+#define WIDTH_REFINE_PASSES      3U
+#define WIDTH_REPEAT_TOLERANCE_MM 20U
+
+typedef enum { WIDTH_RAY_UNCERTAIN, WIDTH_RAY_FACE, WIDTH_RAY_CLEAR } WIDTH_RAY_CLASS;
+IMPORT WIDTH_RAY_CLASS obstacle_width_classify(UW front_cm, W angle, UW cm, SONAR_STATUS status);
+IMPORT UW obstacle_width_offset_mm(UW front_cm, UW angle);
+IMPORT OBSTACLE_WIDTH obstacle_width_estimate(const OBSTACLE_PROFILE *first,
+                                             const OBSTACLE_PROFILE *second);
+#ifndef NDEBUG
+IMPORT BOOL obstacle_width_self_check(void);
+#endif
+
 // Navigator keeps the phase, context and tuning values; these helpers execute each step.
 IMPORT void bypass_plan_width(BYPASS_CONTEXT *bypass, const OBSTACLE_PROFILE *second);
 #ifndef NDEBUG

@@ -4,6 +4,7 @@
 #include <bsp/libbsp.h>
 
 #include "Ultrasonic_task.h"
+#include "Bypass_helpers.h"
 #include "../robot_tasks.h"
 #include "../Navigator/Navigator_task.h"
 #include "../Motor/Motor_task.h"
@@ -250,6 +251,58 @@ LOCAL BOOL refine_edge(
     return TRUE;
 }
 
+/* Report front-face width separately; clearance uses the original profile above. */
+LOCAL BOOL measure_width_edge(const OBSTACLE_PROFILE *profile, INT side, UW *lo_mm, UW *hi_mm)
+{
+    if (profile->front_cm < 2U || profile->front_cm > 400U) return FALSE;
+    INT last_face = 0, outer = 0;
+    /* A missing inner echo must not hide a farther ray still hitting the face. */
+    for (INT ray = 1; ray <= 3; ++ray) {
+        UINT index = 3 + side * ray;
+        if (obstacle_width_classify(profile->front_cm, side * ray * 15,
+                sonar_ray_cm(profile, index), sonar_ray_status(profile, index)) == WIDTH_RAY_FACE)
+            last_face = ray;
+    }
+    for (INT ray = last_face + 1; ray <= 3; ++ray) {
+        UINT index = 3 + side * ray;
+        if (obstacle_width_classify(profile->front_cm, side * ray * 15,
+                sonar_ray_cm(profile, index), sonar_ray_status(profile, index)) == WIDTH_RAY_CLEAR) {
+            outer = ray;
+            break;
+        }
+    }
+    if (!outer) return FALSE; // The edge is not bounded inside the servo's view.
+    UW near_angle = last_face * 15U, far_angle = outer * 15U;
+    for (UINT pass = 0; pass < WIDTH_REFINE_PASSES; ++pass) {
+        UW middle = (near_angle + far_angle) / 2U, cm = 0;
+        if (middle == near_angle) break;
+        SONAR_STATUS status = scan_angle(side * (W)middle, &cm);
+        if (hardware_fault(status)) return FALSE;
+        WIDTH_RAY_CLASS ray = obstacle_width_classify(profile->front_cm, side * (W)middle, cm, status);
+        if (ray == WIDTH_RAY_FACE) near_angle = middle;
+        else if (ray == WIDTH_RAY_CLEAR) far_angle = middle;
+        else break; // Keep the known bracket if refinement is noisy.
+    }
+    *lo_mm = obstacle_width_offset_mm(profile->front_cm, near_angle);
+    *hi_mm = obstacle_width_offset_mm(profile->front_cm, far_angle);
+    return TRUE;
+}
+
+LOCAL void measure_width(OBSTACLE_PROFILE *profile)
+{
+    UW lo = 0, hi = 0;
+    if (measure_width_edge(profile, 1, &lo, &hi)) {
+        profile->measured_width.left_min_mm = lo;
+        profile->measured_width.left_max_mm = hi;
+        profile->measured_width.left_valid = TRUE;
+    }
+    if (!sonar_fault && measure_width_edge(profile, -1, &lo, &hi)) {
+        profile->measured_width.right_min_mm = lo;
+        profile->measured_width.right_max_mm = hi;
+        profile->measured_width.right_valid = TRUE;
+    }
+}
+
 // Initial coarse and fine obstacle profile
 LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
 {
@@ -403,6 +456,9 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
         }
     }
 
+    // At most six extra angles; reuse the existing stationary scan deadline.
+    if (center_ok && !sonar_fault) measure_width(profile);
+
     // Return servo to forward position
     servo_er = pwm_set_cc(
         SERVO_PIN, SERVO_CENTER_US);
@@ -437,9 +493,12 @@ LOCAL BOOL scan_obstacle(OBSTACLE_PROFILE *profile)
             (UB *)"[sonar] Approx width: %u cm\n",
             profile->estimated_width_cm);
     } else {
-        tm_printf((UB *)"[sonar] Width unknown\n");
+        tm_printf((UB *)"[sonar] Clearance profile width unknown\n");
     }
 
+    OBSTACLE_WIDTH width = obstacle_width_estimate(profile, NULL);
+    tm_printf((UB *)"[width] Left=%u Right=%u estimate=%u cm status=%u\n",
+              profile->measured_width.left_valid, profile->measured_width.right_valid, width.cm, width.status);
     return profile->profile_valid;
 }
 

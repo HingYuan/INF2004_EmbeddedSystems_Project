@@ -5,7 +5,7 @@
 #include <tk/typedef.h>
 
 /*
- * Minimum-bit data audit (2026-11-22; professor's tk/typedef.h types).
+ * Compression baseline (2026-11-22; professor's tk/typedef.h types).
  *
  * Field / valid domain                       Stored bits
  * motor power -100..100 / independent ticks 0..255     8 / 8 per wheel
@@ -64,6 +64,14 @@
  * timer wrap, route/ring bounds, and existing IMU/bypass debug self-checks.
  * 20000 randomized mirrored width calculations match the pre-change algorithm.
  * This is compiler/host evidence, not on-car timing, flash or motion acceptance.
+ *
+ * Width reporting extension (2026-11-24): four 12-bit edge limits and two valid
+ * bits add 7 bytes to OBSTACLE_PROFILE (33), NAVIGATOR_MESSAGE (34) and
+ * BYPASS_CONTEXT (68). The 64-message queue grows by 512 bytes after rounding.
+ * The result uses 10 width bits + 2 status bits. TELEMETRY_SNAPSHOT remains
+ * 32 bytes; MQTT uses two reserved bits and remains 35 bytes. Motion fields
+ * and their ranges are unchanged. The size/performance figures above describe
+ * the earlier compression baseline, before this extension.
  *
  * Concurrency: common interrupt-preserving lock guards every shared packed
  * telemetry/map write and snapshot read. Shared flags use locked read/modify/

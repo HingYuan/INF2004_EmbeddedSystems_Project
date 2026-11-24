@@ -23,7 +23,9 @@ struct netif;
  *    width(10), pitch/roll(12 signed each, 0.1 degree), heading(9),
  *    height(10, 0.1 mm), mode(4), phase(5), IR(3), barcode(7), route_idx(3),
  *    sonar_valid(1), sonar_status(3), IMU_state/event(2 each), fault/control(13).
- *    273 bits = 35 bytes including header; final 7 padding bits zero.
+ *    width_status(2) occupies formerly reserved bits 273..274: unavailable=0,
+ *    scanning=1, estimated=2, inconsistent=3. Earlier fields retain their offsets.
+ *    275 bits = 35 bytes including header; final 5 padding bits zero.
  * 0x14 status: header, online(1), uptime_ms(32), telemetry_seq(32) = 10 bytes.
  * HTTP /api/telemetry and /api/mqtt stay JSON for the existing dashboard.
  */
