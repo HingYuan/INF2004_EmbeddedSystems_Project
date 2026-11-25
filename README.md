@@ -9,7 +9,7 @@ From a clean machine to a Pico W running both cores. Roughly 15 minutes.
 # ```out_w(0x4005802C, (XOSC_MHz | (1 << 9)));```
 
 # Command to run without web server
-# ```mingw32-make -C build_make E2U=tools/elf2uf2.exe smp=1 CONSOLE=usb_cdc```
+# ```mingw32-make -C build_make E2U=tools/elf2uf2.exe SMP=1 CONSOLE=usb_cdc```
 
 # Command to run with web server
 # ```mingw32-make -C build_make E2U=tools/elf2uf2.exe WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 SMP=1 CONSOLE=usb_cdc -j8```
