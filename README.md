@@ -12,7 +12,7 @@ From a clean machine to a Pico W running both cores. Roughly 15 minutes.
 # ```mingw32-make -C build_make E2U=tools/elf2uf2.exe smp=1 CONSOLE=usb_cdc```
 
 # Command to run with web server
-# ```mingw32-make -C build_make E2U=tools/elf2uf2.exe smp=1 CONSOLE=usb_cdc WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 -j8```
+# ```mingw32-make -C build_make E2U=tools/elf2uf2.exe WIFI=cyw43 WIFI_JOIN=1 WIFI_NETIF=1 WIFI_DHCP=1 WIFI_DNS=1 WEB_SERVER=1 MQTT=1 SMP=1 CONSOLE=usb_cdc -j8```
 
 # ```CONSOLE=usb_cdc``` for micro-USB connection and ```CONSOLE=uart``` for debugger.
 

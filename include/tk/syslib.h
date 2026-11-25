@@ -24,6 +24,10 @@
 
 #include "typedef.h"
 
+#ifdef PROHIBIT_DEF_SIZE_T
+#include <stddef.h>
+#endif
+
 
 /* ------------------------------------------------------------------------ */
 /*
