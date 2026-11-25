@@ -20,27 +20,27 @@
 #include "../ultrasonic/ultrasonic_task.h"
 
 /* Navigator speed settings (% PWM). */
-#define NAV_FORWARD_SPEED               (18)
+#define NAV_FORWARD_SPEED               (16)
 #define NAV_FORWARD_SPEED_HUMP          (30)
 #define NAV_STOP_SPEED                  (0)
 
 /* Smooth differential steering speeds for line following. */
-#define NAV_LEFT_TURN_L_BASE            (0)
-#define NAV_LEFT_TURN_R_BASE            (20)
-#define NAV_RIGHT_TURN_L_BASE           (20)
-#define NAV_RIGHT_TURN_R_BASE           (0)
+#define NAV_LEFT_TURN_L_BASE            (10)
+#define NAV_LEFT_TURN_R_BASE            (30)
+#define NAV_RIGHT_TURN_L_BASE           (30)
+#define NAV_RIGHT_TURN_R_BASE           (10)
 
 /* Ramped steering speeds when stuck correcting on a curve. */
-#define NAV_LEFT_TURN_L_RAMP            (0)
+#define NAV_LEFT_TURN_L_RAMP            (5)
 #define NAV_LEFT_TURN_R_RAMP            (40)
 #define NAV_RIGHT_TURN_L_RAMP           (40)
-#define NAV_RIGHT_TURN_R_RAMP           (0)
+#define NAV_RIGHT_TURN_R_RAMP           (5)
 
 /* In-place junction pivot speeds. */
-#define NAV_LEFT_PIVOT_L                (25)
-#define NAV_LEFT_PIVOT_R                (25)
-#define NAV_RIGHT_PIVOT_L               (25)
-#define NAV_RIGHT_PIVOT_R               (25)
+#define NAV_LEFT_PIVOT_L                (23)
+#define NAV_LEFT_PIVOT_R                (23)
+#define NAV_RIGHT_PIVOT_L               (23)
+#define NAV_RIGHT_PIVOT_R               (23)
 
 #define NAV_TURNING_RAMPUP_LIMIT        (50u)
 #define NAV_NUMBER_OF_COMMANDS          (5u)

@@ -3,7 +3,7 @@
  * @brief Central Navigator state machine and shared telemetry snapshot owner.
  *
  * NOTE: See docs/fsm_diagrams.md for Navigator and Bypass FSM diagrams.
- * WARNING: Intersection advance/turn timings (250 ms, 600 ms, 30 ms, 50 ms)
+ * WARNING: Intersection advance/turn timings (250 ms, 900 ms, 30 ms, 50 ms)
  * are empirically tuned for chassis speed and wheel friction.
  */
 
@@ -23,10 +23,10 @@
 #define NAV_STARTUP_GRACE_MSEC          (2000u)
 #define NAV_SPAM_MITIGATION_LIMIT       (10u)
 #define NAV_ADVANCE_PRE_DELAY_MSEC      (250u)
-#define NAV_ADVANCE_RUN_DELAY_MSEC      (600u)
+#define NAV_ADVANCE_RUN_DELAY_MSEC      (900u)
 #define NAV_ADVANCE_POST_DELAY_MSEC     (30u)
 #define NAV_TURN_SETTLE_DELAY_MSEC      (50u)
-#define NAV_TURN_STOP_DELAY_MSEC        (250u)
+#define NAV_TURN_STOP_DELAY_MSEC        (50u)
 #define NAV_ROTATIONS_BIT_WIDTH         (3u)
 #define NAV_SONAR_CENTER_RAY            (3u)
 #define NAV_SONAR_MIN_CM                (2u)
@@ -294,7 +294,7 @@ void navigator_task (INT stacd, void * p_exinf)
     (void)stacd;
     (void)p_exinf;
 
-    ctx.nav.m_mode            = (uint32_t)MODE_LINE_FOLLOWING;
+    ctx.nav.m_mode            = (uint32_t)MODE_WIFI_SEND_COMMS;
     ctx.nav.prev_ir_state     = (uint32_t)IR_STATE_NULL;
     ctx.nav.reentry_dir       = (uint32_t)DIR_FRONT;
     ctx.nav.live_sonar_status = (uint32_t)SONAR_INVALID;

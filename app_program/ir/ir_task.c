@@ -32,6 +32,7 @@
 #define IR_ZEROING_PERIOD_MSEC          (20u)
 #define IR_LINE_PERIOD_MSEC             (1u)
 #define IR_BARCODE_PERIOD_MSEC          (10u)
+#define IR_BARCODE_RX_TIMEOUT_MSEC      (500)
 #define IR_BAR_DURATION_DIV_USEC        (100u)
 #define IR_ASCII_ASTERISK               ((uint8_t)'*')
 #define IR_ASCII_UNKNOWN                ((uint8_t)'?')
@@ -274,7 +275,7 @@ void ir_task_decoder_task (INT stacd, void * p_exinf)
 
         msg_size = tk_rcv_mbf(robot_tasks_get_barcode_mbf(),
                               (void *)&bar_rec,
-                              TMO_FEVR);
+                              (TMO)IR_BARCODE_RX_TIMEOUT_MSEC);
 
         if (E_TMOUT == msg_size)
         {
