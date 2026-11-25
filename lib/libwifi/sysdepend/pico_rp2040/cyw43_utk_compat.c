@@ -24,7 +24,11 @@
 
 #include "smp_compat.h"
 
-extern int tk_dly_tsk(unsigned long delay);
+/*
+ * BARR-C Deviation (Rule 5.2.a): matches uT-Kernel <tk/syscall.h>
+ * declaration `IMPORT ER tk_dly_tsk(RELTIM)` (`int` / `unsigned int`).
+ */
+extern int tk_dly_tsk (unsigned int delay_msec);
 
 volatile uint32_t cyw43_utk_poll_requested;
 

@@ -23,8 +23,10 @@ EXPORT ER cyw43_utk_start(void)
     ID task;
 
 #if TK_SUPPORT_SMP
-    /* Pin to processor 2 (physical RP2040 core 1): the radio owns PIO, DMA
-         and its peripheral ownership path on that core. */
+    /*
+     * Pin to processor 2 (physical RP2040 core 1): the radio owns PIO, DMA,
+     * and its peripheral ownership path on that core.
+     */
     ctsk.tskatr = TA_HLNG | TA_RNG1 | TA_ASSPRC;
 #else
     ctsk.tskatr = TA_HLNG | TA_RNG1;

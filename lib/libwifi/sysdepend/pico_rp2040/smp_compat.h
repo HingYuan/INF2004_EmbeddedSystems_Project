@@ -41,7 +41,11 @@ typedef volatile uint32_t T_SPLOCK;
 extern int32_t ISpinLock(T_SPLOCK *lock, uint32_t *intsts);
 extern int32_t ISpinUnlock(T_SPLOCK *lock, uint32_t intsts);
 extern void    mp_memory_barrir(void);
-extern int tk_get_prc(void);
+/*
+ * BARR-C Deviation (Rule 5.2.a): matches uT-Kernel <tk/syscall.h>
+ * declaration `IMPORT INT tk_get_prc(void)` where INT is `int`.
+ */
+extern int tk_get_prc (void);
 
 #define CYW43_THIS_PRC()	tk_get_prc()
 

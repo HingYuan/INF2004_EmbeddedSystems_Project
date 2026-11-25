@@ -117,8 +117,11 @@ EXPORT void startup_clock(ATR clkatr)
 
 	out_w(CLK_SYS+CLK_x_DIV, div);
 
-	// FIX: Sync the hardware timer tick to 1 microsecond (12MHz / 12)
-	out_w(0x4005802C, (XOSC_MHz | (1 << 9)));
+    /*
+     * NOTE: RP2040 Datasheet Section 4.7.2 (WATCHDOG_TICK at 0x4005802C):
+     * Enable bit 9 and divide the 12 MHz XOSC by 12 to produce a 1 usec tick.
+     */
+    out_w(0x4005802Cu, (((UW)XOSC_MHz) | (1u << 9u)));
 
 	/* CLK PERI (UART+SPI) settings */
 	if(clkatr & CLKATR_PREI) {

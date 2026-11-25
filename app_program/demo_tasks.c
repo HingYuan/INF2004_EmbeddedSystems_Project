@@ -1,80 +1,87 @@
-/*
- * Copyright (c) 2026 Muhamed Fauzi Bin Abbas
- *
- * SPDX-License-Identifier: Apache-2.0
+/**
+ * @file demo_tasks.c
+ * @brief Console-independent LED liveness task implementation.
  */
 
-/*
- *	demo_tasks.c
- *	The console-independent liveness task.  See demo_tasks.h.
- */
+#include "demo_tasks.h"
 
-#include <tk/tkernel.h>
-#include <tm/tmonitor.h>
+#include <stdint.h>
+
 #include <bsp/libbsp.h>
 
 #include "usb_console_compat.h"
-#include "demo_tasks.h"
 
+#define DEMO_LED_READY_LEVEL            (8)
+#define DEMO_LED_GROUP_VALUE            (5)
+#define DEMO_LED_READY_HALF_MSEC        (250u)
+#define DEMO_LED_LONG_ON_MSEC           (600u)
+#define DEMO_LED_LONG_OFF_MSEC          (300u)
+#define DEMO_LED_SHORT_ON_MSEC          (150u)
+#define DEMO_LED_SHORT_OFF_MSEC         (250u)
+#define DEMO_LED_GAP_MSEC               (2000u)
+#define DEMO_LED_DIAG_CP_ID             (8)
 
-/*
- * Blink task: liveness independent of the console, and -- since USB does not
- * enumerate and therefore cannot report on itself -- a readout of how far USB
- * bring-up gets, using the long/short count encoding from Phase 0.
- *
- *	0  (dark)  tusb_init() failed
- *	1          tk_def_int() rejected the USB interrupt
- *	2          NVIC never unmasked USBCTRL_IRQ
- *	3          USB controller not enabled
- *	4          D+ pull-up not asserted, so no host can see the device
- *	5          pull-up on, but not one USB interrupt has ever fired
- *	6          interrupts firing, but no bus reset or connect from the host
- *	7          host talking, enumeration not completing
- *	8          fully enumerated
- *
- * If any console call blocks, this task stops and the LED freezes entirely.
+static void demo_tasks_blink_code (int32_t code_val);
+
+/**
+ * @brief Blink the board LED at 2 Hz when USB is up, or blink a status code.
+ * @param[in] stacd   Task start code (unused).
+ * @param[in] p_exinf Extended task information pointer (unused).
  */
-LOCAL void blink_code(INT n)
+void demo_tasks_blink_task (INT stacd, void * p_exinf)
 {
-	INT	i;
-
-	for(i = 0; i < n / 5; i++) {		/* long flash = 5 */
-		gpio_set_val(BOARD_LED_PIN, 1);
-		tk_dly_tsk(600);
-		gpio_set_val(BOARD_LED_PIN, 0);
-		tk_dly_tsk(300);
-	}
-	for(i = 0; i < n % 5; i++) {		/* short flash = 1 */
-		gpio_set_val(BOARD_LED_PIN, 1);
-		tk_dly_tsk(150);
-		gpio_set_val(BOARD_LED_PIN, 0);
-		tk_dly_tsk(250);
-	}
-	gpio_set_val(BOARD_LED_PIN, 0);
-	tk_dly_tsk(2000);
-}
-
-EXPORT void blink_task(INT stacd, void *exinf)
-{
-	INT	level;
-
-	(void)stacd; (void)exinf;
+    (void)stacd;
+    (void)p_exinf;
 
 #if BOARD_DIAG_GPIO_SCAN
-	knl_diag_pulse(8);	/* CP8: the blink task is being scheduled */
+    knl_diag_pulse(DEMO_LED_DIAG_CP_ID);
 #endif
 
-	while(1) {
-		level = tm_usb_diag_level();
-		if(level >= 8) {
-			/* Fully up: plain 2 Hz liveness, so a console stall or a
-			   blocked kernel is visible at a glance. */
-			gpio_set_val(BOARD_LED_PIN, 1);
-			tk_dly_tsk(250);
-			gpio_set_val(BOARD_LED_PIN, 0);
-			tk_dly_tsk(250);
-		} else {
-			blink_code(level);
-		}
-	}
+    for (;;)
+    {
+        int32_t diag_lvl = usb_console_compat_diag_lvl();
+
+        if (diag_lvl >= DEMO_LED_READY_LEVEL)
+        {
+            (void)gpio_set_val(BOARD_LED_PIN, 1u);
+            (void)tk_dly_tsk(DEMO_LED_READY_HALF_MSEC);
+            (void)gpio_set_val(BOARD_LED_PIN, 0u);
+            (void)tk_dly_tsk(DEMO_LED_READY_HALF_MSEC);
+        }
+        else
+        {
+            demo_tasks_blink_code(diag_lvl);
+        }
+    }
 }
+
+/**
+ * @brief Emit a long/short LED blink sequence encoding USB bring-up stage 0..7.
+ * @param[in] code_val Non-negative diagnostic stage code.
+ */
+static void demo_tasks_blink_code (int32_t code_val)
+{
+    int32_t long_cnt  = code_val / DEMO_LED_GROUP_VALUE;
+    int32_t short_cnt = code_val % DEMO_LED_GROUP_VALUE;
+
+    for (int32_t idx = 0; idx < long_cnt; idx++)
+    {
+        (void)gpio_set_val(BOARD_LED_PIN, 1u);
+        (void)tk_dly_tsk(DEMO_LED_LONG_ON_MSEC);
+        (void)gpio_set_val(BOARD_LED_PIN, 0u);
+        (void)tk_dly_tsk(DEMO_LED_LONG_OFF_MSEC);
+    }
+
+    for (int32_t idx = 0; idx < short_cnt; idx++)
+    {
+        (void)gpio_set_val(BOARD_LED_PIN, 1u);
+        (void)tk_dly_tsk(DEMO_LED_SHORT_ON_MSEC);
+        (void)gpio_set_val(BOARD_LED_PIN, 0u);
+        (void)tk_dly_tsk(DEMO_LED_SHORT_OFF_MSEC);
+    }
+
+    (void)gpio_set_val(BOARD_LED_PIN, 0u);
+    (void)tk_dly_tsk(DEMO_LED_GAP_MSEC);
+}
+
+/*** end of file ***/

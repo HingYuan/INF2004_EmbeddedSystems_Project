@@ -59,12 +59,10 @@ LOCAL const UW module_tbl[] = {
 	RESETS_RESET_DMA,		/* CYW43439 PIO-SPI transfers */
 #endif
 
-/*
-Moved this conditional reset to be non-conditional. Ensuring that PWM starts without needing the USE_PTMR flag to manually turn it on.
-#if USE_PTMR
-	RESETS_RESET_PWM,
-#endif
-*/
+    /*
+     * NOTE: PWM reset release was made unconditional above so application
+     * tasks can drive PWM outputs without enabling USE_PTMR.
+     */
 
 #if USE_SDEV_DRV	// Do not use sample device driver
 	RESETS_RESET_ADC,		/* A/DC */
