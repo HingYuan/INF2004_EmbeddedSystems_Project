@@ -1,0 +1,65 @@
+CSC03 Automated Multi-Profile Firmware Build & Static Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Toolchain: arm-none-eabi-gcc.exe (GNU Arm Embedded Toolchain 10.3-2021.10) 10.3.1 20210824 (release)
+========================================================================
+
+--- Profile 1: Debug UART + Boot Self-Checks (SMP=1 CONSOLE=uart) ---
+   text	   data	    bss	    dec	    hex	filename
+  97685	    152	  16692	 114529	  1bf61	build_make/mtk3pico_smp1_uart.elf
+Linked external self-check symbols:
+  1001290c T bypass_helpers_self_check
+  10012468 T bypass_helpers_width_check
+  1001154c T mqtt_client_codec_check
+Verified #ifndef NDEBUG self-check diagnostics in ELF .rodata (proves inlined static checks compiled):
+  [IMU] Detector self-check failed
+  [motors] Encoder self-check failed
+  [bypass] Self-check failed
+Profile 1 app_program/ -Wall -Wextra diagnostics: 0
+
+--- Profile 2: Production USB-CDC + Wi-Fi + HTTP Web Server + Binary MQTT v1 ---
+   text	   data	    bss	    dec	    hex	filename
+ 444033	   2616	  58216	 504865	  7b421	build_make/mtk3pico_smp1_usb_cdc_wifi_dns.elf
+Profile 2 app_program/ -Wall -Wextra diagnostics: 0
+
+Compile-time ROBOT_TASKS_STATIC_ASSERT checks enforced during builds: 38
+  imu_task.c:136 -> ROBOT_TASKS_STATIC_ASSERT(imu_confirm_size,
+  imu_task.c:138 -> ROBOT_TASKS_STATIC_ASSERT(imu_runtime_size,
+  ir_task.c:47 -> ROBOT_TASKS_STATIC_ASSERT(ir_runtime_size, (1u == sizeof(ir_task_runtime_t)));
+  ir_task.h:26 -> ROBOT_TASKS_STATIC_ASSERT(ir_bar_record_size,
+  motor_task.c:113 -> ROBOT_TASKS_STATIC_ASSERT(motor_stall_bits, (MOTOR_STALL_PERIODS <= 127u));
+  motor_task.c:114 -> ROBOT_TASKS_STATIC_ASSERT(motor_runtime_size,
+  motor_task.c:116 -> ROBOT_TASKS_STATIC_ASSERT(motor_enc_isr_size,
+  motor_task.h:57 -> ROBOT_TASKS_STATIC_ASSERT(motor_cmd_size, (4u == sizeof(motor_task_cmd_t)));
+  navigator_task.c:76 -> ROBOT_TASKS_STATIC_ASSERT(nav_state_size,
+  navigator_task.h:317 -> ROBOT_TASKS_STATIC_ASSERT(width_scan_size,
+  navigator_task.h:319 -> ROBOT_TASKS_STATIC_ASSERT(width_result_size,
+  navigator_task.h:321 -> ROBOT_TASKS_STATIC_ASSERT(obs_profile_size,
+  navigator_task.h:323 -> ROBOT_TASKS_STATIC_ASSERT(bypass_ctx_size,
+  navigator_task.h:325 -> ROBOT_TASKS_STATIC_ASSERT(nav_msg_size,
+  navigator_task.h:327 -> ROBOT_TASKS_STATIC_ASSERT(telemetry_size,
+  navigator_task.h:329 -> ROBOT_TASKS_STATIC_ASSERT(sonar_dist_size,
+  navigator_task.h:331 -> ROBOT_TASKS_STATIC_ASSERT(sonar_probe_size,
+  navigator_task.h:333 -> ROBOT_TASKS_STATIC_ASSERT(imu_msg_size,
+  navigator_task.h:335 -> ROBOT_TASKS_STATIC_ASSERT(bypass_travel_bits,
+  navigator_task.h:338 -> ROBOT_TASKS_STATIC_ASSERT(nav_counter_bits,
+  index_html.c:1404 -> ROBOT_TASKS_STATIC_ASSERT(index_html_len_match,
+  mqtt_client.c:85 -> ROBOT_TASKS_STATIC_ASSERT(mqtt_runtime_size,
+  mqtt_client.c:87 -> ROBOT_TASKS_STATIC_ASSERT(mqtt_map_size,
+  web_server.c:54 -> ROBOT_TASKS_STATIC_ASSERT(web_state_size, (8u == sizeof(web_server_state_t)));
+  web_server.c:55 -> ROBOT_TASKS_STATIC_ASSERT(web_html_len_fit,
+  web_server.c:57 -> ROBOT_TASKS_STATIC_ASSERT(web_buf_limits,
+  web_server.c:80 -> ROBOT_TASKS_STATIC_ASSERT(web_hdr_lengths,
+  bypass_helpers.c:33 -> ROBOT_TASKS_STATIC_ASSERT(bypass_turn_angles,
+  bypass_helpers.c:36 -> ROBOT_TASKS_STATIC_ASSERT(bypass_pivot_clear,
+  bypass_helpers.c:39 -> ROBOT_TASKS_STATIC_ASSERT(bypass_depth_clear,
+  bypass_helpers.c:42 -> ROBOT_TASKS_STATIC_ASSERT(bypass_pivot_pos,
+  bypass_helpers.c:45 -> ROBOT_TASKS_STATIC_ASSERT(
+  bypass_helpers.c:54 -> ROBOT_TASKS_STATIC_ASSERT(bypass_beam_half,
+  ultrasonic_task.c:66 -> ROBOT_TASKS_STATIC_ASSERT(sonar_confirm_bits, (SONAR_CONFIRM_COUNT <= 3u));
+  ultrasonic_task.c:67 -> ROBOT_TASKS_STATIC_ASSERT(sonar_runtime_size,
+  code39.c:23 -> ROBOT_TASKS_STATIC_ASSERT(code39_entry_size, (2u == sizeof(code39_entry_t)));
+  robot_tasks.h:42 -> ROBOT_TASKS_STATIC_ASSERT(little_endian,
+  robot_tasks.h:65 -> ROBOT_TASKS_STATIC_ASSERT(float32_size, (4u == sizeof(float32_t)));
+
+[CHECK] SYS-10 PASS | Both Debug (UART + 5 runtime self-checks) and Production (USB-CDC + CYW43 + lwIP + Web Server + Binary MQTT v1) ELFs linked cleanly with 0 -Wall -Wextra warnings and all static assertions satisfied.

@@ -1,0 +1,8 @@
+CSC03 Automated Host Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Target: testing/integration/logs/2026-11-25_ipc_and_pin_audit.txt
+========================================================================
+[CHECK] INT-08 PASS | GPIO ownership audit: 20 claimed pins, 0 conflicts under production CONSOLE=usb_cdc (GP0/GP1 shared with UART0 only in CONSOLE=uart)
+[CHECK] INT-05 PASS | Shared g_robot_flags audit: 13 unique bits (0..12), 0 overlap, guarded by ISpinLock + ARM DMB barrier
+[CHECK] INT-09 PASS | uT-Kernel object budget verified vs config/config.h: Tasks 14/32, MBF 4/4 (100% allocated), FLG 2/16, SEM 1/16, MTX 1/4, MPF 1/4

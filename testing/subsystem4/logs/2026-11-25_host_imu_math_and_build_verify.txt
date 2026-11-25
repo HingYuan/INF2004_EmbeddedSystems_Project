@@ -1,0 +1,6 @@
+CSC03 Automated Host Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Target: testing/subsystem4/logs/2026-11-25_host_imu_math_and_build_verify.txt
+========================================================================
+[CHECK] S4-U01 PASS | IMU math & detector invariants verified: Rajan atan2 max error = 0.00376 rad (<0.0045 rad), 12-bit sign-extension exact (-2048..2047), hump height @10 deg = 11.87 mm, 32-bit wraparound timer exact

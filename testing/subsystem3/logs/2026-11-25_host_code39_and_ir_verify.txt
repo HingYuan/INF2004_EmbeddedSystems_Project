@@ -1,0 +1,8 @@
+CSC03 Automated Host Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Target: testing/subsystem3/logs/2026-11-25_host_code39_and_ir_verify.txt
+========================================================================
+[CHECK] S3-U01 PASS | code39.c dictionary verified: 44/44 ISO/IEC 16388 symbols (A-Z, 0-9, -. $/+%*), 0 duplicates, 44/44 have exact 3-of-9 wide-element parity
+[CHECK] S3-U02 PASS | ir_classify_line() threshold truth table verified at 500 mV (0, 499, 500, 3300 mV -> W_W, W_B, B_W, B_B)
+[CHECK] S3-U03 PASS | ir_decode_bar_window() 10-bar adaptive mean threshold verified for A, B, C, F, Z, * (filtered), and invalid 0x000 -> '?'

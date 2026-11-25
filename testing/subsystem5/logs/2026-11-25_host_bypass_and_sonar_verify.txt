@@ -1,0 +1,6 @@
+CSC03 Automated Host Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Target: testing/subsystem5/logs/2026-11-25_host_bypass_and_sonar_verify.txt
+========================================================================
+[CHECK] S5-U01 PASS | Ultrasonic/servo math & geometry verified: servo PWM = 50.0 Hz (1345/1695/2045 us for -45/0/+45 deg, clamped), HC-SR04 1160 us = 20 cm, swept radius 144 >= 136

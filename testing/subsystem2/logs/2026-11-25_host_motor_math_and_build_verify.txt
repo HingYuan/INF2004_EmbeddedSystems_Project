@@ -1,0 +1,8 @@
+CSC03 Automated Host Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Target: testing/subsystem2/logs/2026-11-25_host_motor_math_and_build_verify.txt
+========================================================================
+[CHECK] S2-U02 PASS | 20 kHz PWM math: 125 MHz / (6249 + 1) = 20000 Hz; duty(0%)=0, duty(25%)=1562, duty(100%)=6250; clamp([-128..127]) -> [-100..100] prevents int8 wraparound
+[CHECK] S2-U06 PASS | Odometry & stall math: 749 ticks = 247 mm (0.33 mm/tick), 500 mm = 1515 ticks, 90 deg pivot = 237 ticks, stall cutoff = 75 x 20 ms = 1500 ms
+[CHECK] S2-U01 PASS | motor_right_enc_self_check() algorithm verified: Ch A tracked -> stuck at 12 -> Ch B failover at delta>=8 ticks (offset=-1) -> seamless forward/reverse counts (20, 0, -60) -> clean reset

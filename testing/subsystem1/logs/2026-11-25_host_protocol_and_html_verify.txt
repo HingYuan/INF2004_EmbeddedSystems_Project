@@ -1,0 +1,8 @@
+CSC03 Automated Host Verification Log
+Date: 2026-11-25
+Commit: 2f19d6b
+Target: testing/subsystem1/logs/2026-11-25_host_protocol_and_html_verify.txt
+========================================================================
+[CHECK] S1-U04 PASS | index_html.c: 44339 bytes, pure 7-bit ASCII source, FNV64=0x3474edf60d899abb, endpoints=/api/telemetry & /api/mqtt (1000 ms poll)
+[CHECK] S1-U02 PASS | mqtt_test_server.py encode_movement_mapping(): single 'a'->TURN_LEFT = 13014101 (exact match to C mqtt_client_codec_check), 5-entry = 9 B (130541683394714202), 66-entry max = 85 B, 5 invalid inputs rejected
+[CHECK] S1-U03 PASS | mqtt_client_encode_telem(): hdr=8b + 23 fields=252b + flags=13b (end=273b) + width_status=2b (end=275b) + pad=5b = 280b = 35 bytes
