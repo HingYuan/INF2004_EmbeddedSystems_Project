@@ -5,13 +5,13 @@ All test records for **Team CSC03** (autonomous RP2040 / Pico W robotic rover ru
 ```
 testing/
 ├── README.md              this guide and CSC03 ownership / build instructions
-├── subsystem1/            Buddy 1 (2500290) — Wi-Fi, Binary MQTT v1, HTTP Web Server & Dashboard
+├── network/            Buddy 1 (2500290) — Wi-Fi, Binary MQTT v1, HTTP Web Server & Dashboard
 │   ├── TEST_LOG.md        test cases + results
 │   └── logs/              saved console output, build logs, host verification logs
-├── subsystem2/            Buddy 2 (2500728) — Motion Control (PWM, Encoders, PID, Odometry)
-├── subsystem3/            Buddy 3 (2501325) — IR Line Following, Code 39 Barcode & Navigator FSM
-├── subsystem4/            Buddy 4 (2500253) — IMU Terrain, Hump & Tilt/Lift Safety (LSM303DLHC)
-├── subsystem5/            Buddy 5 (2502888) — Ultrasonic Profiling, Width Estimation & Bypass
+├── motor/            Buddy 2 (2500728) — Motion Control (PWM, Encoders, PID, Odometry)
+├── ir/            Buddy 3 (2501325) — IR Line Following, Code 39 Barcode & Navigator FSM
+├── imu/            Buddy 4 (2500253) — IMU Terrain, Hump & Tilt/Lift Safety (LSM303DLHC)
+├── ultrasonic/            Buddy 5 (2502888) — Ultrasonic Profiling, Width Estimation & Bypass
 ├── integration/           cross-subsystem IPC, pin ownership, and Core 0 / Core 1 tests (shared)
 └── system/                end-to-end FR1–FR12 & NFR1–NFR12 mission verification (shared)
 ```
