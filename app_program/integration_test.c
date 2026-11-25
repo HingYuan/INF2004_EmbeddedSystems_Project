@@ -1,11 +1,6 @@
 /**
  * @file integration_test.c
  * @brief Automated cross-subsystem integration and system readiness tests.
- *
- * BARR-C Deviation (Rule 5.2.a):
- *   Approver: Maxwell Menendez (Project Manager, INF2004).
- *   Rationale: uT-Kernel message-buffer and event-flag APIs require native
- *   RTOS typedefs (ID, INT, UINT).
  */
 
 #include "integration_test.h"
