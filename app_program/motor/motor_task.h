@@ -12,6 +12,7 @@
 #define MOTOR_TASK_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <tk/tkernel.h>

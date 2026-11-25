@@ -24,7 +24,7 @@
  * @param[in] EXPR Boolean condition expected to evaluate to true.
  */
 #define TEST_CHECK(P_ID, EXPR) \
-    (test_report_record((P_ID), (bool)(EXPR)))
+    (test_report_record((P_ID), ((EXPR) ? true : false)))
 
 /**
  * @brief Record and print a single `[TEST] <ID> PASS|FAIL` check outcome.

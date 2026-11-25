@@ -6,6 +6,11 @@
  * WARNING: Physical tire-diameter trim (MOTOR_LEFT_DRIFT_PERMILLE) and
  * odometry scale (MOTOR_MM_PER_TICK_X100) are empirically calibrated to the
  * assembled chassis.
+ *
+ * BARR-C Deviation (Rules 5.2.a, 6.5.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: uT-Kernel task/interrupt/PWM APIs require native RTOS typedefs
+ *   (INT, UINT, UW, ER, ID, FP, UB); TA_HLNG ISR uses standard AAPCS C entry.
  */
 
 #include "motor_task.h"
@@ -29,6 +34,11 @@
 #define MOTOR_PWM_WRAP                  (6249u)
 #define MOTOR_PWM_MAX_PCT               (100)
 #define MOTOR_PWM_MIN_NEG_PCT           (-100)
+#define MOTOR_PWM_SCALE_U32             (100u)
+#define MOTOR_SCALE_HUNDRED             (100)
+#define MOTOR_MM_PER_CM                 (10)
+#define MOTOR_HALF_CM_MM                (5)
+#define MOTOR_PAIR_DIVISOR              (2)
 #define MOTOR_API_DRIVE_PCT             (25)
 #define MOTOR_MAX_CMD_TICKS             (255)
 #define MOTOR_PIN_COUNT                 (4u)
@@ -65,25 +75,30 @@
 #define MOTOR_ENC_ALARM_IRQ             (0u)
 #define MOTOR_ENC_ALARM_PRI             (2)
 #define MOTOR_ENC_ALARM_USEC            (250u)
+#define MOTOR_ENC_LA_SHIFT              (0u)
+#define MOTOR_ENC_LB_SHIFT              (2u)
+#define MOTOR_ENC_RA_SHIFT              (4u)
+#define MOTOR_ENC_RB_SHIFT              (6u)
+#define MOTOR_ENC_PAIR_MASK             (3u)
 #define MOTOR_PI_X100                   (314)
 #define MOTOR_FULL_CIRCLE_DEG           (360)
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint32_t state                   : 3;
-    uint32_t b_move_done_pending     : 1;
-    uint32_t b_right_backup_reported : 1;
-    uint32_t move_stable_periods     : 2;
-    uint32_t stop_stable_periods     : 2;
-    uint32_t stall_left              : 7;
-    uint32_t stall_right             : 7;
-    uint32_t print_timer             : 5;
+    uint32_t state                 : 3;
+    uint32_t b_has_move_done_pend  : 1;
+    uint32_t b_has_reported_backup : 1;
+    uint32_t move_stable_periods   : 2;
+    uint32_t stop_stable_periods   : 2;
+    uint32_t stall_left            : 7;
+    uint32_t stall_right           : 7;
+    uint32_t print_timer           : 5;
 } motor_task_runtime_t;
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint16_t filters   : 8;
-    uint16_t b_using_b : 1;
+    uint16_t filters      : 8;
+    uint16_t b_is_using_b : 1;
 } motor_task_enc_isr_t;
 
 typedef struct
@@ -110,113 +125,195 @@ typedef struct
 #endif
 } motor_task_ctx_t;
 
-ROBOT_TASKS_STATIC_ASSERT(motor_stall_bits, (MOTOR_STALL_PERIODS <= 127u));
+ROBOT_TASKS_STATIC_ASSERT(motor_cmd_size,
+                          (4u == sizeof(motor_task_cmd_t)));
+ROBOT_TASKS_STATIC_ASSERT(motor_stall_bits,
+                          (MOTOR_STALL_PERIODS <= 127u));
 ROBOT_TASKS_STATIC_ASSERT(motor_runtime_size,
                           (4u == sizeof(motor_task_runtime_t)));
 ROBOT_TASKS_STATIC_ASSERT(motor_enc_isr_size,
                           (2u == sizeof(motor_task_enc_isr_t)));
 
-static volatile int32_t              g_enc_left_ticks      = 0;
-static volatile int32_t              g_enc_right_ticks     = 0;
-static volatile uint32_t             g_buf_drop_cnt        = 0u;
-static volatile int32_t              g_cur_speed_mmps      = 0;
-static volatile int32_t              g_bounded_ticks_left  = 0;
-static volatile int32_t              g_bounded_ticks_right = 0;
-static volatile int8_t               g_isr_out_left        = 0;
-static volatile int8_t               g_isr_out_right       = 0;
-static volatile int32_t              g_isr_ticks_la        = 0;
-static volatile int32_t              g_isr_ticks_lb        = 0;
-static volatile int32_t              g_isr_ticks_ra        = 0;
-static volatile int32_t              g_isr_ticks_rb        = 0;
-static volatile motor_task_enc_isr_t g_enc_isr_state       = { 0u, 0u };
-static volatile int32_t              g_right_enc_last_a    = 0;
-static volatile int32_t              g_right_enc_b_offset  = 0;
+static volatile int32_t              g_enc_left_ticks          = 0;
+static volatile int32_t              g_enc_right_ticks         = 0;
+static volatile uint32_t             g_buf_drop_cnt            = 0u;
+static volatile int32_t              g_cur_speed_mm_per_second = 0;
+static volatile int32_t              g_bounded_ticks_left      = 0;
+static volatile int32_t              g_bounded_ticks_right     = 0;
+static volatile int8_t               g_isr_out_left            = 0;
+static volatile int8_t               g_isr_out_right           = 0;
+static volatile int32_t              g_isr_ticks_la            = 0;
+static volatile int32_t              g_isr_ticks_lb            = 0;
+static volatile int32_t              g_isr_ticks_ra            = 0;
+static volatile int32_t              g_isr_ticks_rb            = 0;
+static volatile motor_task_enc_isr_t g_enc_isr_state           = { 0u, 0u };
+static volatile int32_t              g_right_enc_last_a        = 0;
+static volatile int32_t              g_right_enc_b_offset      = 0;
 
-static int32_t motor_abs_i32 (int32_t val);
-static void motor_set_state (motor_task_runtime_t * p_rt,
-                             motor_task_state_t next_state);
-static ER motor_queue_bounded_cmd (int8_t left_spd,
-                                   int8_t right_spd,
-                                   int32_t target_ticks);
-static int32_t motor_ramp (int32_t cur_val,
-                           int32_t target_val,
-                           int32_t step_val);
-static void motor_set_channel (uint32_t pin_a,
-                               uint32_t pin_b,
-                               int32_t speed_pct);
-static int32_t motor_right_enc_ticks (int32_t ticks_a, int32_t ticks_b);
-static void motor_count_rising_edge (uint32_t raw_lvl,
-                                     int32_t dir_sign,
-                                     uint8_t * p_filters,
-                                     uint32_t bit_shift,
-                                     volatile int32_t * p_ticks);
-static void motor_apply_heading_lock (int32_t base_mag_l,
-                                      int32_t base_mag_r,
-                                      int32_t start_ticks_l,
-                                      int32_t start_ticks_r,
-                                      int32_t delta_l,
-                                      int32_t delta_r,
-                                      int32_t * p_integ_units,
-                                      int32_t * p_out_mag_l,
-                                      int32_t * p_out_mag_r);
-static bool motor_check_stalled (int32_t out_l,
-                                 int32_t out_r,
-                                 int32_t delta_l,
-                                 int32_t delta_r,
-                                 motor_task_runtime_t * p_rt);
-static bool motor_init_hardware (void);
-static void motor_start_new_motion (motor_task_ctx_t * p_ctx,
-                                    const motor_task_cmd_t * p_cmd,
-                                    bool b_clear_degraded);
-static void motor_step_inputs (motor_task_ctx_t * p_ctx,
-                               motor_task_cmd_t * p_cmd,
-                               bool * p_b_new_cmd,
-                               int32_t prev_dl,
-                               int32_t prev_dr);
-static void motor_update_speed_log (motor_task_ctx_t * p_ctx,
+static int32_t motor_abs_i32(int32_t val);
+static void motor_set_state(motor_task_runtime_t * p_rt,
+                            motor_task_state_t next_state);
+static void motor_take_bounded_goals(const motor_task_cmd_t * p_cmd,
+                                     int32_t * p_goal_l,
+                                     int32_t * p_goal_r);
+static ER motor_queue_bounded_cmd(int8_t left_spd,
+                                  int8_t right_spd,
+                                  int32_t target_ticks);
+static int32_t motor_ramp(int32_t cur_val,
+                          int32_t target_val,
+                          int32_t step_val);
+static void motor_set_channel(uint32_t pin_a,
+                              uint32_t pin_b,
+                              int32_t speed_pct);
+static int32_t motor_right_enc_ticks(int32_t ticks_a, int32_t ticks_b);
+static void motor_count_rising_edge(uint32_t raw_lvl,
+                                    int32_t dir_sign,
+                                    uint8_t * p_filters,
+                                    uint32_t bit_shift,
+                                    volatile int32_t * p_ticks);
+static void motor_apply_heading_lock(int32_t base_mag_l,
+                                     int32_t base_mag_r,
+                                     int32_t start_ticks_l,
+                                     int32_t start_ticks_r,
+                                     int32_t delta_l,
+                                     int32_t delta_r,
+                                     int32_t * p_integ_units,
+                                     int32_t * p_out_mag_l,
+                                     int32_t * p_out_mag_r);
+static bool motor_check_stalled(int32_t out_l,
+                                int32_t out_r,
+                                int32_t delta_l,
+                                int32_t delta_r,
+                                motor_task_runtime_t * p_rt);
+static bool motor_init_hardware(void);
+static void motor_enter_turn_from_drive(motor_task_ctx_t * p_ctx,
+                                        int32_t new_l,
+                                        int32_t new_r,
+                                        int32_t goal_l,
+                                        int32_t goal_r);
+static void motor_start_new_motion(motor_task_ctx_t * p_ctx,
+                                   const motor_task_cmd_t * p_cmd,
+                                   bool b_should_clr_degraded);
+#if (0u == MOTOR_STAGE2_PAD_TEST)
+static void motor_sync_estop_state(motor_task_ctx_t * p_ctx);
+#endif
+static void motor_step_inputs(motor_task_ctx_t * p_ctx,
+                              motor_task_cmd_t * p_cmd,
+                              bool * pb_has_new_cmd,
+                              int32_t prev_dl,
+                              int32_t prev_dr);
+static void motor_update_speed_log(motor_task_ctx_t * p_ctx,
+                                   int32_t delta_l,
+                                   int32_t delta_r);
+static void motor_update_cruise_targets(motor_task_ctx_t * p_ctx,
+                                        int32_t new_l,
+                                        int32_t new_r);
+static void motor_update_turn_targets(motor_task_ctx_t * p_ctx,
+                                      const motor_task_cmd_t * p_cmd);
+static void motor_drive_turn_active(motor_task_ctx_t * p_ctx,
+                                    bool b_is_left_done,
+                                    bool b_is_right_done,
                                     int32_t delta_l,
                                     int32_t delta_r);
-static void motor_update_cruise_targets (motor_task_ctx_t * p_ctx,
-                                         int32_t new_l,
-                                         int32_t new_r);
-static void motor_update_turn_targets (motor_task_ctx_t * p_ctx,
-                                       const motor_task_cmd_t * p_cmd);
-static void motor_drive_turn_active (motor_task_ctx_t * p_ctx,
-                                     bool b_left_done,
-                                     bool b_right_done,
-                                     int32_t delta_l,
-                                     int32_t delta_r);
-static void motor_step_idle (motor_task_ctx_t * p_ctx,
+static void motor_step_idle(motor_task_ctx_t * p_ctx,
+                            const motor_task_cmd_t * p_cmd,
+                            bool b_has_new_cmd,
+                            int32_t delta_l,
+                            int32_t delta_r);
+static void motor_step_accel(motor_task_ctx_t * p_ctx,
                              const motor_task_cmd_t * p_cmd,
-                             bool b_new_cmd,
+                             bool b_has_new_cmd,
                              int32_t delta_l,
                              int32_t delta_r);
-static void motor_step_accel (motor_task_ctx_t * p_ctx,
+static void motor_step_cruise(motor_task_ctx_t * p_ctx,
                               const motor_task_cmd_t * p_cmd,
-                              bool b_new_cmd,
+                              bool b_has_new_cmd,
                               int32_t delta_l,
                               int32_t delta_r);
-static void motor_step_cruise (motor_task_ctx_t * p_ctx,
-                               const motor_task_cmd_t * p_cmd,
-                               bool b_new_cmd,
-                               int32_t delta_l,
-                               int32_t delta_r);
-static void motor_step_turn (motor_task_ctx_t * p_ctx,
+static void motor_step_turn(motor_task_ctx_t * p_ctx,
+                            const motor_task_cmd_t * p_cmd,
+                            bool b_has_new_cmd,
+                            int32_t delta_l,
+                            int32_t delta_r);
+static void motor_step_brake(motor_task_ctx_t * p_ctx,
                              const motor_task_cmd_t * p_cmd,
-                             bool b_new_cmd,
+                             bool b_has_new_cmd);
+static void motor_step_estop(motor_task_ctx_t * p_ctx,
                              int32_t delta_l,
                              int32_t delta_r);
-static void motor_step_brake (motor_task_ctx_t * p_ctx,
-                              const motor_task_cmd_t * p_cmd,
-                              bool b_new_cmd);
-static void motor_step_estop (motor_task_ctx_t * p_ctx,
-                              int32_t delta_l,
-                              int32_t delta_r);
-static void motor_encoder_alarm_isr (UINT intno);
+static void motor_encoder_alarm_isr(UINT intno);
 
 #ifndef NDEBUG
-static bool motor_right_enc_self_check (void);
+static bool motor_right_enc_self_check(void);
 #endif
+
+/**
+ * @brief Clamp a signed 32-bit value into [low_limit, high_limit].
+ * @param[in] value      Input value.
+ * @param[in] low_limit  Minimum permitted value.
+ * @param[in] high_limit Maximum permitted value.
+ * @return Clamped integer value.
+ */
+int32_t motor_task_clamp (int32_t value, int32_t low_limit, int32_t high_limit)
+{
+    int32_t clamped = value;
+
+    if (clamped < low_limit)
+    {
+        clamped = low_limit;
+    }
+    else if (clamped > high_limit)
+    {
+        clamped = high_limit;
+    }
+    else
+    {
+        /* Input value already lies within [low_limit, high_limit]. */
+    }
+
+    return clamped;
+}
+
+/**
+ * @brief Return the motor stall, encoder, and E-stop fault bitmask.
+ * @return Bitmask of MOTOR_FAULT_BIT_* flags currently asserted.
+ */
+uint32_t motor_task_get_fault_word (void)
+{
+    const uint32_t fault_mask =
+        MOTOR_FAULT_BIT_STALL |
+        MOTOR_FAULT_BIT_ENCODER |
+        MOTOR_FAULT_BIT_ESTOP;
+
+    return (robot_tasks_flags_get() & fault_mask);
+}
+
+/**
+ * @brief Check whether an emergency stop request is active.
+ * @return True if ROBOT_ESTOP_REQUEST is set, false otherwise.
+ */
+bool motor_task_is_estop (void)
+{
+    return (0u != (robot_tasks_flags_get() & ROBOT_ESTOP_REQUEST));
+}
+
+/**
+ * @brief Check whether Navigator requested an E-stop acknowledgement.
+ * @return True if ROBOT_STOP_ACK_REQUEST is set, false otherwise.
+ */
+bool motor_task_is_stop_ack_req (void)
+{
+    return (0u != (robot_tasks_flags_get() & ROBOT_STOP_ACK_REQUEST));
+}
+
+/**
+ * @brief Check whether closed-loop encoder operation is degraded.
+ * @return True if ROBOT_ENCODER_DEGRADED is set, false otherwise.
+ */
+bool motor_task_is_enc_degraded (void)
+{
+    return (0u != (robot_tasks_flags_get() & ROBOT_ENCODER_DEGRADED));
+}
 
 /**
  * @brief Read lifetime signed left encoder tick counter.
@@ -242,7 +339,12 @@ int32_t motor_task_get_enc_right (void)
  */
 uint32_t motor_task_get_drop_count (void)
 {
-    return g_buf_drop_cnt;
+    UINT     saved_state = robot_tasks_data_lock();
+    uint32_t drop_cnt    = g_buf_drop_cnt;
+
+    robot_tasks_data_unlock(saved_state);
+
+    return drop_cnt;
 }
 
 /**
@@ -251,7 +353,7 @@ uint32_t motor_task_get_drop_count (void)
  */
 int32_t motor_task_get_left_dist_mm (void)
 {
-    return (g_enc_left_ticks * MOTOR_MM_PER_TICK_X100) / 100;
+    return (g_enc_left_ticks * MOTOR_MM_PER_TICK_X100) / MOTOR_SCALE_HUNDRED;
 }
 
 /**
@@ -260,7 +362,7 @@ int32_t motor_task_get_left_dist_mm (void)
  */
 int32_t motor_task_get_right_dist_mm (void)
 {
-    return (g_enc_right_ticks * MOTOR_MM_PER_TICK_X100) / 100;
+    return (g_enc_right_ticks * MOTOR_MM_PER_TICK_X100) / MOTOR_SCALE_HUNDRED;
 }
 
 /**
@@ -270,7 +372,7 @@ int32_t motor_task_get_right_dist_mm (void)
 int32_t motor_task_get_avg_dist_mm (void)
 {
     return (motor_task_get_left_dist_mm() +
-            motor_task_get_right_dist_mm()) / 2;
+            motor_task_get_right_dist_mm()) / MOTOR_PAIR_DIVISOR;
 }
 
 /**
@@ -281,8 +383,8 @@ int32_t motor_task_get_avg_dist_cm (void)
 {
     int32_t dist_mm = motor_task_get_avg_dist_mm();
     int32_t dist_cm = (dist_mm >= 0)
-                      ? ((dist_mm + 5) / 10)
-                      : ((dist_mm - 5) / 10);
+                      ? ((dist_mm + MOTOR_HALF_CM_MM) / MOTOR_MM_PER_CM)
+                      : ((dist_mm - MOTOR_HALF_CM_MM) / MOTOR_MM_PER_CM);
 
     return dist_cm;
 }
@@ -291,9 +393,9 @@ int32_t motor_task_get_avg_dist_cm (void)
  * @brief Read latest estimated linear vehicle speed in mm per second.
  * @return Estimated speed in mm/second.
  */
-int32_t motor_task_get_speed_mmps (void)
+int32_t motor_task_get_speed (void)
 {
-    return g_cur_speed_mmps;
+    return g_cur_speed_mm_per_second;
 }
 
 /**
@@ -304,9 +406,10 @@ int32_t motor_task_get_speed_mmps (void)
 ER motor_task_move_forward (int32_t dist_mm)
 {
     int32_t ticks = (dist_mm > 0)
-                    ? ((dist_mm * 100) / MOTOR_MM_PER_TICK_X100)
+                    ? ((dist_mm * MOTOR_SCALE_HUNDRED) / MOTOR_MM_PER_TICK_X100)
                     : 0;
 
+    /* Fit +/-25% nominal drive PWM constants into int8_t command parameters. */
     return motor_queue_bounded_cmd((int8_t)MOTOR_API_DRIVE_PCT,
                                    (int8_t)(-MOTOR_API_DRIVE_PCT),
                                    ticks);
@@ -320,9 +423,10 @@ ER motor_task_move_forward (int32_t dist_mm)
 ER motor_task_move_backward (int32_t dist_mm)
 {
     int32_t ticks = (dist_mm > 0)
-                    ? ((dist_mm * 100) / MOTOR_MM_PER_TICK_X100)
+                    ? ((dist_mm * MOTOR_SCALE_HUNDRED) / MOTOR_MM_PER_TICK_X100)
                     : 0;
 
+    /* Fit +/-25% reverse drive PWM constants into int8_t command parameters. */
     return motor_queue_bounded_cmd((int8_t)(-MOTOR_API_DRIVE_PCT),
                                    (int8_t)MOTOR_API_DRIVE_PCT,
                                    ticks);
@@ -338,8 +442,9 @@ ER motor_task_turn_left (int32_t angle_deg)
     int32_t arc_mmx100 =
         (MOTOR_PI_X100 * MOTOR_WHEELBASE_MM * motor_abs_i32(angle_deg)) /
         MOTOR_FULL_CIRCLE_DEG;
-    int32_t ticks = arc_mmx100 / MOTOR_MM_PER_TICK_X100;
+    int32_t ticks      = arc_mmx100 / MOTOR_MM_PER_TICK_X100;
 
+    /* Fit -25% pivot PWM constants into int8_t command parameters. */
     return motor_queue_bounded_cmd((int8_t)(-MOTOR_API_DRIVE_PCT),
                                    (int8_t)(-MOTOR_API_DRIVE_PCT),
                                    ticks);
@@ -355,8 +460,9 @@ ER motor_task_turn_right (int32_t angle_deg)
     int32_t arc_mmx100 =
         (MOTOR_PI_X100 * MOTOR_WHEELBASE_MM * motor_abs_i32(angle_deg)) /
         MOTOR_FULL_CIRCLE_DEG;
-    int32_t ticks = arc_mmx100 / MOTOR_MM_PER_TICK_X100;
+    int32_t ticks      = arc_mmx100 / MOTOR_MM_PER_TICK_X100;
 
+    /* Fit +25% pivot PWM constants into int8_t command parameters. */
     return motor_queue_bounded_cmd((int8_t)MOTOR_API_DRIVE_PCT,
                                    (int8_t)MOTOR_API_DRIVE_PCT,
                                    ticks);
@@ -368,11 +474,14 @@ ER motor_task_turn_right (int32_t angle_deg)
  */
 ER motor_task_stop (void)
 {
-    motor_task_cmd_t cmd = { 0u };
+    motor_task_cmd_t cmd         = { 0u };
+    UINT             saved_state = robot_tasks_data_lock();
 
     g_bounded_ticks_left  = 0;
     g_bounded_ticks_right = 0;
+    robot_tasks_data_unlock(saved_state);
 
+    /* Cast 4-byte motor command union size to RTOS INT message size. */
     return tk_snd_mbf(robot_tasks_get_motor_mbf(),
                       &cmd,
                       (INT)sizeof(cmd),
@@ -384,16 +493,20 @@ ER motor_task_stop (void)
  * @param[in] stacd   Task start code (unused).
  * @param[in] p_exinf Extended task information pointer (unused).
  */
-void motor_task (INT stacd, void * p_exinf)
+void motor_task_run_task (INT stacd, void * p_exinf)
 {
     motor_task_ctx_t ctx     = { 0 };
     int32_t          delta_l = 0;
     int32_t          delta_r = 0;
 
+    /* Explicitly ignore unused RTOS task entry start code. */
     (void)stacd;
+    /* Explicitly ignore unused RTOS extended info pointer. */
     (void)p_exinf;
 
+    /* Store initial IDLE enum state in 3-bit unsigned runtime field. */
     ctx.runtime.state = (uint32_t)MOTOR_STATE_IDLE;
+    /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
     tm_printf((UB *)"[motor] Task started\n");
 
     if (!motor_init_hardware())
@@ -403,14 +516,15 @@ void motor_task (INT stacd, void * p_exinf)
 
     for (;;)
     {
-        motor_task_cmd_t cmd       = { 0u };
-        bool             b_new_cmd = false;
+        motor_task_cmd_t cmd           = { 0u };
+        bool             b_has_new_cmd = false;
 
-        /* Range-safe: out_left and out_right are clamped to [-100, 100]. */
+        /* Range-safe: out_left is clamped to [-100, 100], fitting int8_t. */
         g_isr_out_left  = (int8_t)ctx.out_left;
+        /* Range-safe: out_right is clamped to [-100, 100], fitting int8_t. */
         g_isr_out_right = (int8_t)ctx.out_right;
 
-        motor_step_inputs(&ctx, &cmd, &b_new_cmd, delta_l, delta_r);
+        motor_step_inputs(&ctx, &cmd, &b_has_new_cmd, delta_l, delta_r);
 
         delta_l        = g_enc_left_ticks - ctx.prev_left;
         delta_r        = g_enc_right_ticks - ctx.prev_right;
@@ -419,30 +533,31 @@ void motor_task (INT stacd, void * p_exinf)
 
         motor_update_speed_log(&ctx, delta_l, delta_r);
 
+        /* Convert 3-bit runtime state field to enum for FSM dispatch. */
         switch ((motor_task_state_t)ctx.runtime.state)
         {
             case MOTOR_STATE_IDLE:
-                motor_step_idle(&ctx, &cmd, b_new_cmd, delta_l, delta_r);
+                motor_step_idle(&ctx, &cmd, b_has_new_cmd, delta_l, delta_r);
             break;
 
             case MOTOR_STATE_ACCEL:
-                motor_step_accel(&ctx, &cmd, b_new_cmd, delta_l, delta_r);
+                motor_step_accel(&ctx, &cmd, b_has_new_cmd, delta_l, delta_r);
             break;
 
             case MOTOR_STATE_CRUISE:
-                motor_step_cruise(&ctx, &cmd, b_new_cmd, delta_l, delta_r);
+                motor_step_cruise(&ctx, &cmd, b_has_new_cmd, delta_l, delta_r);
             break;
 
             case MOTOR_STATE_TURN:
-                motor_step_turn(&ctx, &cmd, b_new_cmd, delta_l, delta_r);
+                motor_step_turn(&ctx, &cmd, b_has_new_cmd, delta_l, delta_r);
             break;
 
             case MOTOR_STATE_BRAKE:
-                motor_step_brake(&ctx, &cmd, b_new_cmd);
+                motor_step_brake(&ctx, &cmd, b_has_new_cmd);
             break;
 
             case MOTOR_STATE_FAULT:
-                if (b_new_cmd &&
+                if ((b_has_new_cmd) &&
                     (0 == cmd.fields.target_speed_left) &&
                     (0 == cmd.fields.target_speed_right))
                 {
@@ -461,6 +576,7 @@ void motor_task (INT stacd, void * p_exinf)
             break;
         }
 
+        /* Ignore sleep return code in 50 Hz periodic control loop. */
         (void)tk_dly_tsk(MOTOR_LOOP_DELAY_MSEC);
     }
 }
@@ -483,8 +599,38 @@ static int32_t motor_abs_i32 (int32_t val)
 static void motor_set_state (motor_task_runtime_t * p_rt,
                              motor_task_state_t next_state)
 {
+    /* Store enum value in 3-bit unsigned runtime field. */
     p_rt->state = (uint32_t)next_state;
+    /* Cast ASCII format literal and enum state to RTOS UB* and INT. */
     tm_printf((UB *)"[motors] state=%d\n", (INT)next_state);
+}
+
+/**
+ * @brief Atomically consume extended >255-tick bounded goals or wire ticks.
+ * @param[in]  p_cmd    Motor command packet holding 8-bit fallback tick goals.
+ * @param[out] p_goal_l Resolved left wheel tick goal.
+ * @param[out] p_goal_r Resolved right wheel tick goal.
+ */
+static void motor_take_bounded_goals (const motor_task_cmd_t * p_cmd,
+                                      int32_t * p_goal_l,
+                                      int32_t * p_goal_r)
+{
+    UINT    saved_state = robot_tasks_data_lock();
+    int32_t ext_left    = g_bounded_ticks_left;
+    int32_t ext_right   = g_bounded_ticks_right;
+
+    g_bounded_ticks_left  = 0;
+    g_bounded_ticks_right = 0;
+    robot_tasks_data_unlock(saved_state);
+
+    /* Widen unsigned 8-bit wire tick field when no >255 override is queued. */
+    *p_goal_l = (ext_left > 0)
+                ? ext_left
+                : (int32_t)p_cmd->fields.turn_ticks_left;
+    /* Widen unsigned 8-bit right wire tick field when no override is queued. */
+    *p_goal_r = (ext_right > 0)
+                ? ext_right
+                : (int32_t)p_cmd->fields.turn_ticks_right;
 }
 
 /**
@@ -498,24 +644,24 @@ static ER motor_queue_bounded_cmd (int8_t left_spd,
                                    int8_t right_spd,
                                    int32_t target_ticks)
 {
-    motor_task_cmd_t cmd        = { 0u };
-    uint8_t          clamped_tk = 0u;
+    motor_task_cmd_t cmd         = { 0u };
+    int32_t          wire_ticks  = motor_task_clamp(target_ticks,
+                                                    0,
+                                                    MOTOR_MAX_CMD_TICKS);
+    /* Range-safe: wire_ticks is clamped into [0, 255]. */
+    uint8_t          clamped_tk  = (uint8_t)wire_ticks;
+    UINT             saved_state = robot_tasks_data_lock();
 
     g_bounded_ticks_left  = target_ticks;
     g_bounded_ticks_right = target_ticks;
-
-    /* Range-safe: non-negative target_ticks clamped into [0, 255]. */
-    clamped_tk = (target_ticks > MOTOR_MAX_CMD_TICKS)
-                 ? (uint8_t)MOTOR_MAX_CMD_TICKS
-                 : (uint8_t)motor_task_clamp(target_ticks,
-                                             0,
-                                             MOTOR_MAX_CMD_TICKS);
+    robot_tasks_data_unlock(saved_state);
 
     cmd.fields.target_speed_left  = left_spd;
     cmd.fields.target_speed_right = right_spd;
     cmd.fields.turn_ticks_left    = clamped_tk;
     cmd.fields.turn_ticks_right   = clamped_tk;
 
+    /* Cast 4-byte command union size to RTOS INT message size. */
     return tk_snd_mbf(robot_tasks_get_motor_mbf(),
                       &cmd,
                       (INT)sizeof(cmd),
@@ -568,22 +714,29 @@ static void motor_set_channel (uint32_t pin_a,
     int32_t  clamped = motor_task_clamp(speed_pct,
                                         MOTOR_PWM_MIN_NEG_PCT,
                                         MOTOR_PWM_MAX_PCT);
+    /* Range-safe: motor_abs_i32(clamped) is in [0, 100]. */
     uint32_t abs_pct = (uint32_t)motor_abs_i32(clamped);
-    uint32_t duty    = ((MOTOR_PWM_WRAP + 1u) * abs_pct) / 100u;
+    uint32_t duty    = ((MOTOR_PWM_WRAP + 1u) * abs_pct) / MOTOR_PWM_SCALE_U32;
 
     if (clamped > 0)
     {
+        /* Cast GPIO pin and duty count to BSP PWM UINT and UW types. */
         (void)pwm_set_cc((UINT)pin_a, (UW)duty);
+        /* Zero reverse bridge channel PWM duty cycle. */
         (void)pwm_set_cc((UINT)pin_b, 0u);
     }
     else if (clamped < 0)
     {
+        /* Zero forward bridge channel PWM duty cycle. */
         (void)pwm_set_cc((UINT)pin_a, 0u);
+        /* Cast GPIO pin and duty count to BSP PWM UINT and UW types. */
         (void)pwm_set_cc((UINT)pin_b, (UW)duty);
     }
     else
     {
+        /* Zero forward bridge channel when coasting/stopped. */
         (void)pwm_set_cc((UINT)pin_a, 0u);
+        /* Zero reverse bridge channel when coasting/stopped. */
         (void)pwm_set_cc((UINT)pin_b, 0u);
     }
 }
@@ -598,7 +751,7 @@ static int32_t motor_right_enc_ticks (int32_t ticks_a, int32_t ticks_b)
 {
     int32_t ticks_out = ticks_a;
 
-    if (0u == g_enc_isr_state.b_using_b)
+    if (0u == g_enc_isr_state.b_is_using_b)
     {
         if (ticks_a != g_right_enc_last_a)
         {
@@ -608,7 +761,7 @@ static int32_t motor_right_enc_ticks (int32_t ticks_a, int32_t ticks_b)
         else if (motor_abs_i32((ticks_b + g_right_enc_b_offset) - ticks_a) >=
                  MOTOR_ENC_BACKUP_MIN_TICKS)
         {
-            g_enc_isr_state.b_using_b = 1u;
+            g_enc_isr_state.b_is_using_b = 1u;
         }
         else
         {
@@ -616,7 +769,7 @@ static int32_t motor_right_enc_ticks (int32_t ticks_a, int32_t ticks_b)
         }
     }
 
-    if (0u != g_enc_isr_state.b_using_b)
+    if (0u != g_enc_isr_state.b_is_using_b)
     {
         ticks_out = ticks_b + g_right_enc_b_offset;
     }
@@ -638,10 +791,11 @@ static void motor_count_rising_edge (uint32_t raw_lvl,
                                      uint32_t bit_shift,
                                      volatile int32_t * p_ticks)
 {
+    /* Widen 8-bit packed filter state to uint32_t for bit manipulation. */
     uint32_t filters_u32 = (uint32_t)(*p_filters);
     uint32_t stable      = (filters_u32 >> bit_shift) & 1u;
     uint32_t pending     = (filters_u32 >> (bit_shift + 1u)) & 1u;
-    uint32_t clear_mask  = ~(3u << bit_shift);
+    uint32_t clear_mask  = ~(MOTOR_ENC_PAIR_MASK << bit_shift);
     uint32_t new_bits    = 0u;
 
     if (raw_lvl == stable)
@@ -761,12 +915,12 @@ static bool motor_check_stalled (int32_t out_l,
                                  int32_t delta_r,
                                  motor_task_runtime_t * p_rt)
 {
-    bool b_left_stalled  = ((motor_abs_i32(out_l) >= MOTOR_STALL_MIN_PCT) &&
-                            (0 == delta_l));
-    bool b_right_stalled = ((motor_abs_i32(out_r) >= MOTOR_STALL_MIN_PCT) &&
-                            (0 == delta_r));
+    bool b_is_left_stalled  =
+        ((motor_abs_i32(out_l) >= MOTOR_STALL_MIN_PCT) && (0 == delta_l));
+    bool b_is_right_stalled =
+        ((motor_abs_i32(out_r) >= MOTOR_STALL_MIN_PCT) && (0 == delta_r));
 
-    if (b_left_stalled)
+    if (b_is_left_stalled)
     {
         if (p_rt->stall_left < MOTOR_STALL_PERIODS)
         {
@@ -778,7 +932,7 @@ static bool motor_check_stalled (int32_t out_l,
         p_rt->stall_left = 0u;
     }
 
-    if (b_right_stalled)
+    if (b_is_right_stalled)
     {
         if (p_rt->stall_right < MOTOR_STALL_PERIODS)
         {
@@ -814,32 +968,37 @@ static bool motor_init_hardware (void)
         MOTOR_RIGHT_ENC_A,
         MOTOR_RIGHT_ENC_B
     };
-    bool b_ok = true;
+    bool b_is_ok = true;
 
-    for (uint32_t idx = 0u; (idx < MOTOR_PIN_COUNT) && b_ok; idx++)
+    for (uint32_t idx = 0u; (idx < MOTOR_PIN_COUNT) && (b_is_ok); idx++)
     {
+        /* Cast GPIO pin constant to uT-Kernel BSP UINT pin parameter. */
         UINT pin_num = (UINT)out_pins[idx];
 
+        /* Configure 20 kHz PWM wrap (cast to BSP UW) and zero initial duty. */
         if ((pwm_set_divider(pin_num, 1u, 0u) < E_OK) ||
             (pwm_set_wrap(pin_num, (UW)MOTOR_PWM_WRAP) < E_OK) ||
             (pwm_set_pin(pin_num) < E_OK) ||
             (pwm_set_cc(pin_num, 0u) < E_OK) ||
             (pwm_set_enabled(pin_num, TRUE) < E_OK))
         {
+            /* Cast ASCII format literal to uT-Kernel UB pointer. */
             tm_printf((UB *)"[motors] PWM setup failed on GP%u\n", pin_num);
-            b_ok = false;
+            b_is_ok = false;
         }
     }
 
-    for (uint32_t idx = 0u; (idx < MOTOR_PIN_COUNT) && b_ok; idx++)
+    for (uint32_t idx = 0u; (idx < MOTOR_PIN_COUNT) && (b_is_ok); idx++)
     {
+        /* Cast encoder GPIO pin constant to uT-Kernel BSP UINT parameter. */
         UINT pin_num = (UINT)enc_pins[idx];
 
         if (gpio_set_pin(pin_num, GPIO_MODE_IN) < E_OK)
         {
+            /* Cast ASCII format literal to uT-Kernel UB pointer. */
             tm_printf((UB *)"[motors] encoder GPIO setup failed on GP%u\n",
                       pin_num);
-            b_ok = false;
+            b_is_ok = false;
         }
         else
         {
@@ -848,15 +1007,16 @@ static bool motor_init_hardware (void)
     }
 
 #ifndef NDEBUG
-    if (b_ok && (!motor_right_enc_self_check()))
+    if ((b_is_ok) && (!motor_right_enc_self_check()))
     {
         robot_tasks_flags_update(MOTOR_FAULT_BIT_ENCODER, 0u);
+        /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
         tm_printf((UB *)"[motors] Encoder self-check failed\n");
-        b_ok = false;
+        b_is_ok = false;
     }
 #endif
 
-    if (b_ok)
+    if (b_is_ok)
     {
         T_DINT dint_cfg = { 0 };
 
@@ -874,51 +1034,75 @@ static bool motor_init_hardware (void)
         }
     }
 
-    return b_ok;
+    return b_is_ok;
+}
+
+/**
+ * @brief Transition from ACCEL or CRUISE into a bounded TURN/translation goal.
+ * @param[in,out] p_ctx  Motor task context.
+ * @param[in]     new_l  Clamped left wheel PWM target.
+ * @param[in]     new_r  Clamped right wheel PWM target.
+ * @param[in]     goal_l Left wheel encoder tick goal.
+ * @param[in]     goal_r Right wheel encoder tick goal.
+ */
+static void motor_enter_turn_from_drive (motor_task_ctx_t * p_ctx,
+                                         int32_t new_l,
+                                         int32_t new_r,
+                                         int32_t goal_l,
+                                         int32_t goal_r)
+{
+    p_ctx->tgt_left         = new_l;
+    p_ctx->tgt_right        = new_r;
+    p_ctx->turn_goal_left   = goal_l;
+    p_ctx->turn_goal_right  = goal_r;
+    p_ctx->turn_start_left  = g_enc_left_ticks;
+    p_ctx->turn_start_right = g_enc_right_ticks;
+    p_ctx->out_left         = p_ctx->tgt_left;
+    p_ctx->out_right        = p_ctx->tgt_right;
+    motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, p_ctx->out_left);
+    motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, p_ctx->out_right);
+    motor_set_state(&p_ctx->runtime, MOTOR_STATE_TURN);
 }
 
 /**
  * @brief Start either a bounded turn/translation or an accelerated cruise.
- * @param[in,out] p_ctx            Motor task context.
- * @param[in]     p_cmd            Incoming non-zero motor command.
- * @param[in]     b_clear_degraded True when starting from IDLE.
+ * @param[in,out] p_ctx                 Motor task context.
+ * @param[in]     p_cmd                 Incoming non-zero motor command.
+ * @param[in]     b_should_clr_degraded True when starting from IDLE.
  */
 static void motor_start_new_motion (motor_task_ctx_t * p_ctx,
                                     const motor_task_cmd_t * p_cmd,
-                                    bool b_clear_degraded)
+                                    bool b_should_clr_degraded)
 {
+    /* Widen signed 8-bit left target speed to int32_t for range clamping. */
     p_ctx->tgt_left  = motor_task_clamp(
         (int32_t)p_cmd->fields.target_speed_left,
         MOTOR_PWM_MIN_NEG_PCT,
         MOTOR_PWM_MAX_PCT);
+    /* Widen signed 8-bit right target speed to int32_t for range clamping. */
     p_ctx->tgt_right = motor_task_clamp(
         (int32_t)p_cmd->fields.target_speed_right,
         MOTOR_PWM_MIN_NEG_PCT,
         MOTOR_PWM_MAX_PCT);
-    p_ctx->turn_goal_left  = (g_bounded_ticks_left > 0)
-                             ? g_bounded_ticks_left
-                             : (int32_t)p_cmd->fields.turn_ticks_left;
-    p_ctx->turn_goal_right = (g_bounded_ticks_right > 0)
-                             ? g_bounded_ticks_right
-                             : (int32_t)p_cmd->fields.turn_ticks_right;
 
-    g_bounded_ticks_left  = 0;
-    g_bounded_ticks_right = 0;
+    motor_take_bounded_goals(p_cmd,
+                             &p_ctx->turn_goal_left,
+                             &p_ctx->turn_goal_right);
 
-    p_ctx->turn_start_left    = g_enc_left_ticks;
-    p_ctx->turn_start_right   = g_enc_right_ticks;
-    p_ctx->cruise_start_left  = g_enc_left_ticks;
-    p_ctx->cruise_start_right = g_enc_right_ticks;
+    p_ctx->turn_start_left     = g_enc_left_ticks;
+    p_ctx->turn_start_right    = g_enc_right_ticks;
+    p_ctx->cruise_start_left   = g_enc_left_ticks;
+    p_ctx->cruise_start_right  = g_enc_right_ticks;
     p_ctx->runtime.stall_left  = 0u;
     p_ctx->runtime.stall_right = 0u;
 
-    if (b_clear_degraded)
+    if (b_should_clr_degraded)
     {
         robot_tasks_flag_assign(ROBOT_ENCODER_DEGRADED, false);
     }
     else
     {
-        p_ctx->runtime.b_move_done_pending = 0u;
+        p_ctx->runtime.b_has_move_done_pend = 0u;
     }
 
     if ((0 != p_ctx->turn_goal_left) || (0 != p_ctx->turn_goal_right))
@@ -944,23 +1128,71 @@ static void motor_start_new_motion (motor_task_ctx_t * p_ctx,
     }
 }
 
+#if (0u == MOTOR_STAGE2_PAD_TEST)
+/**
+ * @brief Synchronize motor FSM with shared ROBOT_ESTOP_REQUEST flag.
+ * @param[in,out] p_ctx Motor task context.
+ */
+static void motor_sync_estop_state (motor_task_ctx_t * p_ctx)
+{
+    if (motor_task_is_estop())
+    {
+        /* Compare 3-bit runtime state against MOTOR_STATE_ESTOP enum value. */
+        if ((uint32_t)MOTOR_STATE_ESTOP != p_ctx->runtime.state)
+        {
+            UINT saved_state = robot_tasks_data_lock();
+
+            g_bounded_ticks_left  = 0;
+            g_bounded_ticks_right = 0;
+            robot_tasks_data_unlock(saved_state);
+
+            p_ctx->tgt_left                     = 0;
+            p_ctx->tgt_right                    = 0;
+            p_ctx->out_left                     = 0;
+            p_ctx->out_right                    = 0;
+            p_ctx->turn_goal_left               = 0;
+            p_ctx->turn_goal_right              = 0;
+            p_ctx->runtime.b_has_move_done_pend = 0u;
+            p_ctx->runtime.move_stable_periods  = 0u;
+            p_ctx->runtime.stop_stable_periods  = 0u;
+            motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
+            motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
+            robot_tasks_flags_update(MOTOR_FAULT_BIT_ESTOP, 0u);
+            motor_set_state(&p_ctx->runtime, MOTOR_STATE_ESTOP);
+        }
+    }
+    /* Release E-stop state once external ROBOT_ESTOP_REQUEST is cleared. */
+    else if ((uint32_t)MOTOR_STATE_ESTOP == p_ctx->runtime.state)
+    {
+        robot_tasks_flags_update(0u, MOTOR_FAULT_BIT_ESTOP);
+        p_ctx->runtime.stop_stable_periods = 0u;
+        motor_set_state(&p_ctx->runtime, MOTOR_STATE_IDLE);
+    }
+    else
+    {
+        /* Normal running mode; keep current FSM state. */
+    }
+}
+#endif /* 0u == MOTOR_STAGE2_PAD_TEST */
+
 /**
  * @brief Handle E-stop transitions and drain the motor command message buffer.
- * @param[in,out] p_ctx       Motor task context.
- * @param[out]    p_cmd       Most recent queued motor command.
- * @param[out]    p_b_new_cmd True if at least one command was received.
- * @param[in]     prev_dl     Previous period left encoder delta.
- * @param[in]     prev_dr     Previous period right encoder delta.
+ * @param[in,out] p_ctx          Motor task context.
+ * @param[out]    p_cmd          Most recent queued motor command.
+ * @param[out]    pb_has_new_cmd True if at least one command was received.
+ * @param[in]     prev_dl        Previous period left encoder delta.
+ * @param[in]     prev_dr        Previous period right encoder delta.
  */
 static void motor_step_inputs (motor_task_ctx_t * p_ctx,
                                motor_task_cmd_t * p_cmd,
-                               bool * p_b_new_cmd,
+                               bool * pb_has_new_cmd,
                                int32_t prev_dl,
                                int32_t prev_dr)
 {
     ID h_motor_mbf = robot_tasks_get_motor_mbf();
 
 #if (0u != MOTOR_STAGE2_PAD_TEST)
+    /* Drain queued commands while comparing against 4-byte INT message size. */
     while ((INT)sizeof(*p_cmd) == tk_rcv_mbf(h_motor_mbf, p_cmd, TMO_POL))
     {
         /* Discard navigator commands during standalone distance test. */
@@ -974,25 +1206,28 @@ static void motor_step_inputs (motor_task_ctx_t * p_ctx,
         UINT intsts = 0u;
 
         DI(intsts);
-        g_enc_left_ticks                    = 0;
-        g_enc_right_ticks                   = 0;
-        g_isr_ticks_la                      = 0;
-        g_isr_ticks_lb                      = 0;
-        g_isr_ticks_ra                      = 0;
-        g_isr_ticks_rb                      = 0;
-        g_right_enc_last_a                  = 0;
-        g_right_enc_b_offset                = 0;
-        g_enc_isr_state.b_using_b           = 0u;
-        p_ctx->runtime.b_right_backup_reported = 0u;
-        p_ctx->prev_left                    = 0;
-        p_ctx->prev_right                   = 0;
+        g_enc_left_ticks                     = 0;
+        g_enc_right_ticks                    = 0;
+        g_isr_ticks_la                       = 0;
+        g_isr_ticks_lb                       = 0;
+        g_isr_ticks_ra                       = 0;
+        g_isr_ticks_rb                       = 0;
+        g_right_enc_last_a                   = 0;
+        g_right_enc_b_offset                 = 0;
+        g_enc_isr_state.b_is_using_b         = 0u;
+        p_ctx->runtime.b_has_reported_backup = 0u;
+        p_ctx->prev_left                     = 0;
+        p_ctx->prev_right                    = 0;
         EI(intsts);
 
+        /* Fit +25% test speed constant into int8_t left speed field. */
         p_cmd->fields.target_speed_left  = (int8_t)MOTOR_API_DRIVE_PCT;
+        /* Fit -25% test speed constant into int8_t right speed field. */
         p_cmd->fields.target_speed_right = (int8_t)(-MOTOR_API_DRIVE_PCT);
         p_cmd->fields.turn_ticks_left    = 0u;
         p_cmd->fields.turn_ticks_right   = 0u;
-        *p_b_new_cmd                     = true;
+        *pb_has_new_cmd                  = true;
+        /* Cast format literal and target distance to RTOS UB* and INT. */
         tm_printf((UB *)"\n=== [DISTANCE TEST] Driving to %d mm ===\n",
                   (INT)MOTOR_TEST_TARGET_DIST_MM);
     }
@@ -1003,71 +1238,53 @@ static void motor_step_inputs (motor_task_ctx_t * p_ctx,
     {
         p_ctx->run_number = 1;
         p_cmd->raw        = 0u;
-        *p_b_new_cmd      = true;
+        *pb_has_new_cmd   = true;
     }
 
+    /* Check whether test run stopped cleanly in MOTOR_STATE_IDLE. */
     if ((1 == p_ctx->run_number) &&
         ((uint32_t)MOTOR_STATE_IDLE == p_ctx->runtime.state) &&
         (0 == prev_dl) &&
         (0 == prev_dr))
     {
         p_ctx->run_number = 2;
+        /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
         tm_printf((UB *)"\n=== [DISTANCE TEST COMPLETE] ===\n");
+        /* Cast format literal and odometry distances to RTOS UB* and INT. */
         tm_printf((UB *)"Reported: %d cm (L=%d mm, R=%d mm, Avg=%d mm)\n",
                   (INT)motor_task_get_avg_dist_cm(),
                   (INT)motor_task_get_left_dist_mm(),
                   (INT)motor_task_get_right_dist_mm(),
                   (INT)motor_task_get_avg_dist_mm());
+        /* Cast format literal and final tick totals to RTOS UB* and INT. */
         tm_printf((UB *)"Final Ticks: L=%d, R=%d (Avg=%d ticks)\n",
                   (INT)g_enc_left_ticks,
                   (INT)g_enc_right_ticks,
-                  (INT)((g_enc_left_ticks + g_enc_right_ticks) / 2));
+                  (INT)((g_enc_left_ticks + g_enc_right_ticks) /
+                        MOTOR_PAIR_DIVISOR));
+        /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
         tm_printf((UB *)"Measure physical distance with a ruler now!\n");
     }
 #else
+    /* Explicitly ignore unused previous left delta in normal Navigator mode. */
     (void)prev_dl;
+    /* Explicitly ignore unused previous right delta in normal mode. */
     (void)prev_dr;
 
-    if (motor_task_is_estop())
-    {
-        if ((uint32_t)MOTOR_STATE_ESTOP != p_ctx->runtime.state)
-        {
-            p_ctx->tgt_left                    = 0;
-            p_ctx->tgt_right                   = 0;
-            p_ctx->out_left                    = 0;
-            p_ctx->out_right                   = 0;
-            p_ctx->turn_goal_left              = 0;
-            p_ctx->turn_goal_right             = 0;
-            g_bounded_ticks_left               = 0;
-            g_bounded_ticks_right              = 0;
-            p_ctx->runtime.b_move_done_pending = 0u;
-            p_ctx->runtime.move_stable_periods = 0u;
-            p_ctx->runtime.stop_stable_periods = 0u;
-            motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
-            motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
-            robot_tasks_flags_update(MOTOR_FAULT_BIT_ESTOP, 0u);
-            motor_set_state(&p_ctx->runtime, MOTOR_STATE_ESTOP);
-        }
-    }
-    else if ((uint32_t)MOTOR_STATE_ESTOP == p_ctx->runtime.state)
-    {
-        robot_tasks_flags_update(0u, MOTOR_FAULT_BIT_ESTOP);
-        p_ctx->runtime.stop_stable_periods = 0u;
-        motor_set_state(&p_ctx->runtime, MOTOR_STATE_IDLE);
-    }
-    else
-    {
-        /* Normal running mode; keep current FSM state. */
-    }
+    motor_sync_estop_state(p_ctx);
 
+    /* Drain motor queue keeping latest 4-byte command (INT size comparison). */
     while ((INT)sizeof(*p_cmd) == tk_rcv_mbf(h_motor_mbf, p_cmd, TMO_POL))
     {
-        if (*p_b_new_cmd)
+        if (*pb_has_new_cmd)
         {
+            UINT saved_state = robot_tasks_data_lock();
+
             g_buf_drop_cnt++;
+            robot_tasks_data_unlock(saved_state);
         }
 
-        *p_b_new_cmd = true;
+        *pb_has_new_cmd = true;
     }
 #endif /* MOTOR_STAGE2_PAD_TEST */
 }
@@ -1082,21 +1299,23 @@ static void motor_update_speed_log (motor_task_ctx_t * p_ctx,
                                     int32_t delta_l,
                                     int32_t delta_r)
 {
-    int32_t avg_ticks_20ms =
-        (motor_abs_i32(delta_l) + motor_abs_i32(delta_r)) / 2;
+    int32_t avg_period_ticks =
+        (motor_abs_i32(delta_l) + motor_abs_i32(delta_r)) / MOTOR_PAIR_DIVISOR;
 
-    if ((0u != g_enc_isr_state.b_using_b) &&
-        (0u == p_ctx->runtime.b_right_backup_reported))
+    if ((0u != g_enc_isr_state.b_is_using_b) &&
+        (0u == p_ctx->runtime.b_has_reported_backup))
     {
-        p_ctx->runtime.b_right_backup_reported = 1u;
+        p_ctx->runtime.b_has_reported_backup = 1u;
+        /* Cast format literal and ISR tick counters to RTOS UB* and INT. */
         tm_printf((UB *)"[motors] Right encoder A missing; "
                         "using B (A=%d B=%d)\n",
                   (INT)g_isr_ticks_ra,
                   (INT)g_isr_ticks_rb);
     }
 
-    g_cur_speed_mmps =
-        (avg_ticks_20ms * MOTOR_LOOP_FREQ_HZ * MOTOR_MM_PER_TICK_X100) / 100;
+    g_cur_speed_mm_per_second =
+        (avg_period_ticks * MOTOR_LOOP_FREQ_HZ * MOTOR_MM_PER_TICK_X100) /
+        MOTOR_SCALE_HUNDRED;
 
     p_ctx->runtime.print_timer++;
 
@@ -1114,6 +1333,7 @@ static void motor_update_speed_log (motor_task_ctx_t * p_ctx,
             int32_t run_r =
                 motor_abs_i32(g_enc_right_ticks - p_ctx->cruise_start_right);
 
+            /* Cast format literal and encoder/PWM values to UB* and INT. */
             tm_printf((UB *)"[dist] %d cm | L=%d(A:%d,B:%d) "
                             "R=%d(A:%d,B:%d) err=%d | PWM L=%d R=%d\n",
                       (INT)motor_task_get_avg_dist_cm(),
@@ -1158,17 +1378,14 @@ static void motor_update_cruise_targets (motor_task_ctx_t * p_ctx,
 static void motor_update_turn_targets (motor_task_ctx_t * p_ctx,
                                        const motor_task_cmd_t * p_cmd)
 {
+    /* Widen signed 8-bit left command speed to int32_t. */
     int32_t cmd_l       = (int32_t)p_cmd->fields.target_speed_left;
+    /* Widen signed 8-bit right command speed to int32_t. */
     int32_t cmd_r       = (int32_t)p_cmd->fields.target_speed_right;
-    int32_t next_goal_l = (g_bounded_ticks_left > 0)
-                          ? g_bounded_ticks_left
-                          : (int32_t)p_cmd->fields.turn_ticks_left;
-    int32_t next_goal_r = (g_bounded_ticks_right > 0)
-                          ? g_bounded_ticks_right
-                          : (int32_t)p_cmd->fields.turn_ticks_right;
+    int32_t next_goal_l = 0;
+    int32_t next_goal_r = 0;
 
-    g_bounded_ticks_left  = 0;
-    g_bounded_ticks_right = 0;
+    motor_take_bounded_goals(p_cmd, &next_goal_l, &next_goal_r);
 
     if ((cmd_l != p_ctx->tgt_left) ||
         (cmd_r != p_ctx->tgt_right) ||
@@ -1190,15 +1407,15 @@ static void motor_update_turn_targets (motor_task_ctx_t * p_ctx,
 
 /**
  * @brief Drive motors during an incomplete bounded turn or translation.
- * @param[in,out] p_ctx        Motor task context.
- * @param[in]     b_left_done  True if left wheel reached its tick goal.
- * @param[in]     b_right_done True if right wheel reached its tick goal.
- * @param[in]     delta_l      Left encoder delta ticks.
- * @param[in]     delta_r      Right encoder delta ticks.
+ * @param[in,out] p_ctx           Motor task context.
+ * @param[in]     b_is_left_done  True if left wheel reached its tick goal.
+ * @param[in]     b_is_right_done True if right wheel reached its tick goal.
+ * @param[in]     delta_l         Left encoder delta ticks.
+ * @param[in]     delta_r         Right encoder delta ticks.
  */
 static void motor_drive_turn_active (motor_task_ctx_t * p_ctx,
-                                     bool b_left_done,
-                                     bool b_right_done,
+                                     bool b_is_left_done,
+                                     bool b_is_right_done,
                                      int32_t delta_l,
                                      int32_t delta_r)
 {
@@ -1207,8 +1424,8 @@ static void motor_drive_turn_active (motor_task_ctx_t * p_ctx,
 
     if ((p_ctx->tgt_left == (-p_ctx->tgt_right)) &&
         (0 != p_ctx->tgt_left) &&
-        (!b_left_done) &&
-        (!b_right_done))
+        (!b_is_left_done) &&
+        (!b_is_right_done))
     {
         motor_apply_heading_lock(mag_l,
                                  mag_r,
@@ -1221,25 +1438,25 @@ static void motor_drive_turn_active (motor_task_ctx_t * p_ctx,
                                  &mag_r);
     }
 
-    p_ctx->out_left  = b_left_done
+    p_ctx->out_left  = b_is_left_done
                        ? 0
                        : ((p_ctx->tgt_left > 0) ? mag_l : (-mag_l));
-    p_ctx->out_right = b_right_done
+    p_ctx->out_right = b_is_right_done
                        ? 0
                        : ((p_ctx->tgt_right > 0) ? mag_r : (-mag_r));
 
     if ((!motor_task_is_enc_degraded()) &&
-        motor_check_stalled(p_ctx->out_left,
-                            p_ctx->out_right,
-                            delta_l,
-                            delta_r,
-                            &p_ctx->runtime))
+        (motor_check_stalled(p_ctx->out_left,
+                             p_ctx->out_right,
+                             delta_l,
+                             delta_r,
+                             &p_ctx->runtime)))
     {
-        p_ctx->out_left                    = 0;
-        p_ctx->out_right                   = 0;
+        p_ctx->out_left                     = 0;
+        p_ctx->out_right                    = 0;
         motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
         motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
-        p_ctx->runtime.b_move_done_pending = 0u;
+        p_ctx->runtime.b_has_move_done_pend = 0u;
         robot_tasks_flags_update(MOTOR_FAULT_BIT_STALL, 0u);
         motor_set_state(&p_ctx->runtime, MOTOR_STATE_FAULT);
     }
@@ -1252,28 +1469,28 @@ static void motor_drive_turn_active (motor_task_ctx_t * p_ctx,
 
 /**
  * @brief Handle MOTOR_STATE_IDLE settle acknowledgement and motion launch.
- * @param[in,out] p_ctx     Motor task context.
- * @param[in]     p_cmd     Latest motor command.
- * @param[in]     b_new_cmd True if a new command arrived this tick.
- * @param[in]     delta_l   Left encoder delta ticks.
- * @param[in]     delta_r   Right encoder delta ticks.
+ * @param[in,out] p_ctx         Motor task context.
+ * @param[in]     p_cmd         Latest motor command.
+ * @param[in]     b_has_new_cmd True if a new command arrived this tick.
+ * @param[in]     delta_l       Left encoder delta ticks.
+ * @param[in]     delta_r       Right encoder delta ticks.
  */
 static void motor_step_idle (motor_task_ctx_t * p_ctx,
                              const motor_task_cmd_t * p_cmd,
-                             bool b_new_cmd,
+                             bool b_has_new_cmd,
                              int32_t delta_l,
                              int32_t delta_r)
 {
-    if (0u != p_ctx->runtime.b_move_done_pending)
+    if (0u != p_ctx->runtime.b_has_move_done_pend)
     {
-        bool b_wheels_still = ((0 == delta_l) && (0 == delta_r));
+        bool b_are_wheels_still = ((0 == delta_l) && (0 == delta_r));
 
-        if (b_wheels_still &&
+        if ((b_are_wheels_still) &&
             (p_ctx->runtime.move_stable_periods < MOTOR_STABLE_PERIODS_REQ))
         {
             p_ctx->runtime.move_stable_periods++;
         }
-        else if (!b_wheels_still)
+        else if (!b_are_wheels_still)
         {
             p_ctx->runtime.move_stable_periods = 0u;
         }
@@ -1283,25 +1500,28 @@ static void motor_step_idle (motor_task_ctx_t * p_ctx,
         }
     }
 
-    if ((0u != p_ctx->runtime.b_move_done_pending) &&
+    if ((0u != p_ctx->runtime.b_has_move_done_pend) &&
         (p_ctx->runtime.move_stable_periods >= MOTOR_STABLE_PERIODS_REQ))
     {
         navigator_task_msg_t done_msg = { 0 };
 
+        /* Store MSG_MOTOR_MOVE_DONE enum in 4-bit unsigned message field. */
         done_msg.type = (uint32_t)MSG_MOTOR_MOVE_DONE;
 
+        /* Cast Navigator message size to RTOS INT parameter. */
         if (tk_snd_mbf(robot_tasks_get_nav_mbf(),
                        &done_msg,
                        (INT)sizeof(done_msg),
                        TMO_POL) >= E_OK)
         {
-            p_ctx->runtime.b_move_done_pending = 0u;
-            p_ctx->runtime.move_stable_periods = 0u;
+            p_ctx->runtime.b_has_move_done_pend = 0u;
+            p_ctx->runtime.move_stable_periods  = 0u;
+            /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
             tm_printf((UB *)"[motors] Move completed\n");
         }
     }
 
-    if (b_new_cmd &&
+    if ((b_has_new_cmd) &&
         ((0 != p_cmd->fields.target_speed_left) ||
          (0 != p_cmd->fields.target_speed_right)))
     {
@@ -1311,81 +1531,72 @@ static void motor_step_idle (motor_task_ctx_t * p_ctx,
 
 /**
  * @brief Handle MOTOR_STATE_ACCEL soft-start ramping and heading lock.
- * @param[in,out] p_ctx     Motor task context.
- * @param[in]     p_cmd     Latest motor command.
- * @param[in]     b_new_cmd True if a new command arrived this tick.
- * @param[in]     delta_l   Left encoder delta ticks.
- * @param[in]     delta_r   Right encoder delta ticks.
+ * @param[in,out] p_ctx         Motor task context.
+ * @param[in]     p_cmd         Latest motor command.
+ * @param[in]     b_has_new_cmd True if a new command arrived this tick.
+ * @param[in]     delta_l       Left encoder delta ticks.
+ * @param[in]     delta_r       Right encoder delta ticks.
  */
 static void motor_step_accel (motor_task_ctx_t * p_ctx,
                               const motor_task_cmd_t * p_cmd,
-                              bool b_new_cmd,
+                              bool b_has_new_cmd,
                               int32_t delta_l,
                               int32_t delta_r)
 {
-    bool b_continue = true;
+    bool b_should_continue = true;
 
-    if (b_new_cmd)
+    if (b_has_new_cmd)
     {
-        int32_t new_l = motor_task_clamp(
+        /* Widen signed 8-bit left command speed to int32_t for clamping. */
+        int32_t new_l  = motor_task_clamp(
             (int32_t)p_cmd->fields.target_speed_left,
             MOTOR_PWM_MIN_NEG_PCT,
             MOTOR_PWM_MAX_PCT);
-        int32_t new_r = motor_task_clamp(
+        /* Widen signed 8-bit right command speed to int32_t for clamping. */
+        int32_t new_r  = motor_task_clamp(
             (int32_t)p_cmd->fields.target_speed_right,
             MOTOR_PWM_MIN_NEG_PCT,
             MOTOR_PWM_MAX_PCT);
+        int32_t goal_l = 0;
+        int32_t goal_r = 0;
 
-        p_ctx->turn_goal_left  = (g_bounded_ticks_left > 0)
-                                 ? g_bounded_ticks_left
-                                 : (int32_t)p_cmd->fields.turn_ticks_left;
-        p_ctx->turn_goal_right = (g_bounded_ticks_right > 0)
-                                 ? g_bounded_ticks_right
-                                 : (int32_t)p_cmd->fields.turn_ticks_right;
-        g_bounded_ticks_left   = 0;
-        g_bounded_ticks_right  = 0;
+        motor_take_bounded_goals(p_cmd, &goal_l, &goal_r);
 
         if ((0 == new_l) && (0 == new_r))
         {
+            p_ctx->turn_goal_left  = 0;
+            p_ctx->turn_goal_right = 0;
             motor_set_state(&p_ctx->runtime, MOTOR_STATE_BRAKE);
-            b_continue = false;
+            b_should_continue      = false;
         }
-        else if ((0 != p_ctx->turn_goal_left) ||
-                 (0 != p_ctx->turn_goal_right))
+        else if ((0 != goal_l) || (0 != goal_r))
         {
-            p_ctx->tgt_left         = new_l;
-            p_ctx->tgt_right        = new_r;
-            p_ctx->turn_start_left  = g_enc_left_ticks;
-            p_ctx->turn_start_right = g_enc_right_ticks;
-            p_ctx->out_left         = p_ctx->tgt_left;
-            p_ctx->out_right        = p_ctx->tgt_right;
-            motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, p_ctx->out_left);
-            motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, p_ctx->out_right);
-            motor_set_state(&p_ctx->runtime, MOTOR_STATE_TURN);
-            b_continue = false;
+            motor_enter_turn_from_drive(p_ctx, new_l, new_r, goal_l, goal_r);
+            b_should_continue = false;
         }
         else
         {
+            p_ctx->turn_goal_left  = 0;
+            p_ctx->turn_goal_right = 0;
             motor_update_cruise_targets(p_ctx, new_l, new_r);
         }
     }
 
-    if (b_continue)
+    if (b_should_continue)
     {
         int32_t mag_l = 0;
         int32_t mag_r = 0;
 
-        p_ctx->ramp_mag_left = motor_ramp(p_ctx->ramp_mag_left,
-                                          motor_abs_i32(p_ctx->tgt_left),
-                                          MOTOR_RAMP_STEP_PCT);
+        p_ctx->ramp_mag_left  = motor_ramp(p_ctx->ramp_mag_left,
+                                           motor_abs_i32(p_ctx->tgt_left),
+                                           MOTOR_RAMP_STEP_PCT);
         p_ctx->ramp_mag_right = motor_ramp(p_ctx->ramp_mag_right,
                                            motor_abs_i32(p_ctx->tgt_right),
                                            MOTOR_RAMP_STEP_PCT);
-        mag_l = p_ctx->ramp_mag_left;
-        mag_r = p_ctx->ramp_mag_right;
+        mag_l                 = p_ctx->ramp_mag_left;
+        mag_r                 = p_ctx->ramp_mag_right;
 
-        if ((p_ctx->tgt_left == (-p_ctx->tgt_right)) &&
-            (0 != p_ctx->tgt_left))
+        if ((p_ctx->tgt_left == (-p_ctx->tgt_right)) && (0 != p_ctx->tgt_left))
         {
             motor_apply_heading_lock(p_ctx->ramp_mag_left,
                                      p_ctx->ramp_mag_right,
@@ -1418,60 +1629,46 @@ static void motor_step_accel (motor_task_ctx_t * p_ctx,
 
 /**
  * @brief Handle MOTOR_STATE_CRUISE steady driving, heading lock, and stall.
- * @param[in,out] p_ctx     Motor task context.
- * @param[in]     p_cmd     Latest motor command.
- * @param[in]     b_new_cmd True if a new command arrived this tick.
- * @param[in]     delta_l   Left encoder delta ticks.
- * @param[in]     delta_r   Right encoder delta ticks.
+ * @param[in,out] p_ctx         Motor task context.
+ * @param[in]     p_cmd         Latest motor command.
+ * @param[in]     b_has_new_cmd True if a new command arrived this tick.
+ * @param[in]     delta_l       Left encoder delta ticks.
+ * @param[in]     delta_r       Right encoder delta ticks.
  */
 static void motor_step_cruise (motor_task_ctx_t * p_ctx,
                                const motor_task_cmd_t * p_cmd,
-                               bool b_new_cmd,
+                               bool b_has_new_cmd,
                                int32_t delta_l,
                                int32_t delta_r)
 {
-    bool b_continue = true;
+    bool b_should_continue = true;
 
-    if (b_new_cmd)
+    if (b_has_new_cmd)
     {
-        int32_t new_l = motor_task_clamp(
+        /* Widen signed 8-bit left command speed to int32_t for clamping. */
+        int32_t new_l  = motor_task_clamp(
             (int32_t)p_cmd->fields.target_speed_left,
             MOTOR_PWM_MIN_NEG_PCT,
             MOTOR_PWM_MAX_PCT);
-        int32_t new_r = motor_task_clamp(
+        /* Widen signed 8-bit right command speed to int32_t for clamping. */
+        int32_t new_r  = motor_task_clamp(
             (int32_t)p_cmd->fields.target_speed_right,
             MOTOR_PWM_MIN_NEG_PCT,
             MOTOR_PWM_MAX_PCT);
-        bool b_bounded = ((0u != p_cmd->fields.turn_ticks_left) ||
-                          (0u != p_cmd->fields.turn_ticks_right) ||
-                          (g_bounded_ticks_left > 0) ||
-                          (g_bounded_ticks_right > 0));
+        int32_t goal_l = 0;
+        int32_t goal_r = 0;
+
+        motor_take_bounded_goals(p_cmd, &goal_l, &goal_r);
 
         if ((0 == new_l) && (0 == new_r))
         {
             motor_set_state(&p_ctx->runtime, MOTOR_STATE_BRAKE);
-            b_continue = false;
+            b_should_continue = false;
         }
-        else if (b_bounded)
+        else if ((0 != goal_l) || (0 != goal_r))
         {
-            p_ctx->tgt_left         = new_l;
-            p_ctx->tgt_right        = new_r;
-            p_ctx->turn_goal_left   = (g_bounded_ticks_left > 0)
-                                      ? g_bounded_ticks_left
-                                      : (int32_t)p_cmd->fields.turn_ticks_left;
-            p_ctx->turn_goal_right  = (g_bounded_ticks_right > 0)
-                                      ? g_bounded_ticks_right
-                                      : (int32_t)p_cmd->fields.turn_ticks_right;
-            g_bounded_ticks_left    = 0;
-            g_bounded_ticks_right   = 0;
-            p_ctx->turn_start_left  = g_enc_left_ticks;
-            p_ctx->turn_start_right = g_enc_right_ticks;
-            p_ctx->out_left         = p_ctx->tgt_left;
-            p_ctx->out_right        = p_ctx->tgt_right;
-            motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, p_ctx->out_left);
-            motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, p_ctx->out_right);
-            motor_set_state(&p_ctx->runtime, MOTOR_STATE_TURN);
-            b_continue = false;
+            motor_enter_turn_from_drive(p_ctx, new_l, new_r, goal_l, goal_r);
+            b_should_continue = false;
         }
         else
         {
@@ -1479,13 +1676,12 @@ static void motor_step_cruise (motor_task_ctx_t * p_ctx,
         }
     }
 
-    if (b_continue)
+    if (b_should_continue)
     {
         int32_t mag_l = motor_abs_i32(p_ctx->tgt_left);
         int32_t mag_r = motor_abs_i32(p_ctx->tgt_right);
 
-        if ((p_ctx->tgt_left == (-p_ctx->tgt_right)) &&
-            (0 != p_ctx->tgt_left))
+        if ((p_ctx->tgt_left == (-p_ctx->tgt_right)) && (0 != p_ctx->tgt_left))
         {
             motor_apply_heading_lock(mag_l,
                                      mag_r,
@@ -1506,11 +1702,11 @@ static void motor_step_cruise (motor_task_ctx_t * p_ctx,
                            : ((p_ctx->tgt_right < 0) ? (-mag_r) : 0);
 
         if ((!motor_task_is_enc_degraded()) &&
-            motor_check_stalled(p_ctx->out_left,
-                                p_ctx->out_right,
-                                delta_l,
-                                delta_r,
-                                &p_ctx->runtime))
+            (motor_check_stalled(p_ctx->out_left,
+                                 p_ctx->out_right,
+                                 delta_l,
+                                 delta_r,
+                                 &p_ctx->runtime)))
         {
             p_ctx->out_left  = 0;
             p_ctx->out_right = 0;
@@ -1529,34 +1725,38 @@ static void motor_step_cruise (motor_task_ctx_t * p_ctx,
 
 /**
  * @brief Handle MOTOR_STATE_TURN bounded translations and in-place pivots.
- * @param[in,out] p_ctx     Motor task context.
- * @param[in]     p_cmd     Latest motor command.
- * @param[in]     b_new_cmd True if a new command arrived this tick.
- * @param[in]     delta_l   Left encoder delta ticks.
- * @param[in]     delta_r   Right encoder delta ticks.
+ * @param[in,out] p_ctx         Motor task context.
+ * @param[in]     p_cmd         Latest motor command.
+ * @param[in]     b_has_new_cmd True if a new command arrived this tick.
+ * @param[in]     delta_l       Left encoder delta ticks.
+ * @param[in]     delta_r       Right encoder delta ticks.
  */
 static void motor_step_turn (motor_task_ctx_t * p_ctx,
                              const motor_task_cmd_t * p_cmd,
-                             bool b_new_cmd,
+                             bool b_has_new_cmd,
                              int32_t delta_l,
                              int32_t delta_r)
 {
-    bool b_continue = true;
+    bool b_should_continue = true;
 
-    if (b_new_cmd)
+    if (b_has_new_cmd)
     {
         if ((0 == p_cmd->fields.target_speed_left) &&
             (0 == p_cmd->fields.target_speed_right))
         {
-            p_ctx->tgt_left                    = 0;
-            p_ctx->tgt_right                   = 0;
-            p_ctx->turn_goal_left              = 0;
-            p_ctx->turn_goal_right             = 0;
-            g_bounded_ticks_left               = 0;
-            g_bounded_ticks_right              = 0;
-            p_ctx->runtime.b_move_done_pending = 0u;
+            UINT saved_state = robot_tasks_data_lock();
+
+            g_bounded_ticks_left  = 0;
+            g_bounded_ticks_right = 0;
+            robot_tasks_data_unlock(saved_state);
+
+            p_ctx->tgt_left                     = 0;
+            p_ctx->tgt_right                    = 0;
+            p_ctx->turn_goal_left               = 0;
+            p_ctx->turn_goal_right              = 0;
+            p_ctx->runtime.b_has_move_done_pend = 0u;
             motor_set_state(&p_ctx->runtime, MOTOR_STATE_BRAKE);
-            b_continue = false;
+            b_should_continue                   = false;
         }
         else
         {
@@ -1564,34 +1764,34 @@ static void motor_step_turn (motor_task_ctx_t * p_ctx,
         }
     }
 
-    if (b_continue)
+    if (b_should_continue)
     {
-        bool b_left_done =
+        bool b_is_left_done  =
             ((0 == p_ctx->turn_goal_left) ||
              (motor_abs_i32(g_enc_left_ticks - p_ctx->turn_start_left) >=
               p_ctx->turn_goal_left));
-        bool b_right_done =
+        bool b_is_right_done =
             ((0 == p_ctx->turn_goal_right) ||
              (motor_abs_i32(g_enc_right_ticks - p_ctx->turn_start_right) >=
               p_ctx->turn_goal_right));
 
-        if (b_left_done && b_right_done)
+        if ((b_is_left_done) && (b_is_right_done))
         {
-            p_ctx->out_left                    = 0;
-            p_ctx->out_right                   = 0;
+            p_ctx->out_left                     = 0;
+            p_ctx->out_right                    = 0;
             motor_set_channel(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
             motor_set_channel(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
-            p_ctx->turn_goal_left              = 0;
-            p_ctx->turn_goal_right             = 0;
-            p_ctx->runtime.b_move_done_pending = 1u;
-            p_ctx->runtime.move_stable_periods = 0u;
+            p_ctx->turn_goal_left               = 0;
+            p_ctx->turn_goal_right              = 0;
+            p_ctx->runtime.b_has_move_done_pend = 1u;
+            p_ctx->runtime.move_stable_periods  = 0u;
             motor_set_state(&p_ctx->runtime, MOTOR_STATE_BRAKE);
         }
         else
         {
             motor_drive_turn_active(p_ctx,
-                                    b_left_done,
-                                    b_right_done,
+                                    b_is_left_done,
+                                    b_is_right_done,
                                     delta_l,
                                     delta_r);
         }
@@ -1600,15 +1800,15 @@ static void motor_step_turn (motor_task_ctx_t * p_ctx,
 
 /**
  * @brief Handle MOTOR_STATE_BRAKE active braking or immediate re-launch.
- * @param[in,out] p_ctx     Motor task context.
- * @param[in]     p_cmd     Latest motor command.
- * @param[in]     b_new_cmd True if a new command arrived this tick.
+ * @param[in,out] p_ctx         Motor task context.
+ * @param[in]     p_cmd         Latest motor command.
+ * @param[in]     b_has_new_cmd True if a new command arrived this tick.
  */
 static void motor_step_brake (motor_task_ctx_t * p_ctx,
                               const motor_task_cmd_t * p_cmd,
-                              bool b_new_cmd)
+                              bool b_has_new_cmd)
 {
-    if (b_new_cmd &&
+    if ((b_has_new_cmd) &&
         ((0 != p_cmd->fields.target_speed_left) ||
          (0 != p_cmd->fields.target_speed_right)))
     {
@@ -1644,14 +1844,14 @@ static void motor_step_estop (motor_task_ctx_t * p_ctx,
                               int32_t delta_l,
                               int32_t delta_r)
 {
-    bool b_wheels_still = ((0 == delta_l) && (0 == delta_r));
+    bool b_are_wheels_still = ((0 == delta_l) && (0 == delta_r));
 
-    if (b_wheels_still &&
+    if ((b_are_wheels_still) &&
         (p_ctx->runtime.stop_stable_periods < MOTOR_STABLE_PERIODS_REQ))
     {
         p_ctx->runtime.stop_stable_periods++;
     }
-    else if (!b_wheels_still)
+    else if (!b_are_wheels_still)
     {
         p_ctx->runtime.stop_stable_periods = 0u;
     }
@@ -1660,19 +1860,22 @@ static void motor_step_estop (motor_task_ctx_t * p_ctx,
         /* Already reached required settled periods. */
     }
 
-    if (motor_task_is_stop_ack_req() &&
+    if ((motor_task_is_stop_ack_req()) &&
         (p_ctx->runtime.stop_stable_periods >= MOTOR_STABLE_PERIODS_REQ))
     {
         navigator_task_msg_t stop_msg = { 0 };
 
+        /* Store MSG_MOTOR_STOPPED enum in 4-bit unsigned message field. */
         stop_msg.type = (uint32_t)MSG_MOTOR_STOPPED;
 
+        /* Cast Navigator message size to RTOS INT parameter. */
         if (tk_snd_mbf(robot_tasks_get_nav_mbf(),
                        &stop_msg,
                        (INT)sizeof(stop_msg),
                        TMO_POL) >= E_OK)
         {
             robot_tasks_flag_assign(ROBOT_STOP_ACK_REQUEST, false);
+            /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
             tm_printf((UB *)"[motors] Stop confirmed\n");
         }
     }
@@ -1685,28 +1888,28 @@ static void motor_step_estop (motor_task_ctx_t * p_ctx,
  */
 static bool motor_right_enc_self_check (void)
 {
-    bool b_ok = false;
+    bool b_is_ok = false;
 
-    b_ok = ((12 == motor_right_enc_ticks(12, 13)) &&
-            (0u == g_enc_isr_state.b_using_b) &&
-            (12 == motor_right_enc_ticks(12, 20)) &&
-            (0u == g_enc_isr_state.b_using_b) &&
-            (20 == motor_right_enc_ticks(12, 21)) &&
-            (0u != g_enc_isr_state.b_using_b) &&
-            (0 == motor_right_enc_ticks(12, 1)) &&
-            (-60 == motor_right_enc_ticks(12, -59)) &&
-            (-60 == motor_right_enc_ticks(-60, -59)));
+    b_is_ok = ((12 == motor_right_enc_ticks(12, 13)) &&
+               (0u == g_enc_isr_state.b_is_using_b) &&
+               (12 == motor_right_enc_ticks(12, 20)) &&
+               (0u == g_enc_isr_state.b_is_using_b) &&
+               (20 == motor_right_enc_ticks(12, 21)) &&
+               (0u != g_enc_isr_state.b_is_using_b) &&
+               (0 == motor_right_enc_ticks(12, 1)) &&
+               (-60 == motor_right_enc_ticks(12, -59)) &&
+               (-60 == motor_right_enc_ticks(-60, -59)));
 
     /* Restore clean encoder state prior to enabling Timer Alarm 0 IRQ. */
-    g_right_enc_last_a        = 0;
-    g_right_enc_b_offset      = 0;
-    g_enc_isr_state.b_using_b = 0u;
+    g_right_enc_last_a           = 0;
+    g_right_enc_b_offset         = 0;
+    g_enc_isr_state.b_is_using_b = 0u;
 
-    b_ok = (b_ok &&
-            (0 == motor_right_enc_ticks(0, 0)) &&
-            (0u == g_enc_isr_state.b_using_b));
+    b_is_ok = ((b_is_ok) &&
+               (0 == motor_right_enc_ticks(0, 0)) &&
+               (0u == g_enc_isr_state.b_is_using_b));
 
-    return b_ok;
+    return b_is_ok;
 }
 #endif /* NDEBUG */
 
@@ -1714,7 +1917,7 @@ static bool motor_right_enc_self_check (void)
  * @brief 4000 Hz RP2040 Timer Alarm 0 ISR sampling quadrature encoders.
  *
  * BARR-C Deviation (Rule 6.5.a):
- *   Approver: Project Team (INF2004).
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
  *   Rationale: micro T-Kernel 3.0 dispatches TA_HLNG interrupt handlers via
  *   its assembly vector trampoline using the standard ARM AAPCS C calling
  *   convention; GCC __attribute__((interrupt)) must not be applied.
@@ -1750,10 +1953,26 @@ static void motor_encoder_alarm_isr (UINT intno)
     /* Range-safe: filters bit-field is 8 bits wide. */
     filters = (uint8_t)g_enc_isr_state.filters;
 
-    motor_count_rising_edge(raw_la, dir_l, &filters, 0u, &g_isr_ticks_la);
-    motor_count_rising_edge(raw_lb, dir_l, &filters, 2u, &g_isr_ticks_lb);
-    motor_count_rising_edge(raw_ra, dir_r, &filters, 4u, &g_isr_ticks_ra);
-    motor_count_rising_edge(raw_rb, dir_r, &filters, 6u, &g_isr_ticks_rb);
+    motor_count_rising_edge(raw_la,
+                            dir_l,
+                            &filters,
+                            MOTOR_ENC_LA_SHIFT,
+                            &g_isr_ticks_la);
+    motor_count_rising_edge(raw_lb,
+                            dir_l,
+                            &filters,
+                            MOTOR_ENC_LB_SHIFT,
+                            &g_isr_ticks_lb);
+    motor_count_rising_edge(raw_ra,
+                            dir_r,
+                            &filters,
+                            MOTOR_ENC_RA_SHIFT,
+                            &g_isr_ticks_ra);
+    motor_count_rising_edge(raw_rb,
+                            dir_r,
+                            &filters,
+                            MOTOR_ENC_RB_SHIFT,
+                            &g_isr_ticks_rb);
 
     g_enc_isr_state.filters = filters;
     g_enc_left_ticks        = g_isr_ticks_la;

@@ -10,6 +10,8 @@
 #ifndef FREE_TIME_DIAGNOSTIC_H
 #define FREE_TIME_DIAGNOSTIC_H
 
+#include <stddef.h>
+
 #include <tk/tkernel.h>
 
 /**

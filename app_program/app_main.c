@@ -115,8 +115,11 @@ static void app_main_produce_one(void);
 static void app_main_producer_task(INT stacd, void * p_exinf);
 static void app_main_consumer_task(INT stacd, void * p_exinf);
 static bool app_main_check_created(const char * p_what, ID h_obj);
-static void app_main_wait_usb_enum(uint32_t settle_msec);
 static int32_t app_main_this_prc(void);
+
+#if (0u != APP_MAIN_ENABLE_DEMO_MON) || TM_WIFI_CYW43
+static void app_main_wait_usb_enum(uint32_t settle_msec);
+#endif
 
 #if (0u != APP_MAIN_ENABLE_DEMO_MON)
 static void app_main_monitor_task(INT stacd, void * p_exinf);
@@ -379,6 +382,7 @@ static bool app_main_check_created (const char * p_what, ID h_obj)
     return b_is_ok;
 }
 
+#if (0u != APP_MAIN_ENABLE_DEMO_MON) || TM_WIFI_CYW43
 /**
  * @brief Wait for USB-CDC enumeration up to ~20 s, then settle briefly.
  * @param[in] settle_msec Additional post-enumeration delay in milliseconds.
@@ -397,6 +401,7 @@ static void app_main_wait_usb_enum (uint32_t settle_msec)
     /* Range-safe: bounded post-enumeration settle delay. */
     (void)tk_dly_tsk(settle_msec);
 }
+#endif
 
 /**
  * @brief Allocate, populate, and send one sequenced demo record.
@@ -560,7 +565,8 @@ static void app_main_monitor_task (INT stacd, void * p_exinf)
     tm_printf((const UB *)"single-core build\n");
 #endif
     /* Range-safe: ASCII literal bytes map identically to const UB *. */
-    tm_printf((const UB *)"producer -> [mbf] -> consumer, %u credits, %u ms\n\n",
+    tm_printf((const UB *)"producer -> [mbf] -> consumer, "
+                          "%u credits, %u ms\n\n",
               APP_MAIN_CREDITS,
               APP_MAIN_PRODUCE_MSEC);
 
@@ -577,7 +583,7 @@ static void app_main_monitor_task (INT stacd, void * p_exinf)
         if (E_TMOUT == ret_err)
         {
             /* Range-safe: ASCII literal bytes map identically to const UB *. */
-            tm_printf((const UB *)"[monitor] stalled: produced=%u consumed=%u\n",
+            tm_printf((const UB *)"[monitor] stalled: prod=%u cons=%u\n",
                       g_produced_cnt,
                       g_consumed_cnt);
         }
@@ -703,7 +709,8 @@ static void app_main_log_udp_echoes (const T_CYW43_UTK_STATUS * p_status,
                 (p_status->udp_write_seq - p_track->echo_cursor) - ring_cap;
 
             /* Range-safe: ASCII literal bytes map identically to const UB *. */
-            tm_printf((const UB *)"[udp] (%u echoes not shown, reader behind)\n",
+            tm_printf((const UB *)"[udp] (%u echoes not shown, "
+                                  "reader behind)\n",
                       skipped);
             p_track->echo_cursor = p_status->udp_write_seq - ring_cap;
         }

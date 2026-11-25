@@ -1,12 +1,16 @@
-/** @file test_report.c
- *
+/**
+ * @file test_report.c
  * @brief Power-on automated test suite runner and serial result formatter.
  *
- * @par
- * COPYRIGHT NOTICE: (c) 2026 INF2004 Project Team. All rights reserved.
+ * BARR-C Deviation (Rule 5.2.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: uT-Kernel message-buffer and T-Monitor console APIs require
+ *   native RTOS typedefs (UINT, UB).
  */
 
 #include "test_report.h"
+
+#include <stddef.h>
 
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
@@ -20,7 +24,7 @@
 #include "navigator/navigator_task.h"
 #include "network/network_test.h"
 #include "robot_tasks.h"
-#include "ultrasonic/ultrasonic_test.h"
+#include "ultrasonic/sonar_test.h"
 #include "usb_console_compat.h"
 
 #define TEST_SUITE_DRAIN_MSEC           (10u)
@@ -28,6 +32,7 @@
 #define TEST_USB_WAIT_STEP_MSEC         (100u)
 #define TEST_USB_READY_STATE            (2u)
 #define TEST_USB_SETTLE_MSEC            (300u)
+#define TEST_ALL_FLAGS_MASK             (0xFFFFFFFFu)
 
 static uint32_t g_total_count = 0u;
 static uint32_t g_pass_count  = 0u;
@@ -87,26 +92,34 @@ bool test_report_run_all (void)
     g_pass_count  = 0u;
     g_fail_count  = 0u;
 
+    /* Cast ASCII banner literal to uT-Kernel UB pointer for console output. */
     tm_printf((UB *)"\n=== INF2004 Automated Test Suite ===\n");
 
     motor_test_run();
+    /* Allow USB-CDC TX ring buffer to drain between subsystem suites. */
     (void)tk_dly_tsk(TEST_SUITE_DRAIN_MSEC);
 
     ir_test_run();
+    /* Allow USB-CDC TX ring buffer to drain between subsystem suites. */
     (void)tk_dly_tsk(TEST_SUITE_DRAIN_MSEC);
 
-    ultrasonic_test_run();
+    sonar_test_run();
+    /* Allow USB-CDC TX ring buffer to drain between subsystem suites. */
     (void)tk_dly_tsk(TEST_SUITE_DRAIN_MSEC);
 
     imu_test_run();
+    /* Allow USB-CDC TX ring buffer to drain between subsystem suites. */
     (void)tk_dly_tsk(TEST_SUITE_DRAIN_MSEC);
 
     network_test_run();
+    /* Allow USB-CDC TX ring buffer to drain between subsystem suites. */
     (void)tk_dly_tsk(TEST_SUITE_DRAIN_MSEC);
 
     integration_test_run();
+    /* Allow USB-CDC TX ring buffer to drain after integration suite. */
     (void)tk_dly_tsk(TEST_SUITE_DRAIN_MSEC);
 
+    /* Cast format literal and summary counters to RTOS UB* and UINT. */
     tm_printf((UB *)"[TEST] SUMMARY total=%u passed=%u failed=%u\n\n",
               (UINT)g_total_count,
               (UINT)g_pass_count,
@@ -125,10 +138,13 @@ void test_report_boot_run (void)
          (usb_console_compat_state() < TEST_USB_READY_STATE);
          idx++)
     {
+        /* Poll USB-CDC enumeration readiness in 100 ms steps. */
         (void)tk_dly_tsk(TEST_USB_WAIT_STEP_MSEC);
     }
 
+    /* Settle console host terminal before emitting `[TEST]` lines. */
     (void)tk_dly_tsk(TEST_USB_SETTLE_MSEC);
+    /* Summary pass/fail verdict is already logged by test_report_run_all(). */
     (void)test_report_run_all();
     test_report_reset_ipc();
 }
@@ -159,8 +175,9 @@ static void test_report_reset_ipc (void)
         /* Drain residual motor command test messages. */
     }
 
+    /* Clear all event flag bits on shared ultrasonic ranger flag object. */
     (void)tk_clr_flg(robot_tasks_get_ranger_flg(), 0u);
-    robot_tasks_flags_update(0u, 0xFFFFFFFFu);
+    robot_tasks_flags_update(0u, TEST_ALL_FLAGS_MASK);
     navigator_task_set_sonar_telem(false, 0u, 0u);
     navigator_task_set_imu_pose(0, 0, 0, true, 0u);
     navigator_task_set_imu_height(0);

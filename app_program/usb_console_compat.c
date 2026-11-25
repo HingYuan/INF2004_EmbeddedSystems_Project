@@ -11,6 +11,8 @@
 
 #include "usb_console_compat.h"
 
+#include <stddef.h>
+
 #include <tk/tkernel.h>
 
 #define USB_UART_ENUMERATED_STATE       (3u)

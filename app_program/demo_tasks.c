@@ -49,7 +49,7 @@ void demo_tasks_blink_task (INT stacd, void * p_exinf)
 
         if (diag_lvl >= DEMO_LED_READY_LEVEL)
         {
-            /* Range-safe: LED GPIO output and delay returns are non-critical. */
+            /* Range-safe: LED GPIO output return is non-critical. */
             (void)gpio_set_val(BOARD_LED_PIN, 1u);
             /* Range-safe: 250 ms half-period LED blink delay. */
             (void)tk_dly_tsk(DEMO_LED_READY_HALF_MSEC);
