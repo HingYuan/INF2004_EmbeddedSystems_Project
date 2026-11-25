@@ -1,6 +1,9 @@
-/**
- * @file module.h
+/** @file module.h
+ *
  * @brief Concise summary of the module public interface (BARR-C Appendix B).
+ *
+ * @par
+ * COPYRIGHT NOTICE: (c) 2026 INF2004 Project Team. All rights reserved.
  */
 
 #ifndef MODULE_H
@@ -21,7 +24,7 @@ typedef enum
  * @brief Initialize module internal state.
  * @return MODULE_STATUS_OK on success, or MODULE_STATUS_ERROR on failure.
  */
-module_status_t module_init (void);
+module_status_t module_init(void);
 
 #endif /* MODULE_H */
 

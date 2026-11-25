@@ -3,6 +3,10 @@
  * @brief HC-SR04 ultrasonic ranger and pan-servo scanning task interface.
  *
  * Reference: HC-SR04 Ultrasonic Ranging Module Datasheet (58 usec per cm).
+ *
+ * BARR-C Deviation (Rule 5.2.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: uT-Kernel task entry signature mandates INT stacd parameter.
  */
 
 #ifndef ULTRASONIC_TASK_H
@@ -53,19 +57,14 @@ typedef enum
  * @brief Check whether a latched sonar or servo hardware fault is active.
  * @return True if either sonar or servo fault flag is set.
  */
-static inline bool ultrasonic_task_has_fault (void)
-{
-    const uint32_t fault_mask = ROBOT_FAULT_SONAR | ROBOT_FAULT_SERVO;
-
-    return (0u != (robot_tasks_flags_get() & fault_mask));
-}
+bool ultrasonic_task_has_fault(void);
 
 /**
  * @brief Main ultrasonic obstacle detection, profiling, and tracking task.
  * @param[in] stacd   Task start code (unused).
  * @param[in] p_exinf Extended task information pointer (unused).
  */
-void ultrasonic_task (INT stacd, void * p_exinf);
+void ultrasonic_task_run_task(INT stacd, void * p_exinf);
 
 #endif /* ULTRASONIC_TASK_H */
 

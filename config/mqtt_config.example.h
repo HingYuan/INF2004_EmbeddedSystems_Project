@@ -3,13 +3,13 @@
  * @brief Example MQTT broker configuration template.
  *
  * NOTE: Copy this file to config/mqtt_config.h, update the broker settings,
- * and set MQTT_CONFIG_IS_SET to 1u before building with MQTT=1.
+ * and set UTK_MQTT_CONFIG_SET to 1u before building with MQTT=1.
  *
- * BARR-C Deviation (Rules 4.2.a, 4.2.b):
- *   Approver: Project Team (INF2004).
- *   Rationale: This template header is copied to config/mqtt_config.h by the
- *   developer and has no matching .c file; its include guard matches the
- *   target filename MQTT_CONFIG_H.
+ * BARR-C Deviation (Rules 4.1.a, 4.1.b, 4.2.a, 4.2.b):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: This template header uses the .example.h suffix, is copied to
+ *   untracked config/mqtt_config.h by the developer, has no matching .c file,
+ *   and uses include guard MQTT_CONFIG_H matching its target filename.
  */
 
 #ifndef MQTT_CONFIG_H

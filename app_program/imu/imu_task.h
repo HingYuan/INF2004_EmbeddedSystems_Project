@@ -3,11 +3,16 @@
  * @brief LSM303DLHC accelerometer and magnetometer monitoring task interface.
  *
  * NOTE: Configured for Cytron Robo Pico Grove 1 (GP0/GP1) on RP2040 I2C0.
- * The uT-Kernel driver registers I2C0 as "iica" on GP8/GP9 at boot; imu_task
- * re-routes I2C0 to GP0/GP1. GP0/GP1 share UART0 console pins, so build with
- * CONSOLE=usb_cdc (ultrasonic uses GP4/GP5 and does not conflict).
+ * The uT-Kernel driver registers I2C0 as "iica" on GP8/GP9 at boot;
+ * imu_task_run_task re-routes I2C0 to GP0/GP1. GP0/GP1 share UART0 console
+ * pins, so build with CONSOLE=usb_cdc (ultrasonic uses GP4/GP5).
  *
  * Reference: STMicroelectronics LSM303DLHC Datasheet (DocID018771 Rev 2).
+ *
+ * BARR-C Deviation (Rules 5.2.a, 5.4.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: uT-Kernel task entry signature mandates INT stacd; 50 Hz IMU
+ *   tilt and hump thresholds retain bounded single-precision float32_t math.
  */
 
 #ifndef IMU_TASK_H
@@ -64,7 +69,7 @@ typedef enum
  * @param[in] stacd   Task start code (unused).
  * @param[in] p_exinf Extended task information pointer (unused).
  */
-void imu_task (INT stacd, void * p_exinf);
+void imu_task_run_task(INT stacd, void * p_exinf);
 
 #endif /* IMU_TASK_H */
 

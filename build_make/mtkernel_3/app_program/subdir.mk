@@ -4,6 +4,9 @@
 
 TEMP_SRCS = $(wildcard ../app_program/*.c) \
 			$(wildcard ../app_program/*/*.c)
+ifneq ($(TEST),1)
+TEMP_SRCS := $(filter-out %_test.c ../app_program/test_report.c, $(TEMP_SRCS))
+endif
 TEMP_OBJS = $(TEMP_SRCS:.c=.o)
 TEMP_DEPS = $(TEMP_SRCS:.c=.d)
 

@@ -4,6 +4,13 @@
  *
  * Copyright (c) 2026 Muhamed Fauzi Bin Abbas (base demo harness)
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * BARR-C Deviation (Rules 1.5.a, 2.1.c.ii, 5.2.a, 6.1.g, 6.1.h, 6.1.i):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: Entry symbol INT usermain(void) is fixed by micro T-Kernel 3.0;
+ *   RTOS syscalls and T-Monitor console APIs require native INT/UINT/UB/SZ/TMO
+ *   types; T_CYW43_UTK_STATUS.udp_elapsed_ms is defined in legacy Wi-Fi driver
+ *   header cyw43_utk.h; serial logs report live system/network status.
  */
 
 #include "app_main.h"
@@ -16,6 +23,7 @@
 #endif
 #include <tm/tmonitor.h>
 
+#include "demo_tasks.h"
 #include "robot_tasks.h"
 #include "usb_console_compat.h"
 
@@ -38,11 +46,12 @@
 #define APP_MAIN_USB_WAIT_LOOPS         (200u)
 #define APP_MAIN_USB_WAIT_STEP_MSEC     (100u)
 #define APP_MAIN_USB_READY_STATE        (2u)
-
-#if (0u != APP_MAIN_ENABLE_DEMO_MON)
-#include "demo_tasks.h"
 #define APP_MAIN_MON_SETTLE_MSEC        (500u)
-#endif
+#define APP_MAIN_PRODUCER_PRIO          (5)
+#define APP_MAIN_CONSUMER_PRIO          (6)
+#define APP_MAIN_MONITOR_PRIO           (7)
+#define APP_MAIN_WIFI_PRIO              (8)
+#define APP_MAIN_BLINK_PRIO             (10)
 
 #if TM_WIFI_CYW43
 #define APP_MAIN_WIFI_IDLE_MSEC         (3000u)
@@ -56,11 +65,11 @@
 #endif
 
 #define APP_MAIN_MPF_WORDS \
-    (((APP_MAIN_RECORD_COUNT * sizeof(app_main_record_t)) + \
-      sizeof(uint32_t) - 1u) / sizeof(uint32_t)) + APP_MAIN_RECORD_COUNT
+    ((((APP_MAIN_RECORD_COUNT * sizeof(app_main_record_t)) + \
+       sizeof(uint32_t) - 1u) / sizeof(uint32_t)) + APP_MAIN_RECORD_COUNT)
 #define APP_MAIN_MBF_WORDS \
-    ((APP_MAIN_CREDITS * sizeof(app_main_record_t)) / sizeof(uint32_t)) + \
-    (APP_MAIN_CREDITS * 4u)
+    (((APP_MAIN_CREDITS * sizeof(app_main_record_t)) / sizeof(uint32_t)) + \
+     (APP_MAIN_CREDITS * 4u))
 
 typedef struct
 {
@@ -81,28 +90,6 @@ typedef struct
 } app_main_wifi_track_t;
 #endif
 
-static void app_main_produce_one (void);
-static void app_main_producer_task (INT stacd, void * p_exinf);
-static void app_main_consumer_task (INT stacd, void * p_exinf);
-static bool app_main_check_created (const char * p_what, ID h_obj);
-static void app_main_wait_usb_enum (uint32_t settle_msec);
-static inline int32_t app_main_this_prc (void);
-
-#if (0u != APP_MAIN_ENABLE_DEMO_MON)
-static void app_main_monitor_task (INT stacd, void * p_exinf);
-#endif
-
-#if TM_WIFI_CYW43
-static void app_main_wifi_status_task (INT stacd, void * p_exinf);
-static void app_main_fmt_ipv4 (uint8_t * p_dst, const uint8_t * p_addr);
-static void app_main_log_wifi_link (const T_CYW43_UTK_STATUS * p_status,
-                                    app_main_wifi_track_t * p_track);
-static void app_main_log_udp_echoes (const T_CYW43_UTK_STATUS * p_status,
-                                     app_main_wifi_track_t * p_track);
-static void app_main_log_udp_state (const T_CYW43_UTK_STATUS * p_status,
-                                    app_main_wifi_track_t * p_track);
-#endif
-
 static ID                gh_mpf_id       = 0;
 static ID                gh_mtx_id       = 0;
 static ID                gh_mbf_id       = 0;
@@ -114,102 +101,37 @@ static volatile uint32_t g_consumed_cnt  = 0u;
 static volatile uint32_t g_dropped_cnt   = 0u;
 static volatile int32_t  g_last_made_on  = 0;
 static volatile int32_t  g_last_seen_on  = 0;
+static uint32_t          g_mpf_buf[APP_MAIN_MPF_WORDS] = { 0u };
+static uint32_t          g_mbf_buf[APP_MAIN_MBF_WORDS] = { 0u };
 
-static uint32_t g_mpf_buf[APP_MAIN_MPF_WORDS] = { 0u };
-static uint32_t g_mbf_buf[APP_MAIN_MBF_WORDS] = { 0u };
-
-static T_CTSK g_ctsk_producer =
-{
-    .itskpri = 5,
-    .stksz   = (SZ)APP_MAIN_STACK_BYTES,
-    .task    = app_main_producer_task,
-#if TK_SUPPORT_SMP
-    .tskatr  = TA_HLNG | TA_RNG3 | TA_ASSPRC,
-    .assprc  = TP_PRC1
-#else
-    .tskatr  = TA_HLNG | TA_RNG3
-#endif
-};
-
-static T_CTSK g_ctsk_consumer =
-{
-    .itskpri = 6,
-    .stksz   = (SZ)APP_MAIN_STACK_BYTES,
-    .task    = app_main_consumer_task,
-#if TK_SUPPORT_SMP
-    .tskatr  = TA_HLNG | TA_RNG3 | TA_ASSPRC,
-    .assprc  = TP_PRC1
-#else
-    .tskatr  = TA_HLNG | TA_RNG3
-#endif
-};
+static bool app_main_create_ipc_objects(void);
+static void app_main_launch_task(const char * p_label,
+                                 FP p_entry,
+                                 INT priority,
+                                 uint32_t assprc);
+static void app_main_spawn_demo_tasks(void);
+static void app_main_record_drop(void);
+static void app_main_produce_one(void);
+static void app_main_producer_task(INT stacd, void * p_exinf);
+static void app_main_consumer_task(INT stacd, void * p_exinf);
+static bool app_main_check_created(const char * p_what, ID h_obj);
+static void app_main_wait_usb_enum(uint32_t settle_msec);
+static int32_t app_main_this_prc(void);
 
 #if (0u != APP_MAIN_ENABLE_DEMO_MON)
-static T_CTSK g_ctsk_monitor =
-{
-    .itskpri = 7,
-    .stksz   = (SZ)APP_MAIN_STACK_BYTES,
-    .task    = app_main_monitor_task,
-    .tskatr  = TA_HLNG | TA_RNG3
-};
-
-static T_CTSK g_ctsk_blink =
-{
-    .itskpri = 10,
-    .stksz   = (SZ)APP_MAIN_STACK_BYTES,
-    .task    = demo_tasks_blink_task,
-    .tskatr  = TA_HLNG | TA_RNG3
-};
+static void app_main_monitor_task(INT stacd, void * p_exinf);
 #endif
 
 #if TM_WIFI_CYW43
-static T_CTSK g_ctsk_wifi =
-{
-    .itskpri = 8,
-    .stksz   = (SZ)APP_MAIN_STACK_BYTES,
-    .task    = app_main_wifi_status_task,
-#if TK_SUPPORT_SMP
-    .tskatr  = TA_HLNG | TA_RNG3 | TA_ASSPRC,
-    .assprc  = TP_PRC2
-#else
-    .tskatr  = TA_HLNG | TA_RNG3
+static void app_main_wifi_status_task(INT stacd, void * p_exinf);
+static void app_main_fmt_ipv4(uint8_t * p_dst, const uint8_t * p_addr);
+static void app_main_log_wifi_link(const T_CYW43_UTK_STATUS * p_status,
+                                   app_main_wifi_track_t * p_track);
+static void app_main_log_udp_echoes(const T_CYW43_UTK_STATUS * p_status,
+                                    app_main_wifi_track_t * p_track);
+static void app_main_log_udp_state(const T_CYW43_UTK_STATUS * p_status,
+                                   app_main_wifi_track_t * p_track);
 #endif
-};
-#endif
-
-static T_CMPF g_cmpf_cfg =
-{
-    .mpfatr = TA_TFIFO | TA_RNG3,
-    .mpfcnt = (INT)APP_MAIN_RECORD_COUNT,
-    .blfsz  = (SZ)sizeof(app_main_record_t),
-    .bufptr = g_mpf_buf
-};
-
-static T_CMTX g_cmtx_cfg =
-{
-    .mtxatr = TA_TFIFO | TA_INHERIT
-};
-
-static T_CMBF g_cmbf_cfg =
-{
-    .mbfatr = TA_TFIFO,
-    .bufsz  = (SZ)sizeof(g_mbf_buf),
-    .maxmsz = (INT)sizeof(app_main_record_t),
-    .bufptr = g_mbf_buf
-};
-
-static T_CSEM g_csem_cfg =
-{
-    .sematr  = TA_TFIFO,
-    .isemcnt = (INT)APP_MAIN_CREDITS,
-    .maxsem  = (INT)APP_MAIN_CREDITS
-};
-
-static T_CFLG g_cflg_cfg =
-{
-    .flgatr  = TA_TFIFO | TA_WMUL,
-    .iflgptn = 0u
-};
 
 /**
  * @brief Application entry point invoked by the micro T-Kernel init task.
@@ -217,78 +139,12 @@ static T_CFLG g_cflg_cfg =
  */
 INT usermain (void)
 {
-    INT  ret_code = 0;
-    bool b_ready  = true;
+    INT  ret_code   = 0;
+    bool b_is_ready = app_main_create_ipc_objects();
 
-    gh_mpf_id = tk_cre_mpf(&g_cmpf_cfg);
-    b_ready = app_main_check_created("mpf", gh_mpf_id);
-
-    if (b_ready)
+    if (b_is_ready)
     {
-        gh_mtx_id = tk_cre_mtx(&g_cmtx_cfg);
-        b_ready = app_main_check_created("mtx", gh_mtx_id);
-    }
-
-    if (b_ready)
-    {
-        gh_mbf_id = tk_cre_mbf(&g_cmbf_cfg);
-        b_ready = app_main_check_created("mbf", gh_mbf_id);
-    }
-
-    if (b_ready)
-    {
-        gh_sem_id = tk_cre_sem(&g_csem_cfg);
-        b_ready = app_main_check_created("sem", gh_sem_id);
-    }
-
-    if (b_ready)
-    {
-        gh_flg_id = tk_cre_flg(&g_cflg_cfg);
-        b_ready = app_main_check_created("flg", gh_flg_id);
-    }
-
-    if (b_ready)
-    {
-        ID h_task = 0;
-
-#if (0u != APP_MAIN_ENABLE_DEMO_MON)
-        h_task = tk_cre_tsk(&g_ctsk_blink);
-
-        if (app_main_check_created("tsk(blink)", h_task))
-        {
-            (void)tk_sta_tsk(h_task, 0);
-        }
-
-        h_task = tk_cre_tsk(&g_ctsk_monitor);
-
-        if (app_main_check_created("tsk(monitor)", h_task))
-        {
-            (void)tk_sta_tsk(h_task, 0);
-        }
-#endif
-
-        h_task = tk_cre_tsk(&g_ctsk_consumer);
-
-        if (app_main_check_created("tsk(consumer)", h_task))
-        {
-            (void)tk_sta_tsk(h_task, 0);
-        }
-
-        h_task = tk_cre_tsk(&g_ctsk_producer);
-
-        if (app_main_check_created("tsk(producer)", h_task))
-        {
-            (void)tk_sta_tsk(h_task, 0);
-        }
-
-#if TM_WIFI_CYW43
-        h_task = tk_cre_tsk(&g_ctsk_wifi);
-
-        if (app_main_check_created("tsk(wifi)", h_task))
-        {
-            (void)tk_sta_tsk(h_task, 0);
-        }
-#endif
+        app_main_spawn_demo_tasks();
 
         if (robot_tasks_start() < E_OK)
         {
@@ -296,7 +152,7 @@ INT usermain (void)
         }
         else
         {
-            /* Keep initial task asleep so kernel does not shut down. */
+            /* Range-safe: initial task sleeps forever once system is live. */
             (void)tk_slp_tsk(TMO_FEVR);
         }
     }
@@ -309,10 +165,187 @@ INT usermain (void)
 }
 
 /**
+ * @brief Create fixed memory pool, mutex, message buffer, semaphore, and flag.
+ * @return True if all five RTOS IPC objects were created, false otherwise.
+ */
+static bool app_main_create_ipc_objects (void)
+{
+    const T_CMPF cmpf_cfg =
+    {
+        .mpfatr = TA_TFIFO | TA_RNG3,
+        /* Range-safe: pool count (4) fits positive 32-bit INT. */
+        .mpfcnt = (INT)APP_MAIN_RECORD_COUNT,
+        /* Range-safe: 12-byte record size fits positive 32-bit SZ. */
+        .blfsz  = (SZ)sizeof(app_main_record_t),
+        .bufptr = g_mpf_buf
+    };
+    const T_CMTX cmtx_cfg =
+    {
+        .mtxatr = TA_TFIFO | TA_INHERIT
+    };
+    const T_CMBF cmbf_cfg =
+    {
+        .mbfatr = TA_TFIFO,
+        /* Range-safe: static message buffer byte size fits positive SZ. */
+        .bufsz  = (SZ)sizeof(g_mbf_buf),
+        /* Range-safe: 12-byte record size fits positive 32-bit INT. */
+        .maxmsz = (INT)sizeof(app_main_record_t),
+        .bufptr = g_mbf_buf
+    };
+    const T_CSEM csem_cfg =
+    {
+        .sematr  = TA_TFIFO,
+        /* Range-safe: APP_MAIN_CREDITS (2u) fits positive 32-bit INT. */
+        .isemcnt = (INT)APP_MAIN_CREDITS,
+        /* Range-safe: APP_MAIN_CREDITS (2u) fits positive 32-bit INT. */
+        .maxsem  = (INT)APP_MAIN_CREDITS
+    };
+    const T_CFLG cflg_cfg =
+    {
+        .flgatr  = TA_TFIFO | TA_WMUL,
+        .iflgptn = 0u
+    };
+    bool         b_is_ready = false;
+
+    gh_mpf_id  = tk_cre_mpf(&cmpf_cfg);
+    b_is_ready = app_main_check_created("mpf", gh_mpf_id);
+
+    if (b_is_ready)
+    {
+        gh_mtx_id  = tk_cre_mtx(&cmtx_cfg);
+        b_is_ready = app_main_check_created("mtx", gh_mtx_id);
+    }
+
+    if (b_is_ready)
+    {
+        gh_mbf_id  = tk_cre_mbf(&cmbf_cfg);
+        b_is_ready = app_main_check_created("mbf", gh_mbf_id);
+    }
+
+    if (b_is_ready)
+    {
+        gh_sem_id  = tk_cre_sem(&csem_cfg);
+        b_is_ready = app_main_check_created("sem", gh_sem_id);
+    }
+
+    if (b_is_ready)
+    {
+        gh_flg_id  = tk_cre_flg(&cflg_cfg);
+        b_is_ready = app_main_check_created("flg", gh_flg_id);
+    }
+
+    return b_is_ready;
+}
+
+/**
+ * @brief Create and start one background uT-Kernel demo or status task.
+ * @param[in] p_label  Diagnostic label printed if creation fails.
+ * @param[in] p_entry  Task entry function pointer.
+ * @param[in] priority Initial RTOS priority.
+ * @param[in] assprc   Processor affinity mask (0u for unassigned).
+ */
+static void app_main_launch_task (const char * p_label,
+                                  FP p_entry,
+                                  INT priority,
+                                  uint32_t assprc)
+{
+    T_CTSK ctsk   = { 0 };
+    ID     h_task = 0;
+
+    ctsk.tskatr  = TA_HLNG | TA_RNG3;
+    ctsk.itskpri = priority;
+    /* Range-safe: 4096-byte stack size constant fits positive 32-bit SZ. */
+    ctsk.stksz   = (SZ)APP_MAIN_STACK_BYTES;
+    ctsk.task    = p_entry;
+
+#if TK_SUPPORT_SMP
+    if (0u != assprc)
+    {
+        ctsk.tskatr |= TA_ASSPRC;
+        /* Range-safe: processor affinity bitmask maps 1-to-1 to UW. */
+        ctsk.assprc  = (UW)assprc;
+    }
+#else
+    /* Range-safe: affinity unused on single-core builds. */
+    (void)assprc;
+#endif
+
+    h_task = tk_cre_tsk(&ctsk);
+
+    if (app_main_check_created(p_label, h_task))
+    {
+        /* Range-safe: valid h_task > 0 checked immediately above. */
+        (void)tk_sta_tsk(h_task, 0);
+    }
+}
+
+/**
+ * @brief Create and start the background IPC demo and optional Wi-Fi tasks.
+ */
+static void app_main_spawn_demo_tasks (void)
+{
+    uint32_t demo_prc = 0u;
+
+#if TK_SUPPORT_SMP
+    demo_prc = TP_PRC1;
+#endif
+
+#if (0u != APP_MAIN_ENABLE_DEMO_MON)
+    /* Range-safe: task function pointer matches uT-Kernel FP signature. */
+    app_main_launch_task("tsk(blink)",
+                         (FP)demo_tasks_blink_task,
+                         APP_MAIN_BLINK_PRIO,
+                         0u);
+    /* Range-safe: task function pointer matches uT-Kernel FP signature. */
+    app_main_launch_task("tsk(monitor)",
+                         (FP)app_main_monitor_task,
+                         APP_MAIN_MONITOR_PRIO,
+                         0u);
+#endif
+
+    /* Range-safe: task function pointer matches uT-Kernel FP signature. */
+    app_main_launch_task("tsk(consumer)",
+                         (FP)app_main_consumer_task,
+                         APP_MAIN_CONSUMER_PRIO,
+                         demo_prc);
+    /* Range-safe: task function pointer matches uT-Kernel FP signature. */
+    app_main_launch_task("tsk(producer)",
+                         (FP)app_main_producer_task,
+                         APP_MAIN_PRODUCER_PRIO,
+                         demo_prc);
+
+#if TM_WIFI_CYW43
+    {
+        uint32_t wifi_prc = 0u;
+
+#if TK_SUPPORT_SMP
+        wifi_prc = TP_PRC2;
+#endif
+        /* Range-safe: task function pointer matches uT-Kernel FP signature. */
+        app_main_launch_task("tsk(wifi)",
+                             (FP)app_main_wifi_status_task,
+                             APP_MAIN_WIFI_PRIO,
+                             wifi_prc);
+    }
+#endif
+}
+
+/**
+ * @brief Atomically increment the shared IPC dropped-record counter.
+ */
+static void app_main_record_drop (void)
+{
+    UINT saved_state = robot_tasks_data_lock();
+
+    g_dropped_cnt++;
+    robot_tasks_data_unlock(saved_state);
+}
+
+/**
  * @brief Return the 1-based processor ID of the calling task.
  * @return Current processor index (1 on single-core builds).
  */
-static inline int32_t app_main_this_prc (void)
+static int32_t app_main_this_prc (void)
 {
     int32_t prc_id = 1;
 
@@ -332,15 +365,18 @@ static inline int32_t app_main_this_prc (void)
  */
 static bool app_main_check_created (const char * p_what, ID h_obj)
 {
-    bool b_ok = true;
+    bool b_is_ok = true;
 
     if (h_obj <= E_OK)
     {
-        tm_printf((UB *)"[init] tk_cre_%s failed, er=%d\n", p_what, h_obj);
-        b_ok = false;
+        /* Range-safe: ASCII literal bytes map identically to const UB *. */
+        tm_printf((const UB *)"[init] tk_cre_%s failed, er=%d\n",
+                  p_what,
+                  h_obj);
+        b_is_ok = false;
     }
 
-    return b_ok;
+    return b_is_ok;
 }
 
 /**
@@ -354,9 +390,11 @@ static void app_main_wait_usb_enum (uint32_t settle_msec)
          (usb_console_compat_state() < APP_MAIN_USB_READY_STATE);
          wait_idx++)
     {
+        /* Range-safe: bounded task delay return status is non-critical. */
         (void)tk_dly_tsk(APP_MAIN_USB_WAIT_STEP_MSEC);
     }
 
+    /* Range-safe: bounded post-enumeration settle delay. */
     (void)tk_dly_tsk(settle_msec);
 }
 
@@ -366,32 +404,38 @@ static void app_main_wait_usb_enum (uint32_t settle_msec)
 static void app_main_produce_one (void)
 {
     void * p_blk   = NULL;
+    /* Range-safe: 100 ms timeout constant fits positive signed 32-bit TMO. */
     ER     ret_err = tk_get_mpf(gh_mpf_id,
                                 &p_blk,
                                 (TMO)APP_MAIN_MPF_WAIT_MSEC);
 
     if (ret_err < E_OK)
     {
-        g_dropped_cnt++;
+        app_main_record_drop();
+        /* Range-safe: return unused credit to bounded counting semaphore. */
         (void)tk_sig_sem(gh_sem_id, 1);
     }
     else
     {
-        /* Cast matches fixed memory pool block size sizeof(record). */
+        /* Range-safe: p_blk comes from g_mpf_buf sized to app_main_record_t. */
         app_main_record_t * p_rec = (app_main_record_t *)p_blk;
         app_main_record_t   msg   = { 0u, 0, 0u };
 
+        /* Range-safe: infinite wait on initialized mutex handle gh_mtx_id. */
         (void)tk_loc_mtx(gh_mtx_id, TMO_FEVR);
         g_next_seq++;
         p_rec->seq_num = g_next_seq;
+        /* Range-safe: unlocks mutex held by the current task. */
         (void)tk_unl_mtx(gh_mtx_id);
 
         p_rec->made_on = app_main_this_prc();
         p_rec->payload = p_rec->seq_num * APP_MAIN_PAYLOAD_MULT;
 
         msg = *p_rec;
+        /* Range-safe: releases block allocated from gh_mpf_id above. */
         (void)tk_rel_mpf(gh_mpf_id, p_blk);
 
+        /* Range-safe: 12-byte msg size and 1000 ms timeout fit INT and TMO. */
         ret_err = tk_snd_mbf(gh_mbf_id,
                              &msg,
                              (INT)sizeof(msg),
@@ -399,14 +443,21 @@ static void app_main_produce_one (void)
 
         if (ret_err < E_OK)
         {
-            g_dropped_cnt++;
+            app_main_record_drop();
+            /* Range-safe: return unused credit on send timeout. */
             (void)tk_sig_sem(gh_sem_id, 1);
         }
         else
         {
+            UINT saved_state = robot_tasks_data_lock();
+
             g_produced_cnt++;
             g_last_made_on = msg.made_on;
+            robot_tasks_data_unlock(saved_state);
+
+            /* Range-safe: notify optional monitor task and pace producer. */
             (void)tk_set_flg(gh_flg_id, APP_MAIN_FLG_PRODUCED);
+            /* Range-safe: 500 ms delay return code is non-critical. */
             (void)tk_dly_tsk(APP_MAIN_PRODUCE_MSEC);
         }
     }
@@ -419,16 +470,19 @@ static void app_main_produce_one (void)
  */
 static void app_main_producer_task (INT stacd, void * p_exinf)
 {
+    /* Range-safe: intentionally unused RTOS task entry parameters. */
     (void)stacd;
+    /* Range-safe: intentionally unused RTOS extended info pointer. */
     (void)p_exinf;
 
     for (;;)
     {
+        /* Range-safe: 1000 ms wait constant fits positive signed TMO. */
         ER ret_err = tk_wai_sem(gh_sem_id, 1, (TMO)APP_MAIN_SEM_WAIT_MSEC);
 
         if (ret_err < E_OK)
         {
-            g_dropped_cnt++;
+            app_main_record_drop();
         }
         else
         {
@@ -444,27 +498,38 @@ static void app_main_producer_task (INT stacd, void * p_exinf)
  */
 static void app_main_consumer_task (INT stacd, void * p_exinf)
 {
+    /* Range-safe: intentionally unused RTOS task entry parameters. */
     (void)stacd;
+    /* Range-safe: intentionally unused RTOS extended info pointer. */
     (void)p_exinf;
 
     for (;;)
     {
         app_main_record_t msg      = { 0u, 0, 0u };
         INT               msg_size = tk_rcv_mbf(gh_mbf_id, &msg, TMO_FEVR);
+        /* Range-safe: 12-byte record size fits positive 32-bit INT. */
+        INT               exp_size = (INT)sizeof(msg);
 
-        if ((INT)sizeof(msg) != msg_size)
+        if (exp_size != msg_size)
         {
-            g_dropped_cnt++;
+            app_main_record_drop();
         }
         else if ((msg.seq_num * APP_MAIN_PAYLOAD_MULT) != msg.payload)
         {
-            g_dropped_cnt++;
+            app_main_record_drop();
         }
         else
         {
+            int32_t seen_prc    = app_main_this_prc();
+            UINT    saved_state = robot_tasks_data_lock();
+
             g_consumed_cnt++;
-            g_last_seen_on = app_main_this_prc();
+            g_last_seen_on = seen_prc;
+            robot_tasks_data_unlock(saved_state);
+
+            /* Range-safe: signal consumed event and return semaphore credit. */
             (void)tk_set_flg(gh_flg_id, APP_MAIN_FLG_CONSUMED);
+            /* Range-safe: bounded semaphore credit return. */
             (void)tk_sig_sem(gh_sem_id, 1);
         }
     }
@@ -478,24 +543,31 @@ static void app_main_consumer_task (INT stacd, void * p_exinf)
  */
 static void app_main_monitor_task (INT stacd, void * p_exinf)
 {
+    /* Range-safe: intentionally unused RTOS task entry parameters. */
     (void)stacd;
+    /* Range-safe: intentionally unused RTOS extended info pointer. */
     (void)p_exinf;
 
     app_main_wait_usb_enum(APP_MAIN_MON_SETTLE_MSEC);
 
-    tm_printf((UB *)"\n=== uT-Kernel 3.0 / RP2040 demo ===\n");
+    /* Range-safe: ASCII literal bytes map identically to const UB *. */
+    tm_printf((const UB *)"\n=== uT-Kernel 3.0 / RP2040 demo ===\n");
 #if TK_SUPPORT_SMP
-    tm_printf((UB *)"SMP build: %d processors\n", TK_MAX_CORE);
+    /* Range-safe: ASCII literal bytes map identically to const UB *. */
+    tm_printf((const UB *)"SMP build: %d processors\n", TK_MAX_CORE);
 #else
-    tm_printf((UB *)"single-core build\n");
+    /* Range-safe: ASCII literal bytes map identically to const UB *. */
+    tm_printf((const UB *)"single-core build\n");
 #endif
-    tm_printf((UB *)"producer -> [mbf] -> consumer, %u credits, %u ms\n\n",
+    /* Range-safe: ASCII literal bytes map identically to const UB *. */
+    tm_printf((const UB *)"producer -> [mbf] -> consumer, %u credits, %u ms\n\n",
               APP_MAIN_CREDITS,
               APP_MAIN_PRODUCE_MSEC);
 
     for (;;)
     {
         UINT flg_ptn = 0u;
+        /* Range-safe: 2000 ms timeout constant fits positive signed TMO. */
         ER   ret_err = tk_wai_flg(gh_flg_id,
                                   APP_MAIN_FLG_PRODUCED | APP_MAIN_FLG_CONSUMED,
                                   TWF_ANDW | TWF_CLR,
@@ -504,7 +576,8 @@ static void app_main_monitor_task (INT stacd, void * p_exinf)
 
         if (E_TMOUT == ret_err)
         {
-            tm_printf((UB *)"[monitor] stalled: produced=%u consumed=%u\n",
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[monitor] stalled: produced=%u consumed=%u\n",
                       g_produced_cnt,
                       g_consumed_cnt);
         }
@@ -512,7 +585,8 @@ static void app_main_monitor_task (INT stacd, void * p_exinf)
         {
             uint32_t dropped_bytes = usb_console_compat_dropped();
 
-            tm_printf((UB *)"[monitor] seq=%u prod=%u cons=%u drop=%u "
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[monitor] seq=%u prod=%u cons=%u drop=%u "
                       "made_on=prc%d seen_on=prc%d\n",
                       g_next_seq,
                       g_produced_cnt,
@@ -523,10 +597,12 @@ static void app_main_monitor_task (INT stacd, void * p_exinf)
 
             if (0u != dropped_bytes)
             {
-                tm_printf((UB *)"[monitor] console dropped %u bytes\n",
+                /* Range-safe: ASCII literal maps identically to const UB *. */
+                tm_printf((const UB *)"[monitor] console dropped %u bytes\n",
                           dropped_bytes);
             }
 
+            /* Range-safe: periodic monitor pacing delay. */
             (void)tk_dly_tsk(APP_MAIN_REPORT_MSEC);
         }
     }
@@ -541,9 +617,9 @@ static void app_main_monitor_task (INT stacd, void * p_exinf)
  */
 static void app_main_fmt_ipv4 (uint8_t * p_dst, const uint8_t * p_addr)
 {
-    /* Cast required by uT-Kernel tm_sprintf(UB *, const UB *, ...) API. */
+    /* Range-safe: uint8_t buffer/octets map directly to UB * and UINT. */
     (void)tm_sprintf((UB *)p_dst,
-                     (UB *)"%u.%u.%u.%u",
+                     (const UB *)"%u.%u.%u.%u",
                      (UINT)p_addr[0],
                      (UINT)p_addr[1],
                      (UINT)p_addr[2],
@@ -564,7 +640,8 @@ static void app_main_log_wifi_link (const T_CYW43_UTK_STATUS * p_status,
 
         if (0u != p_status->link_up)
         {
-            tm_printf((UB *)"[wifi] link UP  rssi=%d  "
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[wifi] link UP  rssi=%d  "
                       "mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
                       p_status->link_rssi,
                       p_status->mac[0],
@@ -576,7 +653,8 @@ static void app_main_log_wifi_link (const T_CYW43_UTK_STATUS * p_status,
         }
         else
         {
-            tm_printf((UB *)"[wifi] link DOWN\n");
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[wifi] link DOWN\n");
         }
     }
 
@@ -593,7 +671,8 @@ static void app_main_log_wifi_link (const T_CYW43_UTK_STATUS * p_status,
             app_main_fmt_ipv4(ip_str, p_status->dhcp_address);
             app_main_fmt_ipv4(gw_str, p_status->dhcp_gateway);
             app_main_fmt_ipv4(dns_str, p_status->dhcp_dns);
-            tm_printf((UB *)"[wifi] ip=%s  gw=%s  dns=%s  "
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[wifi] ip=%s  gw=%s  dns=%s  "
                       "netif=%u/%u owner=prc%u\n",
                       ip_str,
                       gw_str,
@@ -613,29 +692,32 @@ static void app_main_log_wifi_link (const T_CYW43_UTK_STATUS * p_status,
 static void app_main_log_udp_echoes (const T_CYW43_UTK_STATUS * p_status,
                                      app_main_wifi_track_t * p_track)
 {
+    /* Range-safe: positive ring capacity constant fits in uint32_t. */
+    const uint32_t ring_cap = (uint32_t)CYW43_UDP_RING;
+
     if (p_status->udp_write_seq > p_track->echo_cursor)
     {
-        if ((p_status->udp_write_seq - p_track->echo_cursor) >
-            (uint32_t)CYW43_UDP_RING)
+        if ((p_status->udp_write_seq - p_track->echo_cursor) > ring_cap)
         {
             uint32_t skipped =
-                (p_status->udp_write_seq - p_track->echo_cursor) -
-                (uint32_t)CYW43_UDP_RING;
+                (p_status->udp_write_seq - p_track->echo_cursor) - ring_cap;
 
-            tm_printf((UB *)"[udp] (%u echoes not shown, reader behind)\n",
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[udp] (%u echoes not shown, reader behind)\n",
                       skipped);
-            p_track->echo_cursor =
-                p_status->udp_write_seq - (uint32_t)CYW43_UDP_RING;
+            p_track->echo_cursor = p_status->udp_write_seq - ring_cap;
         }
 
         while (p_track->echo_cursor < p_status->udp_write_seq)
         {
-            uint32_t slot = p_track->echo_cursor % (uint32_t)CYW43_UDP_RING;
+            uint32_t slot                                 =
+                p_track->echo_cursor % ring_cap;
             uint8_t  line_buf[APP_MAIN_UDP_LINE_BUF_LEN] = { 0u };
-            INT      pos  = 0;
+            INT      pos                                  = 0;
 
+            /* Range-safe: uint8_t buffer and ASCII format map to UB *. */
             pos = tm_sprintf((UB *)line_buf,
-                             (UB *)"[udp] echo #%u, %u bytes:",
+                             (const UB *)"[udp] echo #%u, %u bytes:",
                              p_status->udp_ring_seq[slot],
                              p_status->udp_ring_len[slot]);
 
@@ -644,18 +726,22 @@ static void app_main_log_udp_echoes (const T_CYW43_UTK_STATUS * p_status,
                  (byte_idx < p_status->udp_ring_len[slot]);
                  byte_idx++)
             {
+                /* Range-safe: pos <= 88 stays within 96-byte line_buf. */
                 pos += tm_sprintf((UB *)&line_buf[pos],
-                                  (UB *)" %02x",
+                                  (const UB *)" %02x",
                                   p_status->udp_ring_payload[slot][byte_idx]);
             }
 
             if (p_status->udp_ring_len[slot] > APP_MAIN_UDP_PREVIEW_BYTES)
             {
-                pos += tm_sprintf((UB *)&line_buf[pos], (UB *)" ...");
+                /* Range-safe: 4-byte suffix fits within remaining buffer. */
+                pos += tm_sprintf((UB *)&line_buf[pos], (const UB *)" ...");
             }
 
+            /* Range-safe: final formatted length pos is not needed further. */
             (void)pos;
-            tm_printf((UB *)"%s\n", line_buf);
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"%s\n", line_buf);
             p_track->echo_cursor++;
         }
     }
@@ -678,7 +764,8 @@ static void app_main_log_udp_state (const T_CYW43_UTK_STATUS * p_status,
 
         if (APP_MAIN_UDP_STALL_POLLS == p_track->stalled_polls)
         {
-            tm_printf((UB *)"[udp] waiting: link=%u netif_up=%u "
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
+            tm_printf((const UB *)"[udp] waiting: link=%u netif_up=%u "
                       "link_up=%u dhcp=%u addr=%u.%u.%u.%u\n",
                       p_status->link_up,
                       p_status->netif_up,
@@ -701,7 +788,8 @@ static void app_main_log_udp_state (const T_CYW43_UTK_STATUS * p_status,
     {
         p_track->shown_session = p_status->udp_session_count;
         app_main_fmt_ipv4(ip_str, p_status->udp_target);
-        tm_printf((UB *)"[udp] session %u: echoing to %s:%u, "
+        /* Range-safe: ASCII literal bytes map identically to const UB *. */
+        tm_printf((const UB *)"[udp] session %u: echoing to %s:%u, "
                   "%u packets of %u bytes\n",
                   p_status->udp_session_count + 1u,
                   ip_str,
@@ -715,16 +803,17 @@ static void app_main_log_udp_state (const T_CYW43_UTK_STATUS * p_status,
     if ((0u != p_status->udp_complete) &&
         (p_status->udp_session_count != p_track->summarised_session))
     {
-        bool b_all_matched = false;
+        bool b_has_all_matched = false;
 
         p_track->summarised_session = p_status->udp_session_count;
         app_main_fmt_ipv4(ip_str, p_status->udp_target);
-        b_all_matched =
+        b_has_all_matched           =
             ((p_status->udp_packets_matched ==
               p_status->udp_expected_packets) &&
              (0u == p_status->udp_corrupt));
 
-        tm_printf((UB *)"[udp] %s:%u  sent=%u recv=%u matched=%u/%u  "
+        /* Range-safe: ASCII literal bytes map identically to const UB *. */
+        tm_printf((const UB *)"[udp] %s:%u  sent=%u recv=%u matched=%u/%u  "
                   "corrupt=%u retries=%u errs=%u  %u ms\n",
                   ip_str,
                   p_status->udp_port,
@@ -736,10 +825,11 @@ static void app_main_log_udp_state (const T_CYW43_UTK_STATUS * p_status,
                   p_status->udp_retries,
                   p_status->udp_send_errors,
                   p_status->udp_elapsed_ms);
-        tm_printf((UB *)"[udp] session %u complete: result=%d%s\n",
+        /* Range-safe: ASCII literal bytes map identically to const UB *. */
+        tm_printf((const UB *)"[udp] session %u complete: result=%d%s\n",
                   p_status->udp_session_count + 1u,
                   p_status->udp_result,
-                  b_all_matched ? "  ALL PACKETS ECHOED" : "");
+                  b_has_all_matched ? "  ALL PACKETS ECHOED" : "");
     }
 }
 
@@ -760,14 +850,16 @@ static void app_main_wifi_status_task (INT stacd, void * p_exinf)
         .summarised_session = APP_MAIN_WIFI_UNSET_VAL
     };
 
+    /* Range-safe: intentionally unused RTOS task entry parameters. */
     (void)stacd;
+    /* Range-safe: intentionally unused RTOS extended info pointer. */
     (void)p_exinf;
 
     app_main_wait_usb_enum(APP_MAIN_WIFI_SETTLE_MSEC);
 
     for (;;)
     {
-        T_CYW43_UTK_STATUS status     = { 0 };
+        T_CYW43_UTK_STATUS status     = { 0u };
         uint32_t           delay_msec = APP_MAIN_WIFI_IDLE_MSEC;
 
         cyw43_utk_get_status(&status);
@@ -783,6 +875,7 @@ static void app_main_wifi_status_task (INT stacd, void * p_exinf)
             }
         }
 
+        /* Range-safe: periodic status polling delay. */
         (void)tk_dly_tsk(delay_msec);
     }
 }

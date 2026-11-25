@@ -14,13 +14,13 @@
  * @brief Return pointer to the NUL-terminated embedded dashboard HTML document.
  * @return Read-only pointer to static HTML string in flash.
  */
-const char * index_html_get_body (void);
+const char * index_html_get_body(void);
 
 /**
  * @brief Return byte length of the embedded dashboard HTML document.
  * @return Byte count excluding trailing NUL terminator.
  */
-uint32_t index_html_get_length (void);
+uint32_t index_html_get_length(void);
 
 #endif /* INDEX_HTML_H */
 

@@ -2,7 +2,10 @@
 
 PROJECT_NAME           = "INF2004 Embedded Systems Robot Firmware"
 OUTPUT_DIRECTORY       = build_docs
-INPUT                  = app_program config/mqtt_config.example.h docs
+INPUT                  = app_program config/mqtt_config.example.h docs \
+                         ir_encoders_main.c ir_encoders_main.h \
+                         motors_main.c motors_main.h \
+                         sonar_servo_main.c sonar_servo_main.h
 FILE_PATTERNS          = *.c *.h *.md
 RECURSIVE              = YES
 EXTRACT_ALL            = NO
