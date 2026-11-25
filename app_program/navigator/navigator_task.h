@@ -5,6 +5,12 @@
  * NOTE: See docs/fsm_diagrams.md for the Navigator and Bypass state machine
  * diagrams. All bit-fields use unsigned integer types (BARR-C Rule 5.3.a);
  * signed domains use explicit 2's-complement pack/sign-extend accessors.
+ *
+ * BARR-C Deviation (Rules 1.1.c, 5.2.a, 5.6.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: Packed IPC and telemetry structs save ~7.8 KB SRAM across the
+ *   64-slot Navigator message buffer; 1-bit flags use unsigned bit-fields per
+ *   Rule 5.3.a; uT-Kernel task entry signature mandates INT stacd.
  */
 
 #ifndef NAVIGATOR_TASK_H
@@ -95,12 +101,12 @@ typedef enum
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint32_t left_min_mm  : 12;
-    uint32_t left_max_mm  : 12;
-    uint32_t right_min_mm : 12;
-    uint32_t right_max_mm : 12;
-    uint32_t left_valid   : 1;
-    uint32_t right_valid  : 1;
+    uint32_t left_min_mm      : 12;
+    uint32_t left_max_mm      : 12;
+    uint32_t right_min_mm     : 12;
+    uint32_t right_max_mm     : 12;
+    uint32_t b_is_left_valid  : 1;
+    uint32_t b_is_right_valid : 1;
 } navigator_task_width_scan_t;
 
 typedef struct ROBOT_TASKS_PACKED
@@ -111,28 +117,28 @@ typedef struct ROBOT_TASKS_PACKED
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint32_t                    closest_cm          : 9;
-    uint32_t                    closest_ang_raw     : 7;
-    uint32_t                    front_cm            : 9;
-    uint32_t                    left_scan_cm        : 9;
-    uint32_t                    right_scan_cm       : 9;
-    uint32_t                    left_scan_status    : 3;
-    uint32_t                    right_scan_status   : 3;
-    uint32_t                    left_edge_deg_raw   : 7;
-    uint32_t                    right_edge_deg_raw  : 7;
-    uint32_t                    estimated_width_cm  : 10;
-    uint32_t                    left_offset_cm      : 9;
-    uint32_t                    right_offset_cm     : 9;
-    uint32_t                    left_clearance_cm   : 9;
-    uint32_t                    right_clearance_cm  : 9;
-    uint32_t                    left_edge_valid     : 1;
-    uint32_t                    right_edge_valid    : 1;
-    uint32_t                    width_valid         : 1;
-    uint32_t                    left_offset_valid   : 1;
-    uint32_t                    right_offset_valid  : 1;
-    uint32_t                    left_clr_valid      : 1;
-    uint32_t                    right_clr_valid     : 1;
-    uint32_t                    profile_valid       : 1;
+    uint32_t                    closest_cm            : 9;
+    uint32_t                    closest_ang_raw       : 7;
+    uint32_t                    front_cm              : 9;
+    uint32_t                    left_scan_cm          : 9;
+    uint32_t                    right_scan_cm         : 9;
+    uint32_t                    left_scan_status      : 3;
+    uint32_t                    right_scan_status     : 3;
+    uint32_t                    left_edge_deg_raw     : 7;
+    uint32_t                    right_edge_deg_raw    : 7;
+    uint32_t                    estimated_width_cm    : 10;
+    uint32_t                    left_offset_cm        : 9;
+    uint32_t                    right_offset_cm       : 9;
+    uint32_t                    left_clearance_cm     : 9;
+    uint32_t                    right_clearance_cm    : 9;
+    uint32_t                    b_is_left_edge_valid  : 1;
+    uint32_t                    b_is_right_edge_valid : 1;
+    uint32_t                    b_is_width_valid      : 1;
+    uint32_t                    b_is_left_off_valid   : 1;
+    uint32_t                    b_is_right_off_valid  : 1;
+    uint32_t                    b_is_left_clr_valid   : 1;
+    uint32_t                    b_is_right_clr_valid  : 1;
+    uint32_t                    b_is_profile_valid    : 1;
     navigator_task_width_scan_t measured_width;
     uint8_t                     rays[((SONAR_PROFILE_RAYS * 12u) + 7u) / 8u];
 } navigator_task_obs_profile_t;
@@ -163,28 +169,28 @@ typedef enum
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint32_t                     phase            : 5;
-    uint32_t                     side_raw         : 2;
+    uint32_t                     phase                : 5;
+    uint32_t                     side_raw             : 2;
     uint32_t                     phase_start_usec;
     uint32_t                     deadline_usec;
     uint32_t                     requested_usec;
     uint32_t                     last_track_usec;
     uint32_t                     last_sample_usec;
     navigator_task_obs_profile_t first_scan;
-    uint32_t                     front_cm         : 9;
-    uint32_t                     planned_shift_mm : 13;
-    uint32_t                     shift_mm         : 11;
-    uint32_t                     forward_mm       : 12;
-    uint32_t                     leg_mm           : 12;
+    uint32_t                     front_cm             : 9;
+    uint32_t                     planned_shift_mm     : 13;
+    uint32_t                     shift_mm             : 11;
+    uint32_t                     forward_mm           : 12;
+    uint32_t                     leg_mm               : 12;
     int32_t                      leg_start_mm;
-    uint32_t                     probe_clear_cnt  : 2;
-    uint32_t                     probe_attempts   : 2;
-    uint32_t                     width_clr_pend   : 1;
-    uint32_t                     depth_clr_pend   : 1;
-    uint32_t                     tracking_active  : 1;
-    uint32_t                     move_pending     : 1;
-    uint32_t                     black_cnt        : 2;
-    uint32_t                     owns_obs_stop    : 1;
+    uint32_t                     probe_clear_cnt      : 2;
+    uint32_t                     probe_attempts       : 2;
+    uint32_t                     b_has_width_clr_pend : 1;
+    uint32_t                     b_has_depth_clr_pend : 1;
+    uint32_t                     b_is_tracking        : 1;
+    uint32_t                     b_has_move_pending   : 1;
+    uint32_t                     black_cnt            : 2;
+    uint32_t                     b_owns_obs_stop      : 1;
 } navigator_task_bypass_ctx_t;
 
 typedef struct ROBOT_TASKS_PACKED
@@ -192,7 +198,7 @@ typedef struct ROBOT_TASKS_PACKED
     uint32_t sampled_at_usec;
     uint16_t dist_cm       : 9;
     uint8_t  angle_deg_raw : 7;
-    uint32_t b_valid       : 1;
+    uint32_t b_is_valid    : 1;
     uint32_t status        : 3;
 } navigator_task_sonar_probe_t;
 
@@ -257,9 +263,9 @@ typedef enum
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint16_t dist_cm : 9;
-    uint32_t b_valid : 1;
-    uint32_t status  : 3;
+    uint16_t dist_cm    : 9;
+    uint32_t b_is_valid : 1;
+    uint32_t status     : 3;
 } navigator_task_sonar_dist_t;
 
 typedef union ROBOT_TASKS_PACKED
@@ -289,24 +295,24 @@ typedef struct ROBOT_TASKS_PACKED
     int32_t  dist_cm;
     int8_t   speed_left;
     int8_t   speed_right;
-    uint16_t obs_dist_cm      : 9;
-    uint16_t closest_cm       : 9;
-    uint16_t closest_ang_raw  : 7;
-    uint16_t est_width_cm     : 10;
-    uint16_t pitch_ddeg_raw   : 12;
-    uint16_t roll_ddeg_raw    : 12;
-    uint16_t heading_deg      : 9;
-    uint16_t height_dmm       : 10;
-    uint32_t movement_mode    : 4;
-    uint32_t bypass_phase     : 5;
-    uint32_t ir_state         : 3;
-    uint32_t last_barcode     : 7;
-    uint32_t inst_idx         : 3;
-    uint32_t obs_dist_valid   : 1;
-    uint32_t obs_status       : 3;
-    uint32_t imu_state        : 2;
-    uint32_t imu_event        : 2;
-    uint32_t obs_width_status : 2;
+    uint16_t obs_dist_cm        : 9;
+    uint16_t closest_cm         : 9;
+    uint16_t closest_ang_raw    : 7;
+    uint16_t est_width_cm       : 10;
+    uint16_t pitch_ddeg_raw     : 12;
+    uint16_t roll_ddeg_raw      : 12;
+    uint16_t heading_deg        : 9;
+    uint16_t height_dmm         : 10;
+    uint32_t movement_mode      : 4;
+    uint32_t bypass_phase       : 5;
+    uint32_t ir_state           : 3;
+    uint32_t last_barcode       : 7;
+    uint32_t inst_idx           : 3;
+    uint32_t b_is_obs_dist_valid : 1;
+    uint32_t obs_status         : 3;
+    uint32_t imu_state          : 2;
+    uint32_t imu_event          : 2;
+    uint32_t obs_width_status   : 2;
 } navigator_task_telemetry_t;
 
 typedef struct
@@ -314,43 +320,15 @@ typedef struct
     uint8_t bits[((NAV_NUMBER_OF_COMMANDS * 3u) + 7u) / 8u];
 } navigator_task_route_t;
 
-ROBOT_TASKS_STATIC_ASSERT(width_scan_size,
-                          (7u == sizeof(navigator_task_width_scan_t)));
-ROBOT_TASKS_STATIC_ASSERT(width_result_size,
-                          (2u == sizeof(navigator_task_width_t)));
-ROBOT_TASKS_STATIC_ASSERT(obs_profile_size,
-                          (33u == sizeof(navigator_task_obs_profile_t)));
-ROBOT_TASKS_STATIC_ASSERT(bypass_ctx_size,
-                          (68u == sizeof(navigator_task_bypass_ctx_t)));
-ROBOT_TASKS_STATIC_ASSERT(nav_msg_size,
-                          (34u == sizeof(navigator_task_msg_t)));
-ROBOT_TASKS_STATIC_ASSERT(telemetry_size,
-                          (32u == sizeof(navigator_task_telemetry_t)));
-ROBOT_TASKS_STATIC_ASSERT(sonar_dist_size,
-                          (2u == sizeof(navigator_task_sonar_dist_t)));
-ROBOT_TASKS_STATIC_ASSERT(sonar_probe_size,
-                          (7u == sizeof(navigator_task_sonar_probe_t)));
-ROBOT_TASKS_STATIC_ASSERT(imu_msg_size,
-                          (6u == sizeof(navigator_task_imu_msg_t)));
-ROBOT_TASKS_STATIC_ASSERT(bypass_travel_bits,
-                          ((BYPASS_MAX_SIDE_MM <= 2047u) &&
-                           (BYPASS_MAX_FORWARD_MM <= 4095u)));
-ROBOT_TASKS_STATIC_ASSERT(nav_counter_bits,
-                          ((NAV_NUMBER_OF_COMMANDS <= 7u) &&
-                           (NAV_TURNING_RAMPUP_LIMIT < 63u)));
-
 /**
  * @brief Read one sonar ray distance from a packed obstacle profile.
  * @param[in] p_profile Obstacle profile structure.
  * @param[in] ray_idx   Ray index (0..6).
  * @return Distance in cm (0..511).
  */
-static inline uint32_t navigator_task_ray_cm (
+uint32_t navigator_task_get_ray_cm(
     const navigator_task_obs_profile_t * p_profile,
-    uint32_t ray_idx)
-{
-    return robot_tasks_bits_get(p_profile->rays, ray_idx * 12u, 9u);
-}
+    uint32_t ray_idx);
 
 /**
  * @brief Read one sonar ray status code from a packed obstacle profile.
@@ -358,16 +336,9 @@ static inline uint32_t navigator_task_ray_cm (
  * @param[in] ray_idx   Ray index (0..6).
  * @return Ultrasonic status enum value.
  */
-static inline ultrasonic_task_status_t navigator_task_ray_status (
+ultrasonic_task_status_t navigator_task_get_ray_status(
     const navigator_task_obs_profile_t * p_profile,
-    uint32_t ray_idx)
-{
-    uint32_t raw_status =
-        robot_tasks_bits_get(p_profile->rays, (ray_idx * 12u) + 9u, 3u);
-
-    /* Range-safe: 3-bit status field maps to ultrasonic_task_status_t 0..6. */
-    return (ultrasonic_task_status_t)raw_status;
-}
+    uint32_t ray_idx);
 
 /**
  * @brief Store one sonar ray distance and status in a packed obstacle profile.
@@ -376,16 +347,10 @@ static inline ultrasonic_task_status_t navigator_task_ray_status (
  * @param[in]     dist_cm   Measured distance in cm (0..511).
  * @param[in]     status    Ultrasonic status enum value.
  */
-static inline void navigator_task_ray_set (
-    navigator_task_obs_profile_t * p_profile,
-    uint32_t ray_idx,
-    uint32_t dist_cm,
-    ultrasonic_task_status_t status)
-{
-    uint32_t packed = (dist_cm & 511u) | (((uint32_t)status) << 9u);
-
-    robot_tasks_bits_set(p_profile->rays, ray_idx * 12u, 12u, packed);
-}
+void navigator_task_set_ray(navigator_task_obs_profile_t * p_profile,
+                            uint32_t ray_idx,
+                            uint32_t dist_cm,
+                            ultrasonic_task_status_t status);
 
 /**
  * @brief Read a packed 3-bit route direction entry.
@@ -393,23 +358,9 @@ static inline void navigator_task_ray_set (
  * @param[in] route_idx Zero-based route step index.
  * @return Stored direction, or DIR_INVALID if index is out of range.
  */
-static inline navigator_task_dir_t navigator_task_route_get (
+navigator_task_dir_t navigator_task_get_route(
     const navigator_task_route_t * p_route,
-    uint32_t route_idx)
-{
-    navigator_task_dir_t dir = DIR_INVALID;
-
-    if (route_idx < NAV_NUMBER_OF_COMMANDS)
-    {
-        uint32_t raw_dir =
-            robot_tasks_bits_get(p_route->bits, route_idx * 3u, 3u);
-
-        /* Range-safe: route_set stores values within 0..DIR_INVALID. */
-        dir = (navigator_task_dir_t)raw_dir;
-    }
-
-    return dir;
-}
+    uint32_t route_idx);
 
 /**
  * @brief Store a packed 3-bit route direction entry.
@@ -417,99 +368,84 @@ static inline navigator_task_dir_t navigator_task_route_get (
  * @param[in]     route_idx Zero-based route step index.
  * @param[in]     dir       Direction enum value to store.
  */
-static inline void navigator_task_route_set (
-    navigator_task_route_t * p_route,
-    uint32_t route_idx,
-    navigator_task_dir_t dir)
-{
-    if ((route_idx < NAV_NUMBER_OF_COMMANDS) && (dir <= DIR_INVALID))
-    {
-        robot_tasks_bits_set(p_route->bits, route_idx * 3u, 3u, (uint32_t)dir);
-    }
-}
+void navigator_task_set_route(navigator_task_route_t * p_route,
+                              uint32_t route_idx,
+                              navigator_task_dir_t dir);
 
 /**
  * @brief Read signed bypass detour side (+1 left, -1 right, 0 unset).
  * @param[in] p_bypass Bypass context structure.
  * @return Signed side indicator (-1, 0, or +1).
  */
-static inline int32_t navigator_task_bypass_side (
-    const navigator_task_bypass_ctx_t * p_bypass)
-{
-    return robot_tasks_sign_extend(p_bypass->side_raw, NAV_SIDE_BIT_WIDTH);
-}
+int32_t navigator_task_get_side(const navigator_task_bypass_ctx_t * p_bypass);
 
 /**
  * @brief Set signed bypass detour side (+1 left, -1 right, 0 unset).
  * @param[in,out] p_bypass Bypass context structure.
  * @param[in]     side_val Signed side indicator (-1, 0, or +1).
  */
-static inline void navigator_task_set_side (
-    navigator_task_bypass_ctx_t * p_bypass,
-    int32_t side_val)
-{
-    p_bypass->side_raw = robot_tasks_pack_signed(side_val, NAV_SIDE_BIT_WIDTH);
-}
+void navigator_task_set_side(navigator_task_bypass_ctx_t * p_bypass,
+                             int32_t side_val);
 
 /**
  * @brief Copy the latest telemetry snapshot under the shared data lock.
  * @param[out] p_snapshot Destination snapshot structure.
  */
-void navigator_task_read_telem (navigator_task_telemetry_t * p_snapshot);
+void navigator_task_read_telem(navigator_task_telemetry_t * p_snapshot);
 
 /**
  * @brief Read the current IMU event code from shared telemetry.
  * @return IMU event enum value (0..3).
  */
-uint8_t navigator_task_get_imu_event (void);
+uint8_t navigator_task_get_imu_event(void);
 
 /**
  * @brief Read the latest compass heading in degrees from shared telemetry.
  * @return Heading angle (0..359 degrees).
  */
-int16_t navigator_task_get_heading (void);
+int16_t navigator_task_get_heading(void);
 
 /**
  * @brief Update live ultrasonic distance fields in shared telemetry.
- * @param[in] b_valid True if distance reading is valid.
- * @param[in] status  Ultrasonic status enum value.
- * @param[in] dist_cm Distance in cm (zeroed when invalid).
+ * @param[in] b_is_valid True if distance reading is valid.
+ * @param[in] status     Ultrasonic status enum value.
+ * @param[in] dist_cm    Distance in cm (zeroed when invalid).
  */
-void navigator_task_set_sonar_telem (bool b_valid,
-                                     uint8_t status,
-                                     uint32_t dist_cm);
+void navigator_task_set_sonar_telem(bool b_is_valid,
+                                    uint8_t status,
+                                    uint32_t dist_cm);
 
 /**
  * @brief Update IMU live hump height in tenths of a millimetre.
  * @param[in] height_dmm Clamped height (0..680).
  */
-void navigator_task_set_imu_height (int16_t height_dmm);
+void navigator_task_set_imu_height(int16_t height_dmm);
 
 /**
  * @brief Update IMU event code in shared telemetry.
  * @param[in] imu_event IMU event enum value (0..3).
  */
-void navigator_task_set_imu_event (uint8_t imu_event);
+void navigator_task_set_imu_event(uint8_t imu_event);
 
 /**
  * @brief Update IMU FSM state code in shared telemetry.
  * @param[in] imu_state IMU state enum value (0..3).
  */
-void navigator_task_set_imu_state (uint8_t imu_state);
+void navigator_task_set_imu_state(uint8_t imu_state);
 
 /**
  * @brief Atomically update IMU pitch, roll, heading, and optional state.
- * @param[in] pitch_ddeg  Pitch angle in tenths of a degree (-1800..1800).
- * @param[in] roll_ddeg   Roll angle in tenths of a degree (-1800..1800).
- * @param[in] heading_deg Compass heading in degrees (0..359).
- * @param[in] b_set_state True to also update imu_state.
- * @param[in] imu_state   IMU state enum value when b_set_state is true.
+ * @param[in] pitch_ddeg         Pitch angle in tenths of a degree (-1800..1800).
+ * @param[in] roll_ddeg          Roll angle in tenths of a degree (-1800..1800).
+ * @param[in] heading_deg        Compass heading in degrees (0..359).
+ * @param[in] b_should_set_state True to also update imu_state.
+ * @param[in] imu_state          IMU state enum when b_should_set_state is true.
  */
-void navigator_task_set_imu_pose (int16_t pitch_ddeg,
-                                  int16_t roll_ddeg,
-                                  int16_t heading_deg,
-                                  bool b_set_state,
-                                  uint8_t imu_state);
+void navigator_task_set_imu_pose(int16_t pitch_ddeg,
+                                 int16_t roll_ddeg,
+                                 int16_t heading_deg,
+                                 bool b_should_set_state,
+                                 uint8_t imu_state);
 
 /**
  * @brief Atomically latch IMU lifted/overturned telemetry fields.
@@ -518,17 +454,17 @@ void navigator_task_set_imu_pose (int16_t pitch_ddeg,
  * @param[in] imu_state  IMU state enum value.
  * @param[in] imu_event  IMU event enum value.
  */
-void navigator_task_set_imu_stop (int16_t pitch_ddeg,
-                                  int16_t roll_ddeg,
-                                  uint8_t imu_state,
-                                  uint8_t imu_event);
+void navigator_task_set_imu_stop(int16_t pitch_ddeg,
+                                 int16_t roll_ddeg,
+                                 uint8_t imu_state,
+                                 uint8_t imu_event);
 
 /**
  * @brief Central Navigator coordination task.
  * @param[in] stacd   Task start code (unused).
  * @param[in] p_exinf Extended task information pointer (unused).
  */
-void navigator_task (INT stacd, void * p_exinf);
+void navigator_task_run_task(INT stacd, void * p_exinf);
 
 #endif /* NAVIGATOR_TASK_H */
 

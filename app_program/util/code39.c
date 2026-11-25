@@ -11,7 +11,7 @@
 
 #include "../robot_tasks.h"
 
-#define CODE39_UNKNOWN_CHAR             ((uint8_t)'?')
+#define CODE39_UNKNOWN_CHAR             (0x3Fu)
 #define CODE39_ENTRY_COUNT              (44u)
 
 typedef struct ROBOT_TASKS_PACKED
@@ -24,55 +24,55 @@ ROBOT_TASKS_STATIC_ASSERT(code39_entry_size, (2u == sizeof(code39_entry_t)));
 
 static const code39_entry_t g_code39_dict[CODE39_ENTRY_COUNT] =
 {
-    /* Letters A-Z */
-    { 0x109u, (uint16_t)'A' },
-    { 0x049u, (uint16_t)'B' },
-    { 0x148u, (uint16_t)'C' },
-    { 0x019u, (uint16_t)'D' },
-    { 0x118u, (uint16_t)'E' },
-    { 0x058u, (uint16_t)'F' },
-    { 0x00Du, (uint16_t)'G' },
-    { 0x10Cu, (uint16_t)'H' },
-    { 0x04Cu, (uint16_t)'I' },
-    { 0x01Cu, (uint16_t)'J' },
-    { 0x103u, (uint16_t)'K' },
-    { 0x043u, (uint16_t)'L' },
-    { 0x142u, (uint16_t)'M' },
-    { 0x013u, (uint16_t)'N' },
-    { 0x112u, (uint16_t)'O' },
-    { 0x052u, (uint16_t)'P' },
-    { 0x007u, (uint16_t)'Q' },
-    { 0x106u, (uint16_t)'R' },
-    { 0x046u, (uint16_t)'S' },
-    { 0x016u, (uint16_t)'T' },
-    { 0x181u, (uint16_t)'U' },
-    { 0x0C1u, (uint16_t)'V' },
-    { 0x1C0u, (uint16_t)'W' },
-    { 0x091u, (uint16_t)'X' },
-    { 0x190u, (uint16_t)'Y' },
-    { 0x0D0u, (uint16_t)'Z' },
+    /* Encode uppercase ASCII letters A through Z (0x41..0x5A). */
+    { 0x109u, 0x41u },
+    { 0x049u, 0x42u },
+    { 0x148u, 0x43u },
+    { 0x019u, 0x44u },
+    { 0x118u, 0x45u },
+    { 0x058u, 0x46u },
+    { 0x00Du, 0x47u },
+    { 0x10Cu, 0x48u },
+    { 0x04Cu, 0x49u },
+    { 0x01Cu, 0x4Au },
+    { 0x103u, 0x4Bu },
+    { 0x043u, 0x4Cu },
+    { 0x142u, 0x4Du },
+    { 0x013u, 0x4Eu },
+    { 0x112u, 0x4Fu },
+    { 0x052u, 0x50u },
+    { 0x007u, 0x51u },
+    { 0x106u, 0x52u },
+    { 0x046u, 0x53u },
+    { 0x016u, 0x54u },
+    { 0x181u, 0x55u },
+    { 0x0C1u, 0x56u },
+    { 0x1C0u, 0x57u },
+    { 0x091u, 0x58u },
+    { 0x190u, 0x59u },
+    { 0x0D0u, 0x5Au },
 
-    /* Digits 0-9 */
-    { 0x034u, (uint16_t)'0' },
-    { 0x121u, (uint16_t)'1' },
-    { 0x061u, (uint16_t)'2' },
-    { 0x160u, (uint16_t)'3' },
-    { 0x031u, (uint16_t)'4' },
-    { 0x130u, (uint16_t)'5' },
-    { 0x070u, (uint16_t)'6' },
-    { 0x025u, (uint16_t)'7' },
-    { 0x124u, (uint16_t)'8' },
-    { 0x064u, (uint16_t)'9' },
+    /* Encode ASCII decimal digits 0 through 9 (0x30..0x39). */
+    { 0x034u, 0x30u },
+    { 0x121u, 0x31u },
+    { 0x061u, 0x32u },
+    { 0x160u, 0x33u },
+    { 0x031u, 0x34u },
+    { 0x130u, 0x35u },
+    { 0x070u, 0x36u },
+    { 0x025u, 0x37u },
+    { 0x124u, 0x38u },
+    { 0x064u, 0x39u },
 
-    /* Symbols and start/stop asterisk */
-    { 0x085u, (uint16_t)'-' },
-    { 0x184u, (uint16_t)'.' },
-    { 0x0C4u, (uint16_t)' ' },
-    { 0x0A8u, (uint16_t)'$' },
-    { 0x0A2u, (uint16_t)'/' },
-    { 0x08Au, (uint16_t)'+' },
-    { 0x02Au, (uint16_t)'%' },
-    { 0x094u, (uint16_t)'*' }
+    /* Encode Code 39 symbols '-', '.', ' ', '$', '/', '+', '%', and '*'. */
+    { 0x085u, 0x2Du },
+    { 0x184u, 0x2Eu },
+    { 0x0C4u, 0x20u },
+    { 0x0A8u, 0x24u },
+    { 0x0A2u, 0x2Fu },
+    { 0x08Au, 0x2Bu },
+    { 0x02Au, 0x25u },
+    { 0x094u, 0x2Au }
 };
 
 /**

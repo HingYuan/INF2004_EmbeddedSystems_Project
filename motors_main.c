@@ -1,16 +1,24 @@
 /**
  * @file motors_main.c
  * @brief Standalone Pico SDK motor PWM and encoder test sketch.
+ *
+ * BARR-C Deviation (Rules 2.1.c.ii, 5.2.a, 6.5.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: Interactive hardware bring-up utility prints live encoder counts
+ *   over USB stdio; ISO C main() returns int and Pico SDK gpio_irq_callback_t
+ *   requires signature void (*)(uint, uint32_t) dispatched by SDK IRQ glue.
  */
 
 #include "motors_main.h"
 
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
+#include "hardware/sync.h"
 #include "pico/stdlib.h"
 
 #define MOTORS_PIN_M1A                  (8u)
@@ -29,8 +37,8 @@
 
 static volatile int32_t g_encoder_ticks = 0;
 
-static void motors_setup_pwm_pin (uint32_t pin_num);
-static void motors_encoder_isr (uint gpio_pin, uint32_t events);
+static void motors_setup_pwm_pin(uint32_t pin_num);
+static void motors_encoder_isr(uint gpio_pin, uint32_t events);
 
 /**
  * @brief Standalone Pico SDK entry point testing button-driven motors.
@@ -77,17 +85,19 @@ int main (void)
 
     for (;;)
     {
-        bool b_btn1_pressed = (!gpio_get(MOTORS_PIN_BTN_1));
-        bool b_btn2_pressed = (!gpio_get(MOTORS_PIN_BTN_2));
+        bool     b_is_btn1_pressed = (!gpio_get(MOTORS_PIN_BTN_1));
+        bool     b_is_btn2_pressed = (!gpio_get(MOTORS_PIN_BTN_2));
+        uint32_t irq_state         = 0u;
+        int32_t  ticks_snapshot    = 0;
 
-        if (b_btn1_pressed)
+        if (b_is_btn1_pressed)
         {
             pwm_set_gpio_level(MOTORS_PIN_M1A, MOTORS_SPEED_HALF);
             pwm_set_gpio_level(MOTORS_PIN_M1B, 0u);
             pwm_set_gpio_level(MOTORS_PIN_M2A, 0u);
             pwm_set_gpio_level(MOTORS_PIN_M2B, MOTORS_SPEED_HALF);
         }
-        else if (b_btn2_pressed)
+        else if (b_is_btn2_pressed)
         {
             pwm_set_gpio_level(MOTORS_PIN_M1A, 0u);
             pwm_set_gpio_level(MOTORS_PIN_M1B, MOTORS_SPEED_SLOW);
@@ -102,12 +112,13 @@ int main (void)
             pwm_set_gpio_level(MOTORS_PIN_M2B, 0u);
         }
 
-        /* Range-safe: g_encoder_ticks fits in standard 32-bit int on RP2040. */
-        printf("Encoder Ticks: %d\n", (int)g_encoder_ticks);
+        irq_state      = save_and_disable_interrupts();
+        ticks_snapshot = g_encoder_ticks;
+        restore_interrupts(irq_state);
+
+        printf("Encoder Ticks: %" PRId32 "\n", ticks_snapshot);
         sleep_ms(MOTORS_LOOP_DELAY_MSEC);
     }
-
-    return 0;
 }
 
 /**
@@ -126,17 +137,12 @@ static void motors_setup_pwm_pin (uint32_t pin_num)
 
 /**
  * @brief Pico SDK GPIO interrupt callback counting directional encoder ticks.
- *
- * BARR-C Deviation (Rules 5.2.a, 6.5.a):
- *   Approver: Project Team (INF2004).
- *   Rationale: Pico SDK gpio_irq_callback_t requires standard C signature
- *   void (*)(uint, uint32_t) dispatched by SDK IRQ machinery.
- *
  * @param[in] gpio_pin Triggering GPIO pin index.
  * @param[in] events   Edge event bitmask (unused).
  */
 static void motors_encoder_isr (uint gpio_pin, uint32_t events)
 {
+    /* Range-safe: intentionally unused SDK callback parameter. */
     (void)events;
 
     if (MOTORS_PIN_ENC_A == gpio_pin)

@@ -16,6 +16,21 @@
 # by SIO CPUID and needs the same profile.
 ################################################################################
 
+# Optional power-on automated unit/integration test profile (`make TEST=1 -j8`).
+# Defaults SMP=1 and WIFI=cyw43 when TEST=1 so `make TEST=1 -j8` produces
+# mtk3pico_smp1_usb_cdc_wifi_test.uf2 while still honoring explicit overrides.
+TEST ?= 0
+ifneq ($(filter $(TEST),0 1),$(TEST))
+$(error Unknown TEST '$(TEST)'; use 0 or 1)
+endif
+ifeq ($(TEST),1)
+SMP ?= 1
+WIFI ?= cyw43
+TEST_SUFFIX := _test
+else
+TEST_SUFFIX :=
+endif
+
 SMP ?= 0
 
 ifneq ($(SMP),0)
@@ -220,7 +235,7 @@ endif
 # a live hazard: an SMP=1 build was once flashed in place of an SMP=0 one and
 # only the banner in the log revealed it.
 #
-EXE_FILE := mtk3pico_smp$(SMP)_$(CONSOLE)$(WIFI_SUFFIX)
+EXE_FILE := mtk3pico_smp$(SMP)_$(CONSOLE)$(WIFI_SUFFIX)$(TEST_SUFFIX)
 
 GCC := arm-none-eabi-gcc
 AS := arm-none-eabi-gcc
@@ -272,6 +287,9 @@ ifeq ($(SMP),1)
 CFLAGS  += -DCNF_SMP=1
 ASFLAGS += -DCNF_SMP=1
 endif
+ifeq ($(TEST),1)
+CFLAGS  += -DTM_TEST_ENABLE=1
+endif
 
 ################################################################################
 # Console selection
@@ -300,7 +318,7 @@ endif
 # before any recipe executes.
 ################################################################################
 
-PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-web$(WEB_SERVER)-mqtt$(MQTT)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)
+PROFILE_ID := smp$(SMP)-$(CONSOLE)-wifi$(WIFI)-join$(WIFI_JOIN)-netif$(WIFI_NETIF)-web$(WEB_SERVER)-mqtt$(MQTT)-static$(WIFI_STATIC)-dhcp$(WIFI_DHCP)-dns$(WIFI_DNS)-udp$(WIFI_UDP)-tcp$(WIFI_TCP)-bulk$(WIFI_TCPBULK)-test$(TEST)
 PROFILE_FILE := .build_profile
 
 ifneq ($(strip $(shell cat $(PROFILE_FILE) 2>/dev/null)),$(PROFILE_ID))

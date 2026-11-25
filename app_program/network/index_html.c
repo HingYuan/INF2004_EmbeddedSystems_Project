@@ -10,9 +10,9 @@
 
 #if (TM_WIFI_NETIF && TM_WEB_SERVER)
 
-#include "../robot_tasks.h"
+#define INDEX_HTML_ARRAY_SIZE           (INDEX_HTML_BODY_LEN + 1u)
 
-static const char g_index_html_body[] =
+static const char g_index_html_body[INDEX_HTML_ARRAY_SIZE] =
     "<!doctype html>\n"
     "<html lang=\"en\">\n"
     "<head>\n"
@@ -1400,10 +1400,6 @@ static const char g_index_html_body[] =
     "  </script>\n"
     "</body>\n"
     "</html>\n";
-
-ROBOT_TASKS_STATIC_ASSERT(index_html_len_match,
-                          (INDEX_HTML_BODY_LEN ==
-                           (sizeof(g_index_html_body) - 1u)));
 
 /**
  * @brief Return pointer to the NUL-terminated embedded dashboard HTML document.

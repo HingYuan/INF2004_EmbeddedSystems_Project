@@ -5,6 +5,11 @@
  * WARNING: FREE_TIME_MAX_IDLE_COUNTS is empirically calibrated for RP2040 at
  * 125 MHz with -O2 optimization. Changing system clock or compiler flags
  * invalidates the idle percentage baseline.
+ *
+ * BARR-C Deviation (Rules 2.1.c.ii, 5.2.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: Periodic CPU load telemetry is intentionally emitted on the
+ *   operator console; uT-Kernel task and tm_printf signatures use INT/UINT/UB.
  */
 
 #include "free_time_diagnostic.h"
@@ -24,12 +29,14 @@
  * @param[in] stacd   Task start code (unused).
  * @param[in] p_exinf Extended task information pointer (unused).
  */
-void free_time_diagnostic_task (INT stacd, void * p_exinf)
+void free_time_diagnostic_run_task (INT stacd, void * p_exinf)
 {
     uint32_t start_usec = robot_tasks_time_usec();
     uint32_t idle_cnt   = 0u;
 
+    /* Range-safe: intentionally unused RTOS task entry parameters. */
     (void)stacd;
+    /* Range-safe: intentionally unused RTOS extended info pointer. */
     (void)p_exinf;
 
     for (;;)
@@ -52,8 +59,8 @@ void free_time_diagnostic_task (INT stacd, void * p_exinf)
 
             cpu_load = FREE_TIME_MAX_PERCENT - idle_pct;
 
-            /* Cast required by uT-Kernel tm_printf(const UB *, ...) API. */
-            tm_printf((UB *)"\n[Diagnostics] CPU Load: %u%% (Raw: %u)\n",
+            /* Range-safe: 32-bit unsigned values fit 32-bit UINT on RP2040. */
+            tm_printf((const UB *)"\n[Diagnostics] CPU Load: %u%% (Raw: %u)\n",
                       (UINT)cpu_load,
                       (UINT)idle_cnt);
 
