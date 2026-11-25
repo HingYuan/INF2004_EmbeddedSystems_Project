@@ -1,10 +1,11 @@
-#include <stdint.h>
-
 #include <sys/machine.h>
 #include <sys/sysdef.h>
 #include <tk/tkernel.h>
 #include <tk/device.h>
 #include <tk/syslib.h>
+#if TK_SUPPORT_SMP
+#include <tk/smp.h>
+#endif
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
@@ -26,15 +27,50 @@
 
 #define PERIPHERAL_TASK_STACK    4096
 
-typedef void (*PERIPHERAL_TASK)(INT stacd, void *exinf);
+LOCAL volatile UW robot_flags;
+#if TK_SUPPORT_SMP
+LOCAL T_SPLOCK robot_lock;
+#endif
 
-typedef struct {
-	PERIPHERAL_TASK task;
-    INT priority;
-	INT stacd;
-	UW assprc;
-	const char *name;
-} TASK_START;
+/* Hold only for bounded RAM operations: no I/O, printf, waiting or RTOS messages. */
+EXPORT UINT robot_data_lock(void)
+{
+    UINT saved;
+#if TK_SUPPORT_SMP
+    (void)ISpinLock(&robot_lock, &saved);
+#else
+    DI(saved);
+#endif
+    return saved;
+}
+
+EXPORT void robot_data_unlock(UINT saved)
+{
+#if TK_SUPPORT_SMP
+    (void)ISpinUnlock(&robot_lock, saved);
+#else
+    EI(saved);
+#endif
+}
+
+EXPORT UW robot_flags_get(void)
+{
+    UW value = robot_flags; /* Aligned word load; all writers use the same lock. */
+    __asm__ volatile ("dmb" ::: "memory");
+    return value;
+}
+
+EXPORT void robot_flags_update(UW set, UW clear)
+{
+    UINT saved = robot_data_lock();
+    robot_flags = (robot_flags & ~clear) | set;
+    robot_data_unlock(saved);
+}
+
+EXPORT void robot_flag_assign(UW mask, BOOL enabled)
+{
+    robot_flags_update(enabled ? mask : 0U, enabled ? 0U : mask);
+}
 
 // Message buffers
 EXPORT ID barcode_mbfid;
@@ -130,13 +166,14 @@ EXPORT ER robot_tasks_start(void)
     T_CMBF cmbf = {0};
 	cmbf.mbfatr = TA_TFIFO; // First-In, First-Out queue
 
-	LOCAL UW barcode_mbf_buf[(20 * sizeof(BAR_RECORD)) / sizeof(UW) + 20 * 4];
-	LOCAL UW navigator_mbf_buf[(64 * sizeof(NAVIGATOR_MESSAGE)) / sizeof(UW) + 64 * 4];
-	LOCAL UW motor_mbf_buf[(10 * sizeof(MOTOR_COMMAND)) / sizeof(UW) + 10 * 4];
+	/* Each queued record needs a word-sized length header and word-rounded data. */
+	LOCAL UW barcode_mbf_buf[20 * ((sizeof(BAR_RECORD) + sizeof(UW) - 1) / sizeof(UW) + 1)];
+	LOCAL UW navigator_mbf_buf[64 * ((sizeof(NAVIGATOR_MESSAGE) + sizeof(UW) - 1) / sizeof(UW) + 1)];
+	LOCAL UW motor_mbf_buf[10 * ((sizeof(MOTOR_COMMAND) + sizeof(UW) - 1) / sizeof(UW) + 1)];
 
 	// Barcode scanner mbf
 	cmbf.maxmsz = sizeof(BAR_RECORD); // Max size of one message
-	cmbf.bufsz = sizeof(BAR_RECORD) * 20; // Capacity for 20 queued bars
+	cmbf.bufsz = sizeof(barcode_mbf_buf); // Capacity for 20 queued bars
 	cmbf.bufptr = barcode_mbf_buf;
 
 	barcode_mbfid = tk_cre_mbf(&cmbf);
@@ -147,7 +184,7 @@ EXPORT ER robot_tasks_start(void)
 
 	// navigator task mbf
     cmbf.maxmsz = sizeof(NAVIGATOR_MESSAGE);
-	cmbf.bufsz = sizeof(NAVIGATOR_MESSAGE) * 64;
+	cmbf.bufsz = sizeof(navigator_mbf_buf);
 	cmbf.bufptr = navigator_mbf_buf;
 
 	navigator_mbfid = tk_cre_mbf(&cmbf);
@@ -158,7 +195,7 @@ EXPORT ER robot_tasks_start(void)
 
 	// motor task mbf
 	cmbf.maxmsz = sizeof(MOTOR_COMMAND);
-	cmbf.bufsz = sizeof(MOTOR_COMMAND) * 10;
+	cmbf.bufsz = sizeof(motor_mbf_buf);
 	cmbf.bufptr = motor_mbf_buf;
 
 	motor_mbfid = tk_cre_mbf(&cmbf);

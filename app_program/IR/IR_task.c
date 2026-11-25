@@ -99,7 +99,7 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
 
         // tm_printf("right state: %d\n", right_state);
 
-        NAVIGATOR_MESSAGE nm;
+        NAVIGATOR_MESSAGE nm = {0};
         nm.type = MSG_IR_UPDATE;
         if (left_state >= ADC_IR_THRESHOLD && right_state >= ADC_IR_THRESHOLD) nm.data.ir_state = STATE_B_B;        // Black-black
         else if (left_state < ADC_IR_THRESHOLD && right_state < ADC_IR_THRESHOLD) nm.data.ir_state = STATE_W_W;     // White-white
@@ -115,8 +115,7 @@ EXPORT void ir_sensor_task(INT stacd, void *exinf)
 
 EXPORT void ir_barcode_task(INT stacd, void *exinf)
 {
-	INT previous_state;
-	INT current_state;
+	IR_RUNTIME_STATE ir = {0};
     UW current_time;
 
 	(void)exinf;
@@ -125,29 +124,31 @@ EXPORT void ir_barcode_task(INT stacd, void *exinf)
 		return;
 	}
 
-	previous_state = (INT)gpio_get_val((UINT)stacd);
+	ir.previous_state = (INT)gpio_get_val((UINT)stacd);
     UW previous_time = time_us();
 
     tm_printf((UB *)"[ir] Task started, waiting for bars...\n");
-	tm_printf((UB *)"[ir] GP%d initial %s\n", stacd, previous_state ? "HIGH" : "LOW");
+	tm_printf((UB *)"[ir] GP%d initial %s\n", stacd, ir.previous_state ? "HIGH" : "LOW");
 
 	while(1) {
-		current_state = (INT)gpio_get_val((UINT)stacd);
+		ir.current_state = (INT)gpio_get_val((UINT)stacd);
         current_time = time_us();
 
         // State change
-		if(current_state != previous_state) {
+		if(ir.current_state != ir.previous_state) {
             // Record state
             BAR_RECORD br = {
-                previous_state,
+                ir.previous_state,
                 (current_time - previous_time) / 100,
             };
+
+            // tm_printf("\n%d\n", ir.previous_state);
             
             // Push to message buffer
             tk_snd_mbf(barcode_mbfid, (void *)&br, sizeof(BAR_RECORD), TMO_FEVR);
 
             // reset state
-			previous_state = current_state;
+			ir.previous_state = ir.current_state;
             previous_time = current_time;
 		}
 		tk_dly_tsk(10);
@@ -159,29 +160,29 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
     BAR_RECORD br;
     BAR_RECORD bar_arr[BARS_PER_CHAR];
 	INT msg_size;
-    INT bar_count = 0;
+    IR_RUNTIME_STATE decoder = {0};
 
 	(void)stacd;
 	(void)exinf;
 
 	while(1) {
 		// Wait asleep until a message arrives in the buffer
-		msg_size = tk_rcv_mbf(barcode_mbfid, (void *)&br, 250);
+		msg_size = tk_rcv_mbf(barcode_mbfid, (void *)&br, 500);
 		
         // If timeout passes, reset bars - prevents false reads
         if (msg_size == E_TMOUT) {
-            bar_count = 0;
+            decoder.bar_count = 0;
             continue;
         }
 
 		if (msg_size == sizeof(BAR_RECORD)) {
 
             // Add to array
-			bar_arr[bar_count] = br;
-            bar_count++;
+			bar_arr[decoder.bar_count] = br;
+            decoder.bar_count++;
                       
             // Decode only if array exceeds 10 bars
-            if (bar_count >= BARS_PER_CHAR) {
+            if (decoder.bar_count >= BARS_PER_CHAR) {
                 UH current_pattern = 0;
 
                 UW sum = 0;
@@ -213,6 +214,8 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
                     }
                 }
 
+                tm_printf("\ndecoded char: %c\n", decoded_char);
+
                 tm_printf((UB *)"[decoder] Matched pattern 0x%03X to character: %c\n", current_pattern, decoded_char);
 
                 if (decoded_char != '*' && decoded_char != '?') {  //ignore asterisk
@@ -225,8 +228,8 @@ EXPORT void ir_barcode_decoder_task(INT stacd, void *exinf)
                     tk_snd_mbf(navigator_mbfid, (void *)&nm, sizeof(NAVIGATOR_MESSAGE), TMO_FEVR);
                 }
 
-                // Decrease bar_count to remove the decoded character's bars
-                bar_count -= BARS_PER_CHAR;
+                // Decrease decoder.bar_count to remove the decoded character's bars
+                decoder.bar_count -= BARS_PER_CHAR;
             }
 		}
 

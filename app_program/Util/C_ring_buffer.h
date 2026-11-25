@@ -5,11 +5,11 @@
 
 #define QUEUE_SIZE 20
 
-typedef struct {
-    UB data[QUEUE_SIZE];
-    INT head;
-    INT tail;
-    INT count;
+typedef struct __attribute__((packed)) {
+    UB data[QUEUE_SIZE]; // General byte queue: the entire 0..255 domain is valid.
+    UH head : 5;
+    UH tail : 5;
+    UH count : 5;
 } C_RING_BUFFER;
 
 static inline void crb_init(C_RING_BUFFER *q) {

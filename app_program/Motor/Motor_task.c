@@ -1,4 +1,5 @@
 #include <tk/tkernel.h>
+#include <tk/syslib.h>
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 #include "Motor_task.h"
@@ -39,27 +40,15 @@
 #define STALL_MIN_PCT           20   /* Only check stall when PWM >= 20% */
 #define STALL_PERIODS           75   /* 75 x 20 ms = 1.5 s with 0 ticks on BOTH wheels = stall */
 #define ENC_FAIL_TICK_DELTA     90   /* >90 ticks (~3 cm) on one wheel while other is 0 = fault */
+#define ENC_BACKUP_MIN_TICKS     8   /* Filtered B pulses without A progress before switching. */
+_Static_assert(STALL_PERIODS <= 127, "stall counter bit width");
 #define ENC_CRAWL_PCT           20   /* 20% open-loop crawl fallback on encoder failure */
 
-typedef enum {
-    MS_IDLE,
-    MS_ACCEL,
-    MS_CRUISE,
-    MS_TURN,
-    MS_BRAKE,
-    MS_FAULT,
-    MS_ESTOP
-} MOTOR_STATE;
-
-#define SET_STATE(s) do { state = (s); tm_printf((UB *)"[motors] state=%d\n", (INT)(s)); } while(0)
+#define SET_STATE(s) do { motor.state = (s); tm_printf((UB *)"[motors] state=%d\n", (INT)(s)); } while(0)
 
 EXPORT volatile W enc_l_ticks = 0;
 EXPORT volatile W enc_r_ticks = 0;
-EXPORT volatile BOOL motor_estop = FALSE;
-EXPORT volatile BOOL motor_stop_ack_requested = FALSE;
 EXPORT volatile UW buffer_drop_count = 0;
-EXPORT volatile BOOL encoder_degraded = FALSE;
-EXPORT volatile UH motor_fault_word = 0;
 
 // Live speed estimation (mm/s), updated every 20 ms
 LOCAL volatile INT current_speed_mm_s = 0;
@@ -69,40 +58,66 @@ LOCAL volatile INT bounded_target_ticks_l = 0;
 LOCAL volatile INT bounded_target_ticks_r = 0;
 
 // Track current motor PWM outputs for encoder direction sign inside ISR
-LOCAL volatile INT isr_out_l = 0;
-LOCAL volatile INT isr_out_r = 0;
+LOCAL volatile B isr_out_l = 0;
+LOCAL volatile B isr_out_r = 0;
 LOCAL volatile W isr_ticks_la = 0, isr_ticks_lb = 0;
 LOCAL volatile W isr_ticks_ra = 0, isr_ticks_rb = 0;
+LOCAL volatile ENCODER_ISR_STATE encoder_state = {0};
+#define right_encoder_using_b encoder_state.using_b
+LOCAL volatile W right_encoder_last_a = 0;
+LOCAL volatile W right_encoder_b_offset = 0;
 
 LOCAL INT iabs(INT v)
 {
     return v < 0 ? -v : v;
 }
 
-// Proven Stage 1 Encoder Filter: 2-sample (1.0 ms) rising-edge counter with NO cooldown ceiling.
-LOCAL void count_clean_rising_edge(
-    UINT raw_bit, INT dir, UINT *state, UB *cnt, volatile W *ticks)
+LOCAL W right_encoder_ticks(W a, W b)
 {
-    if (*state == 0U) {
-        if (raw_bit != 0U) {
-            if (++(*cnt) >= 2U) {
-                *state = 1U;
-                *cnt = 0U;
-                *ticks += dir;
-            }
-        } else {
-            *cnt = 0U;
-        }
-    } else {
-        if (raw_bit == 0U) {
-            if (++(*cnt) >= 2U) {
-                *state = 0U;
-                *cnt = 0U;
-            }
-        } else {
-            *cnt = 0U;
+    if (!right_encoder_using_b) {
+        if (a != right_encoder_last_a) {
+            right_encoder_last_a = a;
+            right_encoder_b_offset = a - b;
+        } else if (iabs((INT)(b + right_encoder_b_offset - a)) >= ENC_BACKUP_MIN_TICKS) {
+            // Keep B until restart; intermittent A recovery must not jump the distance count.
+            right_encoder_using_b = TRUE;
         }
     }
+    // The offset preserves previous A travel and recovers pulses missed since A stopped.
+    return right_encoder_using_b ? b + right_encoder_b_offset : a;
+}
+
+#ifndef NDEBUG
+LOCAL BOOL right_encoder_self_check(void)
+{
+    BOOL ok = right_encoder_ticks(12, 13) == 12 && !right_encoder_using_b &&
+              right_encoder_ticks(12, 20) == 12 && !right_encoder_using_b &&
+              right_encoder_ticks(12, 21) == 20 && right_encoder_using_b &&
+              right_encoder_ticks(12, 1) == 0 &&
+              right_encoder_ticks(12, -59) == -60 &&
+              right_encoder_ticks(-60, -59) == -60;
+    // Run before enabling the encoder interrupt, then restore the initial counter state.
+    right_encoder_last_a = right_encoder_b_offset = 0;
+    right_encoder_using_b = FALSE;
+    return ok && right_encoder_ticks(0, 0) == 0 && !right_encoder_using_b;
+}
+#endif
+
+// Proven Stage 1 Encoder Filter: 2-sample (1.0 ms) rising-edge counter with NO cooldown ceiling.
+LOCAL void count_clean_rising_edge(UINT raw, INT dir, UB *filters, UINT shift, volatile W *ticks)
+{
+    UINT stable = (*filters >> shift) & 1U;
+    UINT pending = (*filters >> (shift + 1U)) & 1U;
+    if (raw == stable) {
+        pending = 0;
+    } else if (pending) {
+        stable = raw;
+        pending = 0;
+        if (stable) *ticks += dir;
+    } else {
+        pending = 1;
+    }
+    *filters = (UB)((*filters & ~(3U << shift)) | ((stable | (pending << 1U)) << shift));
 }
 
 // 0.25 ms (250 us = 4000 Hz) RP2040 Hardware Timer Alarm 0 ISR
@@ -123,17 +138,17 @@ LOCAL void encoder_alarm_isr(UINT intno)
     INT dir_l = (isr_out_l > 0) ? 1 : (isr_out_l < 0 ? -1 : 1);
     INT dir_r = (isr_out_r < 0) ? 1 : (isr_out_r > 0 ? -1 : 1);
 
-    static UINT st_la = 0, st_lb = 0, st_ra = 0, st_rb = 0;
-    static UB  cnt_la = 0, cnt_lb = 0, cnt_ra = 0, cnt_rb = 0;
+    UB filters = encoder_state.filters;
 
-    count_clean_rising_edge(raw_la, dir_l, &st_la, &cnt_la, &isr_ticks_la);
-    count_clean_rising_edge(raw_lb, dir_l, &st_lb, &cnt_lb, &isr_ticks_lb);
-    count_clean_rising_edge(raw_ra, dir_r, &st_ra, &cnt_ra, &isr_ticks_ra);
-    count_clean_rising_edge(raw_rb, dir_r, &st_rb, &cnt_rb, &isr_ticks_rb);
+    count_clean_rising_edge(raw_la, dir_l, &filters, 0U, &isr_ticks_la);
+    count_clean_rising_edge(raw_lb, dir_l, &filters, 2U, &isr_ticks_lb);
+    count_clean_rising_edge(raw_ra, dir_r, &filters, 4U, &isr_ticks_ra);
+    count_clean_rising_edge(raw_rb, dir_r, &filters, 6U, &isr_ticks_rb);
+    encoder_state.filters = filters;
 
-    // Lock strictly to Channel A (GP16 and GP2) so LB's extra bounce pulses never skew count!
+    // Left B has extra bounce; right B provides backup when right A stops counting.
     enc_l_ticks = isr_ticks_la;
-    enc_r_ticks = isr_ticks_ra;
+    enc_r_ticks = right_encoder_ticks(isr_ticks_ra, isr_ticks_rb);
 }
 
 // Drive one motor channel (-100..100%)
@@ -190,8 +205,8 @@ EXPORT ER moveForward(INT distance_mm)
     bounded_target_ticks_r = ticks;
     cmd.target_speed_left  = 25;
     cmd.target_speed_right = -25;
-    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (uint8_t)ticks;
-    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (uint8_t)ticks;
+    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (UB)ticks;
+    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (UB)ticks;
     return tk_snd_mbf(motor_mbfid, &cmd, sizeof(cmd), TMO_POL);
 }
 
@@ -203,8 +218,8 @@ EXPORT ER moveBackward(INT distance_mm)
     bounded_target_ticks_r = ticks;
     cmd.target_speed_left  = -25;
     cmd.target_speed_right = 25;
-    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (uint8_t)ticks;
-    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (uint8_t)ticks;
+    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (UB)ticks;
+    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (UB)ticks;
     return tk_snd_mbf(motor_mbfid, &cmd, sizeof(cmd), TMO_POL);
 }
 
@@ -218,8 +233,8 @@ EXPORT ER turnLeft(INT angle_deg)
     bounded_target_ticks_r = ticks;
     cmd.target_speed_left  = -25;
     cmd.target_speed_right = -25;
-    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (uint8_t)ticks;
-    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (uint8_t)ticks;
+    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (UB)ticks;
+    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (UB)ticks;
     return tk_snd_mbf(motor_mbfid, &cmd, sizeof(cmd), TMO_POL);
 }
 
@@ -232,8 +247,8 @@ EXPORT ER turnRight(INT angle_deg)
     bounded_target_ticks_r = ticks;
     cmd.target_speed_left  = 25;
     cmd.target_speed_right = 25;
-    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (uint8_t)ticks;
-    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (uint8_t)ticks;
+    cmd.turn_ticks_left    = (ticks > 255) ? 255 : (UB)ticks;
+    cmd.turn_ticks_right   = (ticks > 255) ? 255 : (UB)ticks;
     return tk_snd_mbf(motor_mbfid, &cmd, sizeof(cmd), TMO_POL);
 }
 
@@ -268,8 +283,8 @@ LOCAL void apply_straight_heading_lock(
 
     // Fail-Safe: Encoder failure detection (>90 ticks on one wheel while other is 0)
     if (iabs(diff) > ENC_FAIL_TICK_DELTA && (moved_l == 0 || moved_r == 0)) {
-        encoder_degraded = TRUE;
-        motor_fault_word |= FAULT_BIT_ENCODER;
+        robot_flag_assign(ROBOT_ENCODER_DEGRADED, TRUE);
+        robot_flags_update(FAULT_BIT_ENCODER, 0U);
     }
 
     if (encoder_degraded) {
@@ -291,19 +306,21 @@ LOCAL void apply_straight_heading_lock(
     *out_mag_r = CLAMP(base_mag_r + trim, MIN_MOTOR_PCT, 100);
 }
 
-LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, INT *cnt_l, INT *cnt_r)
+LOCAL BOOL stalled(INT out_l, INT out_r, W dl, W dr, MOTOR_RUNTIME_STATE *motor)
 {
     if (iabs(out_l) >= STALL_MIN_PCT) {
-        if (dl == 0) (*cnt_l)++; else *cnt_l = 0;
+        if (dl == 0) { if (motor->stall_left < STALL_PERIODS) motor->stall_left++; }
+        else motor->stall_left = 0;
     } else {
-        *cnt_l = 0;
+        motor->stall_left = 0;
     }
     if (iabs(out_r) >= STALL_MIN_PCT) {
-        if (dr == 0) (*cnt_r)++; else *cnt_r = 0;
+        if (dr == 0) { if (motor->stall_right < STALL_PERIODS) motor->stall_right++; }
+        else motor->stall_right = 0;
     } else {
-        *cnt_r = 0;
+        motor->stall_right = 0;
     }
-    return (*cnt_l >= STALL_PERIODS && *cnt_r >= STALL_PERIODS);
+    return (motor->stall_left >= STALL_PERIODS && motor->stall_right >= STALL_PERIODS);
 }
 
 EXPORT void motor_task(INT stacd, void *exinf)
@@ -317,7 +334,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
     };
     MOTOR_COMMAND cmd = {0};
     INT i;
-    MOTOR_STATE state = MS_IDLE;
+    MOTOR_RUNTIME_STATE motor = {.state = MS_IDLE};
     INT tgt_l = 0, tgt_r = 0;
     INT ramp_mag_l = 0, ramp_mag_r = 0;
     INT out_l = 0, out_r = 0;
@@ -326,11 +343,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
     INT turn_goal_l = 0, turn_goal_r = 0;
     W cruise_start_l = 0, cruise_start_r = 0;
     INT integ_units = 0; // Start neutral (0) so right wheel doesn't push the car left
-    INT stall_cnt_l = 0, stall_cnt_r = 0;
-    INT stop_stable_periods = 0;
-    BOOL move_done_pending = FALSE;
-    INT move_stable_periods = 0;
-    INT print_timer = 0;
+
 
 #if STAGE2_STANDALONE_PAD_TEST
     INT test_cycles = 0;
@@ -361,6 +374,13 @@ EXPORT void motor_task(INT stacd, void *exinf)
         set_w(GPIO(encoder_pins[i]), GPIO_IE | GPIO_PUE | GPIO_SHEMITT);
     }
 
+#ifndef NDEBUG
+    if (!right_encoder_self_check()) {
+        robot_flags_update(FAULT_BIT_ENCODER, 0U);
+        tm_printf((UB *)"[motors] Encoder self-check failed\n");
+        tk_ext_tsk();
+    }
+#endif
     T_DINT dint = {0};
     dint.intatr = TA_HLNG;
     dint.inthdr = (FP)encoder_alarm_isr;
@@ -383,15 +403,20 @@ EXPORT void motor_task(INT stacd, void *exinf)
         while (tk_rcv_mbf(motor_mbfid, &cmd, TMO_POL) == (INT)sizeof(cmd)) {
         }
 
-        motor_estop = FALSE;
+        robot_flag_assign(ROBOT_ESTOP_REQUEST, FALSE);
         test_cycles++;
 
         // Wait 3.0 seconds (150 x 20ms) after power-on, then start driving straight at 25%
         if (test_cycles == 150) {
+            UINT intsts;
+            DI(intsts);
             enc_l_ticks = 0;
             enc_r_ticks = 0;
             isr_ticks_la = isr_ticks_lb = isr_ticks_ra = isr_ticks_rb = 0;
+            right_encoder_last_a = right_encoder_b_offset = 0;
+            right_encoder_using_b = motor.right_backup_reported = FALSE;
             prev_l = prev_r = 0;
+            EI(intsts);
             cmd.target_speed_left = 25;
             cmd.target_speed_right = -25;
             cmd.turn_ticks_left = 0;
@@ -413,7 +438,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
         }
 
         // Print final settled distance after braking
-        if (run_number == 1 && state == MS_IDLE && dl == 0 && dr == 0) {
+        if (run_number == 1 && motor.state == MS_IDLE && dl == 0 && dr == 0) {
             run_number = 2;
             tm_printf((UB *)"\n=== [DISTANCE TEST COMPLETE] ===\n");
             tm_printf((UB *)"Reported: %d cm (L=%d mm, R=%d mm, Avg=%d mm)\n",
@@ -428,21 +453,21 @@ EXPORT void motor_task(INT stacd, void *exinf)
         }
 #else
         if (motor_estop) {
-            if (state != MS_ESTOP) {
+            if (motor.state != MS_ESTOP) {
                 tgt_l = tgt_r = out_l = out_r = 0;
                 turn_goal_l = turn_goal_r = 0;
                 bounded_target_ticks_l = bounded_target_ticks_r = 0;
-                move_done_pending = FALSE;
-                move_stable_periods = 0;
-                stop_stable_periods = 0;
+                motor.move_done_pending = FALSE;
+                motor.move_stable_periods = 0;
+                motor.stop_stable_periods = 0;
                 set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
                 set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
-                motor_fault_word |= FAULT_BIT_ESTOP;
+                robot_flags_update(FAULT_BIT_ESTOP, 0U);
                 SET_STATE(MS_ESTOP);
             }
-        } else if (state == MS_ESTOP) {
-            motor_fault_word &= ~FAULT_BIT_ESTOP;
-            stop_stable_periods = 0;
+        } else if (motor.state == MS_ESTOP) {
+            robot_flags_update(0U, FAULT_BIT_ESTOP);
+            motor.stop_stable_periods = 0;
             SET_STATE(MS_IDLE);
         }
 
@@ -452,6 +477,11 @@ EXPORT void motor_task(INT stacd, void *exinf)
         }
 #endif
 
+        if (right_encoder_using_b && !motor.right_backup_reported) {
+            motor.right_backup_reported = TRUE;
+            tm_printf((UB *)"[motors] Right encoder A missing; using B (A=%d B=%d)\n",
+                      (INT)isr_ticks_ra, (INT)isr_ticks_rb);
+        }
         dl = enc_l_ticks - prev_l;
         dr = enc_r_ticks - prev_r;
         prev_l = enc_l_ticks;
@@ -461,8 +491,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
         INT avg_ticks_20ms = (iabs((INT)dl) + iabs((INT)dr)) / 2;
         current_speed_mm_s = (avg_ticks_20ms * 50 * MM_PER_TICK_X100) / 100;
 
-        if (++print_timer >= 25) {
-            print_timer = 0;
+        if (++motor.print_timer >= 25) {
+            motor.print_timer = 0;
             if (dl != 0 || dr != 0 || out_l != 0 || out_r != 0) {
                 INT run_l = iabs((INT)(enc_l_ticks - cruise_start_l));
                 INT run_r = iabs((INT)(enc_r_ticks - cruise_start_r));
@@ -474,21 +504,21 @@ EXPORT void motor_task(INT stacd, void *exinf)
             }
         }
 
-        switch (state) {
+        switch (motor.state) {
         case MS_IDLE:
-            if (move_done_pending) {
+            if (motor.move_done_pending) {
                 if (dl == 0 && dr == 0) {
-                    if (move_stable_periods < 3) move_stable_periods++;
+                    if (motor.move_stable_periods < 3) motor.move_stable_periods++;
                 } else {
-                    move_stable_periods = 0;
+                    motor.move_stable_periods = 0;
                 }
 
-                if (move_stable_periods >= 3) {
+                if (motor.move_stable_periods >= 3) {
                     NAVIGATOR_MESSAGE msg = {0};
                     msg.type = MSG_MOTOR_MOVE_DONE;
                     if (tk_snd_mbf(navigator_mbfid, &msg, sizeof(msg), TMO_POL) >= E_OK) {
-                        move_done_pending = FALSE;
-                        move_stable_periods = 0;
+                        motor.move_done_pending = FALSE;
+                        motor.move_stable_periods = 0;
                         tm_printf((UB *)"[motors] Move completed\n");
                     }
                 }
@@ -504,8 +534,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
                 turn_start_r = enc_r_ticks;
                 cruise_start_l = enc_l_ticks;
                 cruise_start_r = enc_r_ticks;
-                stall_cnt_l = stall_cnt_r = 0;
-                encoder_degraded = FALSE;
+                motor.stall_left = motor.stall_right = 0;
+                robot_flag_assign(ROBOT_ENCODER_DEGRADED, FALSE);
 
                 if (turn_goal_l != 0 || turn_goal_r != 0) {
                     out_l = tgt_l;
@@ -630,11 +660,11 @@ EXPORT void motor_task(INT stacd, void *exinf)
             out_l = (tgt_l > 0) ? mag_l : ((tgt_l < 0) ? -mag_l : 0);
             out_r = (tgt_r > 0) ? mag_r : ((tgt_r < 0) ? -mag_r : 0);
 
-            if (!encoder_degraded && stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
+            if (!encoder_degraded && stalled(out_l, out_r, dl, dr, &motor)) {
                 out_l = out_r = 0;
                 set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
                 set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
-                motor_fault_word |= FAULT_BIT_STALL;
+                robot_flags_update(FAULT_BIT_STALL, 0U);
                 SET_STATE(MS_FAULT);
                 break;
             }
@@ -650,7 +680,7 @@ EXPORT void motor_task(INT stacd, void *exinf)
                     tgt_l = tgt_r = 0;
                     turn_goal_l = turn_goal_r = 0;
                     bounded_target_ticks_l = bounded_target_ticks_r = 0;
-                    move_done_pending = FALSE;
+                    motor.move_done_pending = FALSE;
                     SET_STATE(MS_BRAKE);
                     break;
                 }
@@ -680,8 +710,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
                 set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
                 turn_goal_l = 0;
                 turn_goal_r = 0;
-                move_done_pending = TRUE;
-                move_stable_periods = 0;
+                motor.move_done_pending = TRUE;
+                motor.move_stable_periods = 0;
                 SET_STATE(MS_BRAKE);
                 break;
             }
@@ -701,12 +731,12 @@ EXPORT void motor_task(INT stacd, void *exinf)
             out_l = left_done  ? 0 : ((tgt_l > 0) ? mag_l : -mag_l);
             out_r = right_done ? 0 : ((tgt_r > 0) ? mag_r : -mag_r);
 
-            if (!encoder_degraded && stalled(out_l, out_r, dl, dr, &stall_cnt_l, &stall_cnt_r)) {
+            if (!encoder_degraded && stalled(out_l, out_r, dl, dr, &motor)) {
                 out_l = out_r = 0;
                 set_motor(MOTOR_LEFT_A, MOTOR_LEFT_B, 0);
                 set_motor(MOTOR_RIGHT_A, MOTOR_RIGHT_B, 0);
-                move_done_pending = FALSE;
-                motor_fault_word |= FAULT_BIT_STALL;
+                motor.move_done_pending = FALSE;
+                robot_flags_update(FAULT_BIT_STALL, 0U);
                 SET_STATE(MS_FAULT);
                 break;
             }
@@ -727,8 +757,8 @@ EXPORT void motor_task(INT stacd, void *exinf)
                 turn_start_r = enc_r_ticks;
                 cruise_start_l = enc_l_ticks;
                 cruise_start_r = enc_r_ticks;
-                stall_cnt_l = stall_cnt_r = 0;
-                move_done_pending = FALSE;
+                motor.stall_left = motor.stall_right = 0;
+                motor.move_done_pending = FALSE;
 
                 if (turn_goal_l != 0 || turn_goal_r != 0) {
                     out_l = tgt_l;
@@ -758,23 +788,23 @@ EXPORT void motor_task(INT stacd, void *exinf)
         case MS_FAULT:
             if (new_cmd && cmd.target_speed_left == 0 && cmd.target_speed_right == 0) {
                 tgt_l = tgt_r = 0;
-                motor_fault_word &= ~FAULT_BIT_STALL;
+                robot_flags_update(0U, FAULT_BIT_STALL);
                 SET_STATE(MS_IDLE);
             }
             break;
 
         case MS_ESTOP:
             if (dl == 0 && dr == 0) {
-                if (stop_stable_periods < 3) stop_stable_periods++;
+                if (motor.stop_stable_periods < 3) motor.stop_stable_periods++;
             } else {
-                stop_stable_periods = 0;
+                motor.stop_stable_periods = 0;
             }
 
-            if (motor_stop_ack_requested && stop_stable_periods >= 3) {
+            if (motor_stop_ack_requested && motor.stop_stable_periods >= 3) {
                 NAVIGATOR_MESSAGE msg = {0};
                 msg.type = MSG_MOTOR_STOPPED;
                 if (tk_snd_mbf(navigator_mbfid, &msg, sizeof(msg), TMO_POL) >= E_OK) {
-                    motor_stop_ack_requested = FALSE;
+                    robot_flag_assign(ROBOT_STOP_ACK_REQUEST, FALSE);
                     tm_printf((UB *)"[motors] Stop confirmed\n");
                 }
             }

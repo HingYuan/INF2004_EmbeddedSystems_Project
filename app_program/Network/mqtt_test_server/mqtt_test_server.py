@@ -13,6 +13,46 @@ import sys
 import paho.mqtt.client as mqtt
 
 
+DIRECTIONS = {
+    "MOVE_FORWARD": 0,
+    "MOVE_BACKWARD": 1,
+    "TURN_LEFT": 2,
+    "TURN_RIGHT": 3,
+    "STOP": 4,
+}
+
+
+def encode_movement_mapping(mapping: dict) -> bytes:
+    entries = []
+    seen = set()
+    for key, direction_name in mapping.items():
+        if not isinstance(key, str) or len(key) != 1:
+            raise ValueError("movement mapping keys must be single characters")
+        key_code = ord(key)
+        if key_code < 33 or key_code > 126 or key in ('"', "\\"):
+            raise ValueError(f"unsupported movement mapping key: {key!r}")
+        folded_key = key.upper()
+        if folded_key in seen:
+            raise ValueError(f"duplicate movement mapping key: {folded_key}")
+        seen.add(folded_key)
+        if direction_name not in DIRECTIONS:
+            raise ValueError(f"invalid movement direction: {direction_name}")
+        entries.append((DIRECTIONS[direction_name] << 7) | ord(folded_key))
+
+    if not 1 <= len(entries) <= 66:
+        raise ValueError("movement mapping must contain 1 to 66 entries")
+
+    payload = bytearray(2 + (len(entries) * 10 + 7) // 8)
+    payload[0] = 0x13
+    payload[1] = len(entries)
+    for index, entry in enumerate(entries):
+        for bit in range(10):
+            offset = index * 10 + bit
+            if (entry >> bit) & 1:
+                payload[2 + offset // 8] |= 1 << (offset % 8)
+    return bytes(payload)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", required=True, help="MQTT broker IPv4 address or hostname")
@@ -20,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--movement-topic", default="robot/config/movement")
     parser.add_argument(
         "--movement-config",
-        default='{"w":"MOVE_FORWARD","s":"MOVE_BACKWARD","a":"TURN_LEFT","d":"TURN_RIGHT","e":"STOP"}',
+        default='{"a":"MOVE_FORWARD","z":"MOVE_BACKWARD","c":"TURN_LEFT","f":"TURN_RIGHT","b":"STOP"}',
         help="JSON movement mapping to publish retained",
     )
     parser.add_argument("--username")
@@ -45,9 +85,10 @@ def main() -> int:
         movement_config = json.loads(arguments.movement_config)
         if not isinstance(movement_config, dict):
             raise ValueError("movement config must be a JSON object")
+        binary_mapping = encode_movement_mapping(movement_config)
         result = client.publish(
             arguments.movement_topic,
-            json.dumps(movement_config, separators=(",", ":")),
+            binary_mapping,
             qos=1,
             retain=True,
         )

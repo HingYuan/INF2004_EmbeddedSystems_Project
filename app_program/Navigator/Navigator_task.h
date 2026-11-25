@@ -2,6 +2,7 @@
 #define NAVIGATOR_TASK_H
 
 #include <tk/tkernel.h>
+#include "../robot_tasks.h"
 #include "../Motor/Motor_task.h"
 #include "../Ultrasonic/Ultrasonic_task.h"
 
@@ -14,7 +15,7 @@
 // Forward
 // #define FORWARD_SPEED           30
 // #define FORWARD_SPEED_BARCODE   30
-#define FORWARD_SPEED           18
+#define FORWARD_SPEED           16
 // #define FORWARD_SPEED_BARCODE   30
 #define FORWARD_SPEED_HUMP      30
 
@@ -22,10 +23,10 @@
 #define STOP_SPEED              0
 
 // Smooth differential steering for line following (no sudden jerks)
-#define LEFT_TURN_L_BASE        0
-#define LEFT_TURN_R_BASE        20
-#define RIGHT_TURN_L_BASE       20
-#define RIGHT_TURN_R_BASE       0
+#define LEFT_TURN_L_BASE        10
+#define LEFT_TURN_R_BASE        30
+#define RIGHT_TURN_L_BASE       30
+#define RIGHT_TURN_R_BASE       10
 
 // #define LEFT_TURN_L_BARCODE     18
 // #define LEFT_TURN_R_BARCODE     28
@@ -33,16 +34,16 @@
 // #define RIGHT_TURN_R_BARCODE    18
 
 // Turning w/ max rampup (keep inner wheel moving at 15% instead of locking to 0!)
-#define LEFT_TURN_L_RAMP        0
+#define LEFT_TURN_L_RAMP        5
 #define LEFT_TURN_R_RAMP        40
 #define RIGHT_TURN_L_RAMP       40
-#define RIGHT_TURN_R_RAMP       0
+#define RIGHT_TURN_R_RAMP       5
 
 // pivoting / turning on the spot
-#define LEFT_PIVOT_L            25
-#define LEFT_PIVOT_R            25
-#define RIGHT_PIVOT_L           25
-#define RIGHT_PIVOT_R           25
+#define LEFT_PIVOT_L            23
+#define LEFT_PIVOT_R            23
+#define RIGHT_PIVOT_L           23
+#define RIGHT_PIVOT_R           23
 
 /* 
 =========================================
@@ -66,37 +67,67 @@ typedef enum {
 =========================================
 */
 
-typedef struct {
-    UW closest_cm;
-    W closest_angle_deg;       // Positive angle is left
-    UW front_cm;              // Front standoff used to calculate travel past the box.
-    UW left_scan_cm;          // Measured +45-degree ray; meaningful only with SONAR_OK.
-    UW right_scan_cm;         // Measured -45-degree ray; meaningful only with SONAR_OK.
-    SONAR_STATUS left_scan_status;
-    SONAR_STATUS right_scan_status;
-    UW ray_cm[SONAR_PROFILE_RAYS]; // Preserve missing echoes separately from invalid measurements.
-    SONAR_STATUS ray_status[SONAR_PROFILE_RAYS];
+/* Width reporting is independent of the conservative bypass clearance profile. */
+typedef enum {
+    WIDTH_UNAVAILABLE = 0,
+    WIDTH_SCANNING = 1,
+    WIDTH_ESTIMATED = 2,
+    WIDTH_INCONSISTENT = 3
+} OBSTACLE_WIDTH_STATUS;
 
-    W left_edge_deg;
-    W right_edge_deg;
-    BOOL left_edge_valid;
-    BOOL right_edge_valid;
+typedef struct __attribute__((packed)) {
+    UW left_min_mm : 12;    // Bracket of the left edge relative to the sensor centreline.
+    UW left_max_mm : 12;
+    UW right_min_mm : 12;   // Positive distance to the right edge.
+    UW right_max_mm : 12;
+    UW left_valid : 1;
+    UW right_valid : 1;
+} OBSTACLE_WIDTH_SCAN;
 
-    UW estimated_width_cm;     // Approximate visible lateral extent
-    BOOL width_valid;
+typedef struct __attribute__((packed)) {
+    UW cm : 10;            // Full front-face width, excludes robot/gap allowances.
+    UW status : 2;
+} OBSTACLE_WIDTH;
 
-    UW left_offset_cm;         // Proposed lateral centre offset, NOT clearance
-    UW right_offset_cm;
-    BOOL left_offset_valid;
-    BOOL right_offset_valid;
-
-    UW left_clearance_cm;      // Unknown until the entire route is checked
-    UW right_clearance_cm;
-    BOOL left_clearance_valid;
-    BOOL right_clearance_valid;
-
-    BOOL profile_valid;        // Basic scan quality, not a safe route
+typedef struct __attribute__((packed)) {
+    UW closest_cm : 9;           // 0..400 cm, zero means no measured echo.
+    W closest_angle_deg : 7;     // -45..45 degrees.
+    UW front_cm : 9;
+    UW left_scan_cm : 9;
+    UW right_scan_cm : 9;
+    UW left_scan_status : 3;
+    UW right_scan_status : 3;
+    W left_edge_deg : 7;
+    W right_edge_deg : 7;
+    UW estimated_width_cm : 10;  // Up to 800 cm between two measured points.
+    UW left_offset_cm : 9;       // Up to 411 cm including body/gap allowance.
+    UW right_offset_cm : 9;
+    UW left_clearance_cm : 9;
+    UW right_clearance_cm : 9;
+    UW left_edge_valid : 1;
+    UW right_edge_valid : 1;
+    UW width_valid : 1;
+    UW left_offset_valid : 1;
+    UW right_offset_valid : 1;
+    UW left_clearance_valid : 1;
+    UW right_clearance_valid : 1;
+    UW profile_valid : 1;
+    OBSTACLE_WIDTH_SCAN measured_width; // Dashboard estimate; never used to command movement.
+    UB rays[(SONAR_PROFILE_RAYS * 12U + 7U) / 8U]; // Each ray: 9 distance + 3 status bits.
 } OBSTACLE_PROFILE;
+
+static inline UW sonar_ray_cm(const OBSTACLE_PROFILE *p, UINT ray)
+{
+    return robot_bits_get(p->rays, ray * 12U, 9U);
+}
+static inline SONAR_STATUS sonar_ray_status(const OBSTACLE_PROFILE *p, UINT ray)
+{
+    return (SONAR_STATUS)robot_bits_get(p->rays, ray * 12U + 9U, 3U);
+}
+static inline void sonar_ray_set(OBSTACLE_PROFILE *p, UINT ray, UW cm, SONAR_STATUS status)
+{
+    robot_bits_set(p->rays, ray * 12U, 12U, (cm & 511U) | ((UW)status << 9));
+}
 
 /*
  * Scan -> reverse 2 cm -> scan -> restore 2 cm -> choose one side.
@@ -139,7 +170,7 @@ typedef enum {
 #define BYPASS_FORWARD_STEP_MM       150U
 #define BYPASS_WIDTH_STEP_MM        150U
 #define BYPASS_PIVOT_CLEAR_MM         70U // One extra outward move after the forward width check is clear.
-#define BYPASS_DEPTH_CLEAR_MM         50U // One extra forward move parallel to the box after the return check is clear.
+#define BYPASS_DEPTH_CLEAR_MM         70U // One extra forward move parallel to the box after the return check is clear.
 #define BYPASS_PROBE_MS            2000U
 #define BYPASS_CLEAR_CONFIRM          2U // Each stationary probe already takes three sonar pings.
 #define BYPASS_PROFILE_DEPTH_CM      10U // Reject background echoes beyond the front face.
@@ -155,37 +186,37 @@ typedef enum {
 #define BYPASS_POLL_MS              20U // Check movement deadlines even if no sensor message arrives.
 
 // Navigator owns these values. All *_us fields use microseconds.
-typedef struct {
-    BYPASS_PHASE phase;           // Current step of the rectangular detour.
-    INT side;                     // +1: pass left, sonar right; -1: pass right, sonar left. Never zero once moving.
+typedef struct __attribute__((packed)) {
+    UW phase : 5;           // Current step of the rectangular detour.
+    W side : 2;                     // +1: pass left, sonar right; -1: pass right, sonar left. Never zero once moving.
     UW phase_started_us;          // Start of the current movement.
     UW deadline_us;               // Fault deadline, never evidence that movement completed.
     UW requested_us;              // Time side tracking was requested; older replies are discarded.
     UW last_tracking_us;          // Last fresh reply, including no echo.
     UW last_sample_us;            // Reject duplicate samples.
     OBSTACLE_PROFILE first_scan;  // Compare the second scan without pretending missing ranges are distances.
-    UW front_cm;                  // Measured standoff at the restored starting position.
-    UW planned_shift_mm;          // Confirmed edge + original width allowance, or the first outward search step.
-    UW shift_mm;                  // Completed lateral travel, including outward extensions.
-    UW forward_mm;                // Completed travel parallel to the original track.
-    UW leg_mm;                    // Distance of the one outstanding translation.
+    UW front_cm : 9;                  // Measured standoff at the restored starting position.
+    UW planned_shift_mm : 13;          // Confirmed edge + original width allowance, or the first outward search step.
+    UW shift_mm : 11;                  // Completed lateral travel, including outward extensions.
+    UW forward_mm : 12;                // Completed travel parallel to the original track.
+    UW leg_mm : 12;                    // Distance of the one outstanding translation.
     INT leg_start_mm;             // Motor odometry baseline; include coast after the commanded distance.
-    UW probe_clear_count;
-    UW probe_attempts;
-    BOOL width_clearance_pending; // Extra 6 cm is in progress; the following WIDTH_ALIGN skips another width check.
-    BOOL depth_clearance_pending; // Extra 5 cm is in progress; the following TURN_IN starts FIND_LINE without rechecking.
-    BOOL tracking_active;         // Watchdog applies only while side tracking was requested.
-    BOOL move_pending;            // One API call at a time: Motor's completion message has no ID.
-    UW black_count;               // Consecutive IR readings containing black during FIND_LINE.
-    BOOL owns_obstacle_stop;      // Release the scan stop only; never release a later hardware fault.
+    UW probe_clear_count : 2;
+    UW probe_attempts : 2;
+    UW width_clearance_pending : 1; // Extra 6 cm is in progress; the following WIDTH_ALIGN skips another width check.
+    UW depth_clearance_pending : 1; // Extra 5 cm is in progress; the following TURN_IN starts FIND_LINE without rechecking.
+    UW tracking_active : 1;         // Watchdog applies only while side tracking was requested.
+    UW move_pending : 1;            // One API call at a time: Motor's completion message has no ID.
+    UW black_count : 2;               // Consecutive IR readings containing black during FIND_LINE.
+    UW owns_obstacle_stop : 1;      // Release the scan stop only; never release a later hardware fault.
 } BYPASS_CONTEXT;
 
-typedef struct {
-    UW distance_cm;               // Measured echo distance; use only when valid is TRUE.
-    W angle_deg;                 // Positive points left, negative points right.
-    BOOL valid;                  // TRUE only for SONAR_OK; no echo is not a measured clear distance.
-    SONAR_STATUS status;         // Distinguishes an echo, no echo, too close, and hardware failure.
-    UW sampled_at_us;            // time_us() when this measurement finished.
+typedef struct __attribute__((packed)) {
+    UW sampled_at_us;           // Full wrapping microsecond timestamp is required for freshness.
+    UH distance_cm : 9;         // 0..400 cm.
+    B angle_deg : 7;            // -45..45 degrees.
+    UW valid : 1;
+    UW status : 3;
 } SONAR_PROBE_RESULT;
 
 /* 
@@ -201,12 +232,12 @@ typedef enum {
     IMU_MSG_LIFTED_OVERTURNED,
 } IMU_EVENT_TYPE;
 
-typedef struct {
-    IMU_EVENT_TYPE event;
-    float pitch_deg;
-    float roll_deg;
-    float peak_g;
-    float estimated_height_mm;
+typedef struct __attribute__((packed)) {
+    UW event : 2;
+    H pitch_ddeg : 12;          // -1800..1800, tenths of a degree; both tilt axes retained.
+    H roll_ddeg : 12;
+    UH peak_mg : 12;            // 0..4000 mg.
+    UH height_dmm : 10;         // 0..680, tenths of a millimetre (68 mm chassis model).
 } IMU_TELEMETRY_MSG;
 
 /* 
@@ -257,25 +288,25 @@ typedef enum {
     MSG_BYPASS_TICK             // Navigator-local timeout; never sent by a sensor.
 } MESSAGE_TYPE;
 
-typedef struct {
-    UW distance_cm;
-    BOOL valid;
-    SONAR_STATUS status;
+typedef struct __attribute__((packed)) {
+    UH distance_cm : 9;
+    UW valid : 1;
+    UW status : 3;
 } SONAR_DISTANCE_MSG;
 
-typedef struct {
-    MESSAGE_TYPE type;
-    union {
-        IR_STATE ir_state;
-        B decoded_char;
-        UW obstacle_distance_cm;
+typedef struct __attribute__((packed)) {
+    UW type : 4;                // MESSAGE_TYPE 0..12.
+    union __attribute__((packed)) {
+        struct { UW ir_state : 3; };
+        struct { UW decoded_char : 7; }; // ASCII, includes unknown '?'.
+        struct { UH obstacle_distance_cm : 9; };
         OBSTACLE_PROFILE obstacle_profile;
         SONAR_PROBE_RESULT sonar_probe;
         SONAR_DISTANCE_MSG sonar_distance;
         IMU_TELEMETRY_MSG imu_telemetry_msg;
         MOTOR_COMMAND remote_cmd;
-        UH packed_command_mapping;
-    } data;                     // Union data type for variable message data, update as project expands.
+        struct { UH packed_command_mapping : 10; }; // ASCII 7 + direction 3.
+    } data;
 } NAVIGATOR_MESSAGE;
 
 /* 
@@ -284,42 +315,82 @@ typedef struct {
 =========================================
 */
 
-typedef struct {
-    // Sequence / Tick counter
-    uint32_t seq;
-
-    // High Priority: Mode & Navigation
-    uint8_t  movement_mode;     // MOVEMENT_MODE enum
-    uint8_t  bypass_phase;      // BYPASS_PHASE enum
-    uint8_t  ir_state;          // IR_STATE enum
-    char     last_barcode;      // Decoded barcode char (or 0)
-    uint8_t  instruction_idx;   // Current instruction index in mission route
-
-    // Motion & Motors
-    int16_t  speed_left;        // Target speed %
-    int16_t  speed_right;
-    int32_t  enc_l;             // Left encoder ticks
-    int32_t  enc_r;             // Right encoder ticks
-    int32_t  dist_cm;           // Average distance travelled in cm
-
-    // Sensor Specific: Ultrasonic
-    uint32_t obstacle_distance_cm; // Direct front obstacle distance
-    uint8_t  obstacle_distance_valid; // 1 = valid reading, 0 = no valid echo
-    uint8_t  obstacle_status;       // SONAR_STATUS enum
-    uint32_t closest_cm;        // Closest obstacle distance from scan
-    int32_t  closest_angle_deg; // Closest obstacle angle
-    uint32_t estimated_width_cm;// Obstacle estimated width
-
-    // Sensor Specific: IMU
-    float    pitch_deg;         // Vehicle pitch
-    float    roll_deg;          // Vehicle roll
-    int16_t  heading_deg;       // Magnetometer compass heading (0-359 deg)
-    uint8_t  imu_state;             // IMU_FSM_STATE enum
-    float    estimated_height_mm;   // Peak/current hump height in mm
-    uint8_t  imu_event;         // IMU_EVENT_TYPE enum
+typedef struct __attribute__((packed)) {
+    UW seq;                    // Wrapping sequence counter, full 32-bit domain.
+    W enc_l, enc_r;            // Signed lifetime tick counters; no artificial route limit.
+    W dist_cm;                 // Existing signed odometry domain.
+    B speed_left, speed_right; // -100..100%, 8 bits each.
+    UH obstacle_distance_cm : 9;
+    UH closest_cm : 9;
+    H closest_angle_deg : 7;
+    UH estimated_width_cm : 10;
+    H pitch_ddeg : 12;
+    H roll_ddeg : 12;
+    UH heading_deg : 9;        // 0..359.
+    UH height_dmm : 10;
+    UW movement_mode : 4;      // 0..10.
+    UW bypass_phase : 5;       // Preserve phase numbers 0..27.
+    UW ir_state : 3;           // 0..4, includes STATE_NULL.
+    UW last_barcode : 7;       // ASCII or zero.
+    UW instruction_idx : 3;    // 0..5, includes end of route.
+    UW obstacle_distance_valid : 1;
+    UW obstacle_status : 3;
+    UW imu_state : 2;
+    UW imu_event : 2;
+    UW obstacle_width_status : 2;
 } TELEMETRY_SNAPSHOT;
 
+/* Writers hold robot_data_lock only around field stores. Readers copy under it. */
 IMPORT volatile TELEMETRY_SNAPSHOT telemetry_snapshot;
+IMPORT void telemetry_read(TELEMETRY_SNAPSHOT *snapshot);
+IMPORT UB telemetry_imu_event(void);
+IMPORT H telemetry_heading(void);
+
+typedef struct __attribute__((packed)) {
+    UW m_mode : 4;
+    UW prev_ir_state : 3;
+    UW reentry : 1;
+    UW reentry_dir : 3;
+    UW instruction_idx : 3;
+    UW instruction_idx_barcode : 3;
+    UW mapping_increment : 3;
+    W num_rotations : 3;         // -1..2 while completing a turn.
+    UW hump_pop : 1;
+    UW spam_mitigation : 4;      // 0..11, resets after exceeding 10.
+    UW scan_requested : 1;
+    UW live_sonar_distance_valid : 1;
+    UW live_sonar_status : 3;
+    UW turning_rampup_count : 6; // 0..51 (51 means ramp already sent).
+    UW last_decoded_char : 7;
+    UW last_obstacle_dist_cm : 9;
+    UW last_closest_cm : 9;
+    W last_closest_angle_deg : 7;
+    UW live_sonar_distance_cm : 9;
+} NAVIGATOR_STATE;
+
+/* Five route directions occupy 15 bits. Out-of-range reads mean no instruction. */
+typedef struct { UB bits[(NUMBER_OF_COMMANDS * 3U + 7U) / 8U]; } PACKED_ROUTE;
+static inline DIRECTION route_get(const PACKED_ROUTE *route, UINT index)
+{
+    return index < NUMBER_OF_COMMANDS ? (DIRECTION)robot_bits_get(route->bits, index * 3U, 3U) : DIR_INVALID;
+}
+static inline void route_set(PACKED_ROUTE *route, UINT index, DIRECTION direction)
+{
+    if (index < NUMBER_OF_COMMANDS && direction <= DIR_INVALID)
+        robot_bits_set(route->bits, index * 3U, 3U, direction);
+}
+
+_Static_assert(sizeof(OBSTACLE_WIDTH_SCAN) == 7, "width edge brackets packing");
+_Static_assert(sizeof(OBSTACLE_WIDTH) == 2, "width result packing");
+_Static_assert(sizeof(OBSTACLE_PROFILE) == 33, "obstacle profile packing");
+_Static_assert(sizeof(NAVIGATOR_MESSAGE) == 34, "navigator envelope packing");
+_Static_assert(sizeof(TELEMETRY_SNAPSHOT) == 32, "telemetry packing");
+_Static_assert(BYPASS_MAX_SIDE_MM <= 2047U && BYPASS_MAX_FORWARD_MM <= 4095U, "bypass travel bit widths");
+_Static_assert(NUMBER_OF_COMMANDS <= 7 && TURNING_RAMPUP_LIMIT < 63, "navigator counter bit widths");
+_Static_assert(sizeof(MOTOR_COMMAND) == 4, "motor command ABI");
+_Static_assert(sizeof(SONAR_DISTANCE_MSG) == 2, "sonar distance packing");
+_Static_assert(sizeof(SONAR_PROBE_RESULT) == 7, "sonar probe packing");
+_Static_assert(sizeof(IMU_TELEMETRY_MSG) == 6, "IMU message packing");
 
 IMPORT void navigator_task(INT stacd, void *exinf);
 

@@ -38,8 +38,7 @@ In a second PowerShell window, use the PC's LAN IPv4 address or hotspot IP
 (for example, `192.168.137.1`):
 
 ```powershell
-python .\mqtt_test_server.py `
-  --host 192.168.137.1 `
+python .\mqtt_test_server.py --host 192.168.137.1 `
   --port 1883
 ```
 
@@ -52,9 +51,8 @@ sensor telemetry from the Pico W's `/api/telemetry` endpoint.
 Map barcode keys to navigation actions with `--movement-config`:
 
 ```powershell
-python .\mqtt_test_server.py `
-  --host 127.0.0.1 `
-  --movement-config '{"Z":"MOVE_FORWARD","B":"STOP","C":"TURN_LEFT","D":"TURN_RIGHT"}'
+python .\mqtt_test_server.py  --host 127.0.0.1 `
+  --movement-config '{"A":"MOVE_FORWARD","B":"STOP","F":"TURN_LEFT","Z":"TURN_RIGHT"}'
 ```
 
 Supported actions are:
