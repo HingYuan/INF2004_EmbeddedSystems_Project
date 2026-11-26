@@ -148,12 +148,7 @@ The normal startup mode is `MODE_WIFI_SEND_COMMS`, not immediate line following.
 
 Integration records: [testing/integration/TEST_LOG.md](testing/integration/TEST_LOG.md).
 System records: [testing/system/TEST_LOG.md](testing/system/TEST_LOG.md).
-All seven registers were formatted and extended on 26 November 2026. Saved automated
-results identify `2f19d6b`; the implementation inventory above retains its older snapshot.
-Physical execution is team-reported; no case-specific measured results were supplied.
-Additional test cases specify planned inputs and expected outcomes, not completed runs.
-The test register's nine interface IDs differ from the thirteen IDs here; match interfaces
-by endpoints and payloads, not by number alone.
+
 
 ## 6. Kernel object budget
 
