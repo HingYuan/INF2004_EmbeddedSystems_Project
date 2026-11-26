@@ -10,6 +10,8 @@
 #ifndef DEMO_TASKS_H
 #define DEMO_TASKS_H
 
+#include <stddef.h>
+
 #include <tk/tkernel.h>
 
 /**

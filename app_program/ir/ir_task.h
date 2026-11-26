@@ -11,6 +11,7 @@
 #ifndef IR_TASK_H
 #define IR_TASK_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <tk/tkernel.h>

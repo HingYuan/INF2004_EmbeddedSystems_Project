@@ -17,6 +17,7 @@
 #define NAVIGATOR_TASK_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <tk/tkernel.h>
@@ -435,7 +436,7 @@ void navigator_task_set_imu_state(uint8_t imu_state);
 
 /**
  * @brief Atomically update IMU pitch, roll, heading, and optional state.
- * @param[in] pitch_ddeg         Pitch angle in tenths of a degree (-1800..1800).
+ * @param[in] pitch_ddeg         Pitch in tenths of a degree (-1800..1800).
  * @param[in] roll_ddeg          Roll angle in tenths of a degree (-1800..1800).
  * @param[in] heading_deg        Compass heading in degrees (0..359).
  * @param[in] b_should_set_state True to also update imu_state.

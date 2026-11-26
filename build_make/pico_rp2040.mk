@@ -267,6 +267,9 @@ CFLAGS := -mcpu=cortex-m0plus -mthumb -ffreestanding\
     -MMD -MP \
     -mfloat-abi=soft \
 
+# The Pico SDK already defines size_t through its standard headers.
+CFLAGS += -DPROHIBIT_DEF_SIZE_T
+
 ASFLAGS := -mcpu=cortex-m0plus -mthumb -ffreestanding\
     -x assembler-with-cpp \
     -O2 -g3 \

@@ -5,11 +5,17 @@
  * NOTE: See docs/fsm_diagrams.md for Navigator and Bypass FSM diagrams.
  * WARNING: Intersection advance/turn timings (250 ms, 900 ms, 30 ms, 50 ms)
  * are empirically tuned for chassis speed and wheel friction.
+ *
+ * BARR-C Deviation (Rule 5.2.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: uT-Kernel task, message-buffer, event-flag, and console APIs
+ *   require native RTOS typedefs (INT, UINT, ID, TMO, UB).
  */
 
 #include "navigator_task.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <tm/tmonitor.h>
@@ -28,31 +34,43 @@
 #define NAV_TURN_SETTLE_DELAY_MSEC      (50u)
 #define NAV_TURN_STOP_DELAY_MSEC        (50u)
 #define NAV_ROTATIONS_BIT_WIDTH         (3u)
+#define NAV_ROUTE_ENTRY_BITS            (3u)
+#define NAV_RAY_DIST_BITS               (9u)
+#define NAV_RAY_STATUS_BITS             (3u)
+#define NAV_RAY_TOTAL_BITS              (12u)
+#define NAV_RAY_MAX_CM                  (511u)
 #define NAV_SONAR_CENTER_RAY            (3u)
 #define NAV_SONAR_MIN_CM                (2u)
 #define NAV_SONAR_MAX_CM                (400u)
 #define NAV_REENTRY_BLACK_REQ           (2u)
 #define NAV_HUMP_MIN_WHEEL_SPD          (10)
 #define NAV_HUMP_ROLL_THRESH            (10)
+#define NAV_TENTHS_DIVISOR              (10)
+#define NAV_MM_PER_CM_U32               (10u)
+#define NAV_USEC_PER_MSEC               (1000u)
 #define NAV_TRACK_ANGLE_DEG             (45)
+#define NAV_MAP_DIR_SHIFT               (7u)
+#define NAV_MAP_CHAR_MASK               (0x007Fu)
+#define NAV_TURN_SINGLE_ROT             (1)
+#define NAV_TURN_DOUBLE_ROT             (2)
 #define NAV_ASCII_LOWER_A               ((uint8_t)'a')
 #define NAV_ASCII_LOWER_Z               ((uint8_t)'z')
 #define NAV_ASCII_CASE_DELTA            (32u)
 
 typedef struct ROBOT_TASKS_PACKED
 {
-    uint32_t m_mode                  : 4;
+    uint32_t mode                    : 4;
     uint32_t prev_ir_state           : 3;
-    uint32_t b_reentry               : 1;
+    uint32_t b_is_reentry            : 1;
     uint32_t reentry_dir             : 3;
     uint32_t instruction_idx         : 3;
     uint32_t instruction_idx_barcode : 3;
     uint32_t mapping_increment       : 3;
     uint32_t num_rotations_raw       : 3;
-    uint32_t b_hump_pop              : 1;
+    uint32_t b_has_hump_pop          : 1;
     uint32_t spam_mitigation         : 4;
-    uint32_t b_scan_requested        : 1;
-    uint32_t b_live_sonar_valid      : 1;
+    uint32_t b_is_scan_req           : 1;
+    uint32_t b_is_sonar_valid        : 1;
     uint32_t live_sonar_status       : 3;
     uint32_t turning_rampup_cnt      : 6;
     uint32_t last_decoded_char       : 7;
@@ -64,66 +82,255 @@ typedef struct ROBOT_TASKS_PACKED
 
 typedef struct
 {
-    navigator_task_state_t       nav;
-    motor_task_cmd_t             mot_cmd;
-    uint8_t                      barcode_chars[NAV_NUMBER_OF_COMMANDS];
-    navigator_task_route_t       barcode_insts;
-    navigator_task_route_t       instructions;
-    navigator_task_width_t       measured_width;
-    navigator_task_bypass_ctx_t  bypass;
+    navigator_task_state_t      nav;
+    motor_task_cmd_t            mot_cmd;
+    uint8_t                     barcode_chars[NAV_NUMBER_OF_COMMANDS];
+    navigator_task_route_t      barcode_insts;
+    navigator_task_route_t      instructions;
+    navigator_task_width_t      measured_width;
+    navigator_task_bypass_ctx_t bypass;
 } navigator_task_ctx_t;
 
+ROBOT_TASKS_STATIC_ASSERT(
+    nav_ray_bits,
+    (NAV_RAY_TOTAL_BITS == (NAV_RAY_DIST_BITS + NAV_RAY_STATUS_BITS)));
+ROBOT_TASKS_STATIC_ASSERT(nav_width_scan_size,
+                          (7u == sizeof(navigator_task_width_scan_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_width_size,
+                          (2u == sizeof(navigator_task_width_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_obs_profile_size,
+                          (33u == sizeof(navigator_task_obs_profile_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_bypass_ctx_size,
+                          (68u == sizeof(navigator_task_bypass_ctx_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_sonar_probe_size,
+                          (7u == sizeof(navigator_task_sonar_probe_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_imu_msg_size,
+                          (6u == sizeof(navigator_task_imu_msg_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_sonar_dist_size,
+                          (2u == sizeof(navigator_task_sonar_dist_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_msg_size,
+                          (34u == sizeof(navigator_task_msg_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_telem_size,
+                          (32u == sizeof(navigator_task_telemetry_t)));
+ROBOT_TASKS_STATIC_ASSERT(nav_route_size,
+                          (2u == sizeof(navigator_task_route_t)));
 ROBOT_TASKS_STATIC_ASSERT(nav_state_size,
                           (10u == sizeof(navigator_task_state_t)));
 
 static volatile navigator_task_telemetry_t g_telemetry_snapshot = { 0u };
 
-static void nav_clear_mbf (void);
-static void nav_drive_wheels (motor_task_cmd_t * p_cmd,
-                              int8_t left_spd,
-                              int8_t right_spd);
-static void nav_handle_wifi_comms (navigator_task_ctx_t * p_ctx,
-                                   const navigator_task_msg_t * p_msg);
-static void nav_handle_line_ramp (navigator_task_ctx_t * p_ctx,
-                                  navigator_task_ir_state_t curr_state);
-static void nav_handle_line_ir (navigator_task_ctx_t * p_ctx,
-                                navigator_task_ir_state_t curr_state);
-static void nav_handle_line_following (navigator_task_ctx_t * p_ctx,
-                                       const navigator_task_msg_t * p_msg);
-static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
-                             const navigator_task_msg_t * p_msg);
-static void nav_handle_decision_advance (navigator_task_ctx_t * p_ctx);
-static void nav_start_turn_decision (navigator_task_ctx_t * p_ctx,
-                                     navigator_task_dir_t decision);
-static void nav_step_turn_progress (navigator_task_ctx_t * p_ctx,
-                                    navigator_task_ir_state_t curr_state,
-                                    navigator_task_dir_t decision);
-static void nav_handle_decision_turn (navigator_task_ctx_t * p_ctx,
+static void nav_clear_mbf(void);
+static void nav_drive_wheels(motor_task_cmd_t * p_cmd,
+                             int8_t left_spd,
+                             int8_t right_spd);
+static void nav_handle_wifi_comms(navigator_task_ctx_t * p_ctx,
+                                  const navigator_task_msg_t * p_msg);
+static void nav_handle_line_ramp(navigator_task_ctx_t * p_ctx,
+                                 navigator_task_ir_state_t curr_state);
+static void nav_handle_line_ir(navigator_task_ctx_t * p_ctx,
+                               navigator_task_ir_state_t curr_state);
+static void nav_begin_obstacle_assess(navigator_task_ctx_t * p_ctx,
+                                      uint16_t obs_dist_cm);
+static void nav_handle_line_following(navigator_task_ctx_t * p_ctx,
                                       const navigator_task_msg_t * p_msg);
-static void nav_handle_assess_profile (
+static void nav_handle_hump(navigator_task_ctx_t * p_ctx,
+                            const navigator_task_msg_t * p_msg);
+static void nav_handle_decision_advance(navigator_task_ctx_t * p_ctx);
+static void nav_start_turn_decision(navigator_task_ctx_t * p_ctx,
+                                    navigator_task_dir_t decision);
+static void nav_step_turn_progress(navigator_task_ctx_t * p_ctx,
+                                   navigator_task_ir_state_t curr_state,
+                                   navigator_task_dir_t decision);
+static void nav_handle_decision_turn(navigator_task_ctx_t * p_ctx,
+                                     const navigator_task_msg_t * p_msg);
+static void nav_handle_assess_profile(
     navigator_task_ctx_t * p_ctx,
     const navigator_task_obs_profile_t * p_prof);
-static void nav_handle_assess_move_done (navigator_task_ctx_t * p_ctx);
-static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
-                                        const navigator_task_msg_t * p_msg);
-static void nav_wall_handle_turn_in (navigator_task_ctx_t * p_ctx);
-static void nav_wall_dispatch_phase (navigator_task_ctx_t * p_ctx);
-static void nav_handle_wall_move_done (navigator_task_ctx_t * p_ctx);
-static void nav_finish_line_reentry (navigator_task_ctx_t * p_ctx);
-static void nav_handle_wall_ir (navigator_task_ctx_t * p_ctx,
-                                navigator_task_ir_state_t curr_state);
-static void nav_handle_wall_track (
+static void nav_handle_assess_move_done(navigator_task_ctx_t * p_ctx);
+static void nav_handle_obstacle_assess(navigator_task_ctx_t * p_ctx,
+                                       const navigator_task_msg_t * p_msg);
+static void nav_wall_handle_turn_in(navigator_task_ctx_t * p_ctx);
+static void nav_wall_dispatch_width_leg(navigator_task_ctx_t * p_ctx,
+                                        int32_t side);
+static void nav_wall_dispatch_phase(navigator_task_ctx_t * p_ctx);
+static void nav_handle_wall_move_done(navigator_task_ctx_t * p_ctx);
+static void nav_finish_line_reentry(navigator_task_ctx_t * p_ctx);
+static void nav_handle_wall_ir(navigator_task_ctx_t * p_ctx,
+                               navigator_task_ir_state_t curr_state);
+static void nav_handle_wall_track(
     navigator_task_ctx_t * p_ctx,
     const navigator_task_sonar_probe_t * p_probe);
-static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
-                                     const navigator_task_msg_t * p_msg);
-static void nav_dispatch_mode (navigator_task_ctx_t * p_ctx,
-                               const navigator_task_msg_t * p_msg);
-static void nav_process_message (navigator_task_ctx_t * p_ctx,
-                                 const navigator_task_msg_t * p_msg,
-                                 bool b_bypass_active);
-static void nav_publish_telemetry (const navigator_task_ctx_t * p_ctx,
-                                   bool b_bypass_active);
+static void nav_handle_wall_hugging(navigator_task_ctx_t * p_ctx,
+                                    const navigator_task_msg_t * p_msg);
+static void nav_dispatch_mode(navigator_task_ctx_t * p_ctx,
+                              const navigator_task_msg_t * p_msg);
+static void nav_process_message(navigator_task_ctx_t * p_ctx,
+                                const navigator_task_msg_t * p_msg,
+                                bool b_is_bypass_active);
+static void nav_publish_telemetry(const navigator_task_ctx_t * p_ctx,
+                                  bool b_is_bypass_active);
+
+/**
+ * @brief Read one sonar ray distance from a packed obstacle profile.
+ * @param[in] p_profile Obstacle profile structure.
+ * @param[in] ray_idx   Ray index (0..6).
+ * @return Distance in cm (0..511).
+ */
+uint32_t navigator_task_get_ray_cm (
+    const navigator_task_obs_profile_t * p_profile,
+    uint32_t ray_idx)
+{
+    uint32_t dist_cm = 0u;
+
+    if ((NULL != p_profile) && (ray_idx < SONAR_PROFILE_RAYS))
+    {
+        dist_cm = robot_tasks_bits_get(p_profile->rays,
+                                       ray_idx * NAV_RAY_TOTAL_BITS,
+                                       NAV_RAY_DIST_BITS);
+    }
+
+    return dist_cm;
+}
+
+/**
+ * @brief Read one sonar ray status code from a packed obstacle profile.
+ * @param[in] p_profile Obstacle profile structure.
+ * @param[in] ray_idx   Ray index (0..6).
+ * @return Ultrasonic status enum value.
+ */
+ultrasonic_task_status_t navigator_task_get_ray_status (
+    const navigator_task_obs_profile_t * p_profile,
+    uint32_t ray_idx)
+{
+    ultrasonic_task_status_t status = SONAR_INVALID;
+
+    if ((NULL != p_profile) && (ray_idx < SONAR_PROFILE_RAYS))
+    {
+        uint32_t raw_st = robot_tasks_bits_get(
+            p_profile->rays,
+            (ray_idx * NAV_RAY_TOTAL_BITS) + NAV_RAY_DIST_BITS,
+            NAV_RAY_STATUS_BITS);
+
+        /* Convert 3-bit stored ultrasonic status code to enum value. */
+        status = (ultrasonic_task_status_t)raw_st;
+    }
+
+    return status;
+}
+
+/**
+ * @brief Store one sonar ray distance and status in a packed obstacle profile.
+ * @param[in,out] p_profile Obstacle profile structure.
+ * @param[in]     ray_idx   Ray index (0..6).
+ * @param[in]     dist_cm   Measured distance in cm (0..511).
+ * @param[in]     status    Ultrasonic status enum value.
+ */
+void navigator_task_set_ray (navigator_task_obs_profile_t * p_profile,
+                             uint32_t ray_idx,
+                             uint32_t dist_cm,
+                             ultrasonic_task_status_t status)
+{
+    if ((NULL != p_profile) && (ray_idx < SONAR_PROFILE_RAYS))
+    {
+        uint32_t clamped_cm = (dist_cm > NAV_RAY_MAX_CM)
+                              ? NAV_RAY_MAX_CM
+                              : dist_cm;
+        uint32_t bit_base   = ray_idx * NAV_RAY_TOTAL_BITS;
+
+        robot_tasks_bits_set(p_profile->rays,
+                             bit_base,
+                             NAV_RAY_DIST_BITS,
+                             clamped_cm);
+        /* Store 3-bit ultrasonic status enum in upper ray bits. */
+        robot_tasks_bits_set(p_profile->rays,
+                             bit_base + NAV_RAY_DIST_BITS,
+                             NAV_RAY_STATUS_BITS,
+                             (uint32_t)status);
+    }
+}
+
+/**
+ * @brief Read a packed 3-bit route direction entry.
+ * @param[in] p_route   Packed route array.
+ * @param[in] route_idx Zero-based route step index.
+ * @return Stored direction, or DIR_INVALID if index is out of range.
+ */
+navigator_task_dir_t navigator_task_get_route (
+    const navigator_task_route_t * p_route,
+    uint32_t route_idx)
+{
+    navigator_task_dir_t dir = DIR_INVALID;
+
+    if ((NULL != p_route) && (route_idx < NAV_NUMBER_OF_COMMANDS))
+    {
+        uint32_t raw_dir =
+            robot_tasks_bits_get(p_route->bits,
+                                 route_idx * NAV_ROUTE_ENTRY_BITS,
+                                 NAV_ROUTE_ENTRY_BITS);
+
+        /* Validate 3-bit route value lies within navigator_task_dir_t enum. */
+        if (raw_dir <= (uint32_t)DIR_INVALID)
+        {
+            /* Convert validated 3-bit route code to direction enum. */
+            dir = (navigator_task_dir_t)raw_dir;
+        }
+    }
+
+    return dir;
+}
+
+/**
+ * @brief Store a packed 3-bit route direction entry.
+ * @param[in,out] p_route   Packed route array.
+ * @param[in]     route_idx Zero-based route step index.
+ * @param[in]     dir       Direction enum value to store.
+ */
+void navigator_task_set_route (navigator_task_route_t * p_route,
+                               uint32_t route_idx,
+                               navigator_task_dir_t dir)
+{
+    if ((NULL != p_route) && (route_idx < NAV_NUMBER_OF_COMMANDS))
+    {
+        /* Pack 3-bit route direction enum into byte-backed bit array. */
+        robot_tasks_bits_set(p_route->bits,
+                             route_idx * NAV_ROUTE_ENTRY_BITS,
+                             NAV_ROUTE_ENTRY_BITS,
+                             (uint32_t)dir);
+    }
+}
+
+/**
+ * @brief Read signed bypass detour side (+1 left, -1 right, 0 unset).
+ * @param[in] p_bypass Bypass context structure.
+ * @return Signed side indicator (-1, 0, or +1).
+ */
+int32_t navigator_task_get_side (const navigator_task_bypass_ctx_t * p_bypass)
+{
+    int32_t side_val = 0;
+
+    if (NULL != p_bypass)
+    {
+        side_val = robot_tasks_sign_extend(p_bypass->side_raw,
+                                           NAV_SIDE_BIT_WIDTH);
+    }
+
+    return side_val;
+}
+
+/**
+ * @brief Set signed bypass detour side (+1 left, -1 right, 0 unset).
+ * @param[in,out] p_bypass Bypass context structure.
+ * @param[in]     side_val Signed side indicator (-1, 0, or +1).
+ */
+void navigator_task_set_side (navigator_task_bypass_ctx_t * p_bypass,
+                              int32_t side_val)
+{
+    if (NULL != p_bypass)
+    {
+        p_bypass->side_raw = robot_tasks_pack_signed(side_val,
+                                                     NAV_SIDE_BIT_WIDTH);
+    }
+}
 
 /**
  * @brief Copy the latest telemetry snapshot under the shared data lock.
@@ -144,6 +351,7 @@ void navigator_task_read_telem (navigator_task_telemetry_t * p_snapshot)
 uint8_t navigator_task_get_imu_event (void)
 {
     UINT    saved_state = robot_tasks_data_lock();
+    /* Range-safe: imu_event is a 2-bit unsigned field (0..3). */
     uint8_t event_val   = (uint8_t)g_telemetry_snapshot.imu_event;
 
     robot_tasks_data_unlock(saved_state);
@@ -168,20 +376,20 @@ int16_t navigator_task_get_heading (void)
 
 /**
  * @brief Update live ultrasonic distance fields in shared telemetry.
- * @param[in] b_valid True if distance reading is valid.
- * @param[in] status  Ultrasonic status enum value.
- * @param[in] dist_cm Distance in cm (zeroed when invalid).
+ * @param[in] b_is_valid True if distance reading is valid.
+ * @param[in] status     Ultrasonic status enum value.
+ * @param[in] dist_cm    Distance in cm (zeroed when invalid).
  */
-void navigator_task_set_sonar_telem (bool b_valid,
+void navigator_task_set_sonar_telem (bool b_is_valid,
                                      uint8_t status,
                                      uint32_t dist_cm)
 {
     UINT saved_state = robot_tasks_data_lock();
 
-    g_telemetry_snapshot.obs_dist_valid = b_valid ? 1u : 0u;
-    g_telemetry_snapshot.obs_status     = status;
+    g_telemetry_snapshot.b_is_obs_dist_valid = b_is_valid ? 1u : 0u;
+    g_telemetry_snapshot.obs_status          = status;
     /* Range-safe: valid ultrasonic distances are in 0..400 cm (9 bits). */
-    g_telemetry_snapshot.obs_dist_cm    = b_valid ? ((uint16_t)dist_cm) : 0u;
+    g_telemetry_snapshot.obs_dist_cm = b_is_valid ? ((uint16_t)dist_cm) : 0u;
     robot_tasks_data_unlock(saved_state);
 }
 
@@ -224,30 +432,32 @@ void navigator_task_set_imu_state (uint8_t imu_state)
 
 /**
  * @brief Atomically update IMU pitch, roll, heading, and optional state.
- * @param[in] pitch_ddeg  Pitch angle in tenths of a degree (-1800..1800).
- * @param[in] roll_ddeg   Roll angle in tenths of a degree (-1800..1800).
- * @param[in] heading_deg Compass heading in degrees (0..359).
- * @param[in] b_set_state True to also update imu_state.
- * @param[in] imu_state   IMU state enum value when b_set_state is true.
+ * @param[in] pitch_ddeg         Pitch in tenths of a degree (-1800..1800).
+ * @param[in] roll_ddeg          Roll angle in tenths of a degree (-1800..1800).
+ * @param[in] heading_deg        Compass heading in degrees (0..359).
+ * @param[in] b_should_set_state True to also update imu_state.
+ * @param[in] imu_state          IMU state enum when b_should_set_state is true.
  */
 void navigator_task_set_imu_pose (int16_t pitch_ddeg,
                                   int16_t roll_ddeg,
                                   int16_t heading_deg,
-                                  bool b_set_state,
+                                  bool b_should_set_state,
                                   uint8_t imu_state)
 {
     UINT saved_state = robot_tasks_data_lock();
 
+    /* Narrow 12-bit packed signed pitch into uint16_t bit-field. */
     g_telemetry_snapshot.pitch_ddeg_raw =
         (uint16_t)robot_tasks_pack_signed((int32_t)pitch_ddeg,
                                           NAV_TILT_BIT_WIDTH);
-    g_telemetry_snapshot.roll_ddeg_raw =
+    /* Narrow 12-bit packed signed roll into uint16_t bit-field. */
+    g_telemetry_snapshot.roll_ddeg_raw  =
         (uint16_t)robot_tasks_pack_signed((int32_t)roll_ddeg,
                                           NAV_TILT_BIT_WIDTH);
     /* Range-safe: heading_deg is normalized to [0, 359]. */
-    g_telemetry_snapshot.heading_deg = (uint16_t)heading_deg;
+    g_telemetry_snapshot.heading_deg    = (uint16_t)heading_deg;
 
-    if (b_set_state)
+    if (b_should_set_state)
     {
         g_telemetry_snapshot.imu_state = imu_state;
     }
@@ -269,15 +479,17 @@ void navigator_task_set_imu_stop (int16_t pitch_ddeg,
 {
     UINT saved_state = robot_tasks_data_lock();
 
+    /* Narrow 12-bit packed signed pitch into uint16_t bit-field. */
     g_telemetry_snapshot.pitch_ddeg_raw =
         (uint16_t)robot_tasks_pack_signed((int32_t)pitch_ddeg,
                                           NAV_TILT_BIT_WIDTH);
-    g_telemetry_snapshot.roll_ddeg_raw =
+    /* Narrow 12-bit packed signed roll into uint16_t bit-field. */
+    g_telemetry_snapshot.roll_ddeg_raw  =
         (uint16_t)robot_tasks_pack_signed((int32_t)roll_ddeg,
                                           NAV_TILT_BIT_WIDTH);
-    g_telemetry_snapshot.height_dmm = 0u;
-    g_telemetry_snapshot.imu_state  = imu_state;
-    g_telemetry_snapshot.imu_event  = imu_event;
+    g_telemetry_snapshot.height_dmm     = 0u;
+    g_telemetry_snapshot.imu_state      = imu_state;
+    g_telemetry_snapshot.imu_event      = imu_event;
     robot_tasks_data_unlock(saved_state);
 }
 
@@ -286,24 +498,31 @@ void navigator_task_set_imu_stop (int16_t pitch_ddeg,
  * @param[in] stacd   Task start code (unused).
  * @param[in] p_exinf Extended task information pointer (unused).
  */
-void navigator_task (INT stacd, void * p_exinf)
+void navigator_task_run_task (INT stacd, void * p_exinf)
 {
-    navigator_task_ctx_t ctx   = { 0 };
-    bool                 b_run = true;
+    navigator_task_ctx_t ctx          = { 0 };
+    bool                 b_is_running = true;
 
+    /* Explicitly ignore unused RTOS task entry start code. */
     (void)stacd;
+    /* Explicitly ignore unused RTOS extended info pointer. */
     (void)p_exinf;
 
-    ctx.nav.m_mode            = (uint32_t)MODE_WIFI_SEND_COMMS;
+    /* Store initial Wi-Fi mapping wait mode in 4-bit unsigned field. */
+    ctx.nav.mode              = (uint32_t)MODE_WIFI_SEND_COMMS;
+    /* Store IR_STATE_NULL sentinel in 3-bit previous IR field. */
     ctx.nav.prev_ir_state     = (uint32_t)IR_STATE_NULL;
+    /* Store DIR_FRONT default in 3-bit re-entry direction field. */
     ctx.nav.reentry_dir       = (uint32_t)DIR_FRONT;
+    /* Store SONAR_INVALID initial status in 3-bit sonar status field. */
     ctx.nav.live_sonar_status = (uint32_t)SONAR_INVALID;
 
     for (uint32_t idx = 0u; idx < NAV_NUMBER_OF_COMMANDS; idx++)
     {
-        navigator_task_route_set(&ctx.instructions, idx, DIR_INVALID);
+        navigator_task_set_route(&ctx.instructions, idx, DIR_INVALID);
     }
 
+    /* Allow peripheral tasks to finish hardware startup before draining MBF. */
     (void)tk_dly_tsk(NAV_STARTUP_GRACE_MSEC);
     nav_clear_mbf();
 
@@ -313,48 +532,52 @@ void navigator_task (INT stacd, void * p_exinf)
         (!mqtt_client_codec_check()))
     {
         robot_tasks_flag_assign(ROBOT_ESTOP_REQUEST, true);
+        /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
         tm_printf((UB *)"[bypass] Self-check failed\n");
-        b_run = false;
+        b_is_running = false;
     }
 #endif
 
-    while (b_run)
+    while (b_is_running)
     {
-        navigator_task_msg_t nav_msg  = { 0 };
-        bool b_bypass_active =
-            (((uint32_t)MODE_OBSTACLE_ASSESS == ctx.nav.m_mode) ||
-             ((uint32_t)MODE_WALL_HUGGING == ctx.nav.m_mode));
-        TMO wait_tmo = b_bypass_active ? ((TMO)BYPASS_POLL_MSEC) : TMO_FEVR;
-        INT msg_size = tk_rcv_mbf(robot_tasks_get_nav_mbf(),
-                                  (void *)&nav_msg,
-                                  wait_tmo);
+        navigator_task_msg_t nav_msg            = { 0 };
+        /* Check whether active mode requires 20 ms bypass watchdog polling. */
+        bool                 b_is_bypass_active =
+            (((uint32_t)MODE_OBSTACLE_ASSESS == ctx.nav.mode) ||
+             ((uint32_t)MODE_WALL_HUGGING == ctx.nav.mode));
+        /* Cast 20 ms bypass poll interval to RTOS TMO timeout parameter. */
+        TMO                  wait_tmo           =
+            b_is_bypass_active ? ((TMO)BYPASS_POLL_MSEC) : TMO_FEVR;
+        INT                  msg_size           =
+            tk_rcv_mbf(robot_tasks_get_nav_mbf(), &nav_msg, wait_tmo);
 
-        if (b_bypass_active && (E_TMOUT == msg_size))
+        if ((b_is_bypass_active) && (E_TMOUT == msg_size))
         {
+            /* Synthesize periodic MSG_BYPASS_TICK in 4-bit message field. */
             nav_msg.type = (uint32_t)MSG_BYPASS_TICK;
+            /* Set synthetic message byte count to full Navigator msg size. */
             msg_size     = (INT)sizeof(nav_msg);
         }
 
-        if (b_bypass_active &&
-            (bypass_helpers_has_hw_fault() ||
-             (motor_task_is_estop() && (0u == ctx.bypass.owns_obs_stop)) ||
+        if ((b_is_bypass_active) &&
+            ((bypass_helpers_has_hw_fault()) ||
+             ((motor_task_is_estop()) &&
+              (0u == ctx.bypass.b_owns_obs_stop)) ||
              ((msg_size < E_OK) && (E_TMOUT != msg_size))))
         {
             bypass_helpers_abort(&ctx.bypass,
                                  &ctx.mot_cmd,
                                  "hardware or Navigator receive fault");
-            ctx.nav.m_mode  = (uint32_t)MODE_SAFE_STOP;
-            b_bypass_active = false;
+            /* Latch Navigator mode to MODE_SAFE_STOP after bypass abort. */
+            ctx.nav.mode       = (uint32_t)MODE_SAFE_STOP;
+            b_is_bypass_active = false;
         }
 
-        if ((INT)sizeof(navigator_task_msg_t) != msg_size)
+        /* Process message only when full 34-byte Navigator struct arrived. */
+        if ((INT)sizeof(navigator_task_msg_t) == msg_size)
         {
-            /* Unexpected RTOS message buffer error or partial read. */
-        }
-        else
-        {
-            nav_process_message(&ctx, &nav_msg, b_bypass_active);
-            nav_publish_telemetry(&ctx, b_bypass_active);
+            nav_process_message(&ctx, &nav_msg, b_is_bypass_active);
+            nav_publish_telemetry(&ctx, b_is_bypass_active);
         }
     }
 }
@@ -388,8 +611,9 @@ static void nav_drive_wheels (motor_task_cmd_t * p_cmd,
     p_cmd->fields.turn_ticks_left    = 0u;
     p_cmd->fields.turn_ticks_right   = 0u;
 
+    /* Cast 4-byte motor command union size to RTOS INT message size. */
     (void)tk_snd_mbf(robot_tasks_get_motor_mbf(),
-                     (void *)p_cmd,
+                     p_cmd,
                      (INT)sizeof(motor_task_cmd_t),
                      TMO_FEVR);
 }
@@ -403,26 +627,33 @@ static void nav_handle_wifi_comms (navigator_task_ctx_t * p_ctx,
                                    const navigator_task_msg_t * p_msg)
 {
     p_ctx->nav.instruction_idx = 0u;
+    /* Fit zero stop speed constants into signed 8-bit wheel targets. */
     nav_drive_wheels(&p_ctx->mot_cmd,
                      (int8_t)NAV_STOP_SPEED,
                      (int8_t)NAV_STOP_SPEED);
 
+    /* Convert 4-bit message type field to enum for dispatch. */
     switch ((navigator_task_msg_type_t)p_msg->type)
     {
         case MSG_WIFI_BARCODE_MAPPING:
         {
+            /* Widen 16-bit packed mapping payload to uint32_t for shifts. */
             uint32_t             raw_map = (uint32_t)p_msg->data.packed_mapping;
+            /* Extract 3-bit route direction enum from bits 7..9. */
             navigator_task_dir_t dir     =
-                (navigator_task_dir_t)(raw_map >> 7u);
+                (navigator_task_dir_t)(raw_map >> NAV_MAP_DIR_SHIFT);
             /* Range-safe: low 7 bits hold ASCII character 0..127. */
-            uint8_t code_ch = (uint8_t)(raw_map & 0x007Fu);
+            uint8_t              code_ch =
+                (uint8_t)(raw_map & NAV_MAP_CHAR_MASK);
 
             if ((code_ch >= NAV_ASCII_LOWER_A) &&
                 (code_ch <= NAV_ASCII_LOWER_Z))
             {
+                /* Fold lowercase ASCII 'a'..'z' to uppercase 'A'..'Z'. */
                 code_ch = (uint8_t)(code_ch - NAV_ASCII_CASE_DELTA);
             }
 
+            /* Cast format literal, ASCII char, and direction to UB* and INT. */
             tm_printf((UB *)"[nav] mapping received: %c -> %d\n",
                       (INT)code_ch,
                       (INT)dir);
@@ -431,14 +662,15 @@ static void nav_handle_wifi_comms (navigator_task_ctx_t * p_ctx,
                 (dir <= DIR_STOP))
             {
                 p_ctx->barcode_chars[p_ctx->nav.mapping_increment] = code_ch;
-                navigator_task_route_set(&p_ctx->barcode_insts,
+                navigator_task_set_route(&p_ctx->barcode_insts,
                                          p_ctx->nav.mapping_increment,
                                          dir);
                 p_ctx->nav.mapping_increment++;
 
                 if (p_ctx->nav.mapping_increment >= NAV_NUMBER_OF_COMMANDS)
                 {
-                    p_ctx->nav.m_mode = (uint32_t)MODE_LINE_FOLLOWING;
+                    /* Advance 4-bit Navigator mode to line following. */
+                    p_ctx->nav.mode = (uint32_t)MODE_LINE_FOLLOWING;
                 }
             }
         }
@@ -466,9 +698,11 @@ static void nav_handle_line_ramp (navigator_task_ctx_t * p_ctx,
 
         if (NAV_TURNING_RAMPUP_LIMIT == p_ctx->nav.turning_rampup_cnt)
         {
+            /* Fit ramped left PWM speed constants into int8_t target. */
             int8_t left_pwr  = (IR_STATE_B_W == curr_state)
                                ? (int8_t)NAV_LEFT_TURN_L_RAMP
                                : (int8_t)NAV_RIGHT_TURN_L_RAMP;
+            /* Fit ramped right PWM speed constants into int8_t target. */
             int8_t right_pwr = (IR_STATE_B_W == curr_state)
                                ? (int8_t)(-NAV_LEFT_TURN_R_RAMP)
                                : (int8_t)(-NAV_RIGHT_TURN_R_RAMP);
@@ -487,37 +721,44 @@ static void nav_handle_line_ramp (navigator_task_ctx_t * p_ctx,
 static void nav_handle_line_ir (navigator_task_ctx_t * p_ctx,
                                 navigator_task_ir_state_t curr_state)
 {
-    bool b_reentry_hit = ((0u != p_ctx->nav.b_reentry) &&
-                          (IR_STATE_W_W != curr_state) &&
-                          (IR_STATE_NULL != curr_state));
+    bool b_is_reentry_hit = ((0u != p_ctx->nav.b_is_reentry) &&
+                             (IR_STATE_W_W != curr_state) &&
+                             (IR_STATE_NULL != curr_state));
 
-    if (b_reentry_hit)
+    if (b_is_reentry_hit)
     {
+        /* Seed B_B previous state in 3-bit field to trigger reentry pivot. */
         p_ctx->nav.prev_ir_state      = (uint32_t)IR_STATE_B_B;
         p_ctx->nav.num_rotations_raw  = 0u;
         p_ctx->nav.turning_rampup_cnt = 0u;
-        p_ctx->nav.m_mode             = (uint32_t)MODE_DECISION_MAKING_ADVANCE;
+        /* Advance 4-bit Navigator mode to intersection axle-centering step. */
+        p_ctx->nav.mode               = (uint32_t)MODE_DECISION_MAKING_ADVANCE;
+        /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
         tm_printf((UB *)"[nav] Reentry line detected; preparing alignment "
-                  "turn\n");
+                        "turn\n");
     }
+    /* Compare incoming IR enum against 3-bit cached previous IR state. */
     else if (((uint32_t)curr_state != p_ctx->nav.prev_ir_state) ||
-             (0u != p_ctx->nav.b_reentry))
+             (0u != p_ctx->nav.b_is_reentry))
     {
         if (IR_STATE_W_W == curr_state)
         {
             p_ctx->nav.turning_rampup_cnt = 0u;
+            /* Fit straight forward speed constants into int8_t wheel args. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)NAV_FORWARD_SPEED,
                              (int8_t)(-NAV_FORWARD_SPEED));
         }
         else if (IR_STATE_W_B == curr_state)
         {
+            /* Fit right-curve differential speed constants into int8_t args. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)NAV_RIGHT_TURN_L_BASE,
                              (int8_t)(-NAV_RIGHT_TURN_R_BASE));
         }
         else if (IR_STATE_B_W == curr_state)
         {
+            /* Fit left-curve differential speed constants into int8_t args. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)NAV_LEFT_TURN_L_BASE,
                              (int8_t)(-NAV_LEFT_TURN_R_BASE));
@@ -525,22 +766,60 @@ static void nav_handle_line_ir (navigator_task_ctx_t * p_ctx,
         else if (IR_STATE_B_B == curr_state)
         {
             p_ctx->nav.turning_rampup_cnt = 0u;
+            /* Fit zero stop speed constants into int8_t wheel arguments. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)NAV_STOP_SPEED,
                              (int8_t)(-NAV_STOP_SPEED));
-            p_ctx->nav.m_mode = (uint32_t)MODE_DECISION_MAKING_ADVANCE;
+            /* Advance 4-bit Navigator mode to junction axle-centering step. */
+            p_ctx->nav.mode = (uint32_t)MODE_DECISION_MAKING_ADVANCE;
         }
         else
         {
             /* Erroneous IR state ignored cleanly. */
         }
 
+        /* Cache latest IR enum state in 3-bit unsigned field. */
         p_ctx->nav.prev_ir_state = (uint32_t)curr_state;
     }
     else
     {
         nav_handle_line_ramp(p_ctx, curr_state);
     }
+}
+
+/**
+ * @brief Initialize bypass assessment context when front obstacle triggers.
+ * @param[in,out] p_ctx       Navigator context.
+ * @param[in]     obs_dist_cm Detected front obstacle distance in cm.
+ */
+static void nav_begin_obstacle_assess (navigator_task_ctx_t * p_ctx,
+                                       uint16_t obs_dist_cm)
+{
+    navigator_task_width_t      init_width  = { 0u, 0u };
+    navigator_task_bypass_ctx_t init_bypass = { 0u };
+
+    /* Store WIDTH_SCANNING enum in 2-bit width status field. */
+    init_width.status           = (uint32_t)WIDTH_SCANNING;
+    /* Store BYPASS_IDLE enum in 5-bit bypass phase field. */
+    init_bypass.phase           = (uint32_t)BYPASS_IDLE;
+    init_bypass.b_owns_obs_stop = 1u;
+    init_bypass.deadline_usec   =
+        robot_tasks_time_usec() + (BYPASS_RESPONSE_MSEC * NAV_USEC_PER_MSEC);
+
+    p_ctx->nav.last_obstacle_dist_cm = obs_dist_cm;
+    p_ctx->measured_width            = init_width;
+    p_ctx->bypass                    = init_bypass;
+    p_ctx->nav.b_is_scan_req         = 0u;
+    p_ctx->mot_cmd.raw               = 0u;
+    p_ctx->nav.b_is_sonar_valid      = 0u;
+    p_ctx->nav.live_sonar_dist_cm    = 0u;
+    /* Store SONAR_INVALID enum in 3-bit live sonar status field. */
+    p_ctx->nav.live_sonar_status     = (uint32_t)SONAR_INVALID;
+    robot_tasks_flag_assign(ROBOT_STOP_ACK_REQUEST, true);
+    /* Transition 4-bit Navigator mode to MODE_OBSTACLE_ASSESS. */
+    p_ctx->nav.mode                  = (uint32_t)MODE_OBSTACLE_ASSESS;
+    /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
+    tm_printf((UB *)"[nav] Obstacle detected\n");
 }
 
 /**
@@ -551,9 +830,11 @@ static void nav_handle_line_ir (navigator_task_ctx_t * p_ctx,
 static void nav_handle_line_following (navigator_task_ctx_t * p_ctx,
                                        const navigator_task_msg_t * p_msg)
 {
+    /* Convert 4-bit message type field to enum for dispatch. */
     switch ((navigator_task_msg_type_t)p_msg->type)
     {
         case MSG_IR_UPDATE:
+            /* Convert 8-bit IR payload byte to two-sensor IR state enum. */
             nav_handle_line_ir(p_ctx,
                                (navigator_task_ir_state_t)p_msg->data.ir_state);
         break;
@@ -561,53 +842,38 @@ static void nav_handle_line_following (navigator_task_ctx_t * p_ctx,
         case MSG_BARCODE_DECODED:
             p_ctx->nav.last_decoded_char = p_msg->data.decoded_char;
 #ifndef NDEBUG
+            /* Cast format literal and decoded ASCII byte to UB* and INT. */
             tm_printf((UB *)"HELLO %c\n", (INT)p_msg->data.decoded_char);
 #endif
             for (uint32_t idx = 0u; idx < NAV_NUMBER_OF_COMMANDS; idx++)
             {
+                /* Widen 8-bit mapped barcode char to match 7-bit field type. */
                 if (p_ctx->nav.last_decoded_char ==
                     (uint32_t)p_ctx->barcode_chars[idx])
                 {
-                    navigator_task_route_set(
+                    navigator_task_set_route(
                         &p_ctx->instructions,
                         p_ctx->nav.instruction_idx_barcode,
-                        navigator_task_route_get(&p_ctx->barcode_insts, idx));
+                        navigator_task_get_route(&p_ctx->barcode_insts, idx));
                     p_ctx->nav.instruction_idx_barcode++;
                 }
             }
         break;
 
         case MSG_OBSTACLE_DETECTED:
-            p_ctx->nav.last_obstacle_dist_cm = p_msg->data.obs_dist_cm;
-            p_ctx->measured_width = (navigator_task_width_t)
-            {
-                .width_cm = 0u,
-                .status   = (uint32_t)WIDTH_SCANNING
-            };
-            p_ctx->bypass = (navigator_task_bypass_ctx_t)
-            {
-                .phase         = (uint32_t)BYPASS_IDLE,
-                .owns_obs_stop = 1u,
-                .deadline_usec =
-                    robot_tasks_time_usec() + (BYPASS_RESPONSE_MSEC * 1000u)
-            };
-            p_ctx->nav.b_scan_requested   = 0u;
-            p_ctx->mot_cmd.raw            = 0u;
-            p_ctx->nav.b_live_sonar_valid = 0u;
-            p_ctx->nav.live_sonar_dist_cm = 0u;
-            p_ctx->nav.live_sonar_status  = (uint32_t)SONAR_INVALID;
-            robot_tasks_flag_assign(ROBOT_STOP_ACK_REQUEST, true);
-            p_ctx->nav.m_mode = (uint32_t)MODE_OBSTACLE_ASSESS;
-            tm_printf((UB *)"[nav] Obstacle detected\n");
+            nav_begin_obstacle_assess(p_ctx, p_msg->data.obs_dist_cm);
         break;
 
         case MSG_IMU_UPDATE:
+            /* Compare 2-bit IMU event field against hump detected enum. */
             if ((uint32_t)IMU_MSG_HUMP_DETECTED == p_msg->data.imu_msg.event)
             {
+                /* Fit hump climb speed constants into int8_t wheel targets. */
                 nav_drive_wheels(&p_ctx->mot_cmd,
                                  (int8_t)NAV_FORWARD_SPEED_HUMP,
                                  (int8_t)(-NAV_FORWARD_SPEED_HUMP));
-                p_ctx->nav.m_mode = (uint32_t)MODE_GOING_OVER_HUMP;
+                /* Transition 4-bit Navigator mode to MODE_GOING_OVER_HUMP. */
+                p_ctx->nav.mode = (uint32_t)MODE_GOING_OVER_HUMP;
             }
         break;
 
@@ -624,15 +890,19 @@ static void nav_handle_line_following (navigator_task_ctx_t * p_ctx,
 static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
                              const navigator_task_msg_t * p_msg)
 {
+    /* Process only MSG_IMU_UPDATE messages while traversing a hump. */
     if ((uint32_t)MSG_IMU_UPDATE == p_msg->type)
     {
         int32_t left_spd  = NAV_FORWARD_SPEED_HUMP;
         int32_t right_spd = -NAV_FORWARD_SPEED_HUMP;
         int32_t pitch_deg = robot_tasks_sign_extend(
-            p_msg->data.imu_msg.pitch_ddeg_raw, NAV_TILT_BIT_WIDTH) / 10;
+            p_msg->data.imu_msg.pitch_ddeg_raw, NAV_TILT_BIT_WIDTH) /
+            NAV_TENTHS_DIVISOR;
         int32_t roll_deg  = robot_tasks_sign_extend(
-            p_msg->data.imu_msg.roll_ddeg_raw, NAV_TILT_BIT_WIDTH) / 10;
+            p_msg->data.imu_msg.roll_ddeg_raw, NAV_TILT_BIT_WIDTH) /
+            NAV_TENTHS_DIVISOR;
 
+        /* Convert 2-bit IMU event field to enum for hump state handling. */
         switch ((navigator_task_imu_event_t)p_msg->data.imu_msg.event)
         {
             case IMU_MSG_HUMP_DETECTED:
@@ -645,6 +915,7 @@ static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
 
                     /* Range-safe: adj_l is bounded in [10, 30]. */
                     p_ctx->mot_cmd.fields.target_speed_left  = (int8_t)adj_l;
+                    /* Range-safe: right_spd (-30) fits signed int8_t. */
                     p_ctx->mot_cmd.fields.target_speed_right =
                         (int8_t)right_spd;
                 }
@@ -655,20 +926,21 @@ static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
                                     ? (right_spd + pitch_deg)
                                     : (-NAV_HUMP_MIN_WHEEL_SPD);
 
-                    /* Range-safe: adj_r is bounded in [-30, -10]. */
+                    /* Range-safe: left_spd (+30) fits signed int8_t. */
                     p_ctx->mot_cmd.fields.target_speed_left  = (int8_t)left_spd;
+                    /* Range-safe: adj_r is bounded in [-30, -10]. */
                     p_ctx->mot_cmd.fields.target_speed_right = (int8_t)adj_r;
                 }
 
                 if ((roll_deg < (-NAV_HUMP_ROLL_THRESH)) &&
-                    (0u == p_ctx->nav.b_hump_pop))
+                    (0u == p_ctx->nav.b_has_hump_pop))
                 {
-                    p_ctx->nav.b_hump_pop = 1u;
+                    p_ctx->nav.b_has_hump_pop = 1u;
                 }
                 else if ((roll_deg > NAV_HUMP_ROLL_THRESH) &&
-                         (0u != p_ctx->nav.b_hump_pop))
+                         (0u != p_ctx->nav.b_has_hump_pop))
                 {
-                    p_ctx->nav.b_hump_pop = 0u;
+                    p_ctx->nav.b_has_hump_pop = 0u;
                 }
                 else
                 {
@@ -681,8 +953,9 @@ static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
 
                 if (p_ctx->nav.spam_mitigation > NAV_SPAM_MITIGATION_LIMIT)
                 {
+                    /* Cast 4-byte motor command size to RTOS INT parameter. */
                     (void)tk_snd_mbf(robot_tasks_get_motor_mbf(),
-                                     (void *)&p_ctx->mot_cmd,
+                                     &p_ctx->mot_cmd,
                                      (INT)sizeof(motor_task_cmd_t),
                                      TMO_FEVR);
                     p_ctx->nav.spam_mitigation = 0u;
@@ -690,9 +963,12 @@ static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
             break;
 
             case IMU_MSG_NO_HUMP:
-                p_ctx->nav.b_hump_pop    = 0u;
-                p_ctx->nav.prev_ir_state = (uint32_t)IR_STATE_NULL;
-                p_ctx->nav.m_mode        = (uint32_t)MODE_LINE_FOLLOWING;
+                p_ctx->nav.b_has_hump_pop = 0u;
+                /* Reset 3-bit previous IR state to force fresh line drive. */
+                p_ctx->nav.prev_ir_state  = (uint32_t)IR_STATE_NULL;
+                /* Return 4-bit Navigator mode to normal line following. */
+                p_ctx->nav.mode           = (uint32_t)MODE_LINE_FOLLOWING;
+                /* Fit nominal forward speed constants into int8_t targets. */
                 nav_drive_wheels(&p_ctx->mot_cmd,
                                  (int8_t)NAV_FORWARD_SPEED,
                                  (int8_t)(-NAV_FORWARD_SPEED));
@@ -710,17 +986,23 @@ static void nav_handle_hump (navigator_task_ctx_t * p_ctx,
  */
 static void nav_handle_decision_advance (navigator_task_ctx_t * p_ctx)
 {
+    /* Pause briefly at junction line before centering wheel axle. */
     (void)tk_dly_tsk(NAV_ADVANCE_PRE_DELAY_MSEC);
+    /* Fit nominal forward speed constants into int8_t wheel targets. */
     nav_drive_wheels(&p_ctx->mot_cmd,
                      (int8_t)NAV_FORWARD_SPEED,
                      (int8_t)(-NAV_FORWARD_SPEED));
+    /* Drive forward 900 ms to align wheel axle over junction center. */
     (void)tk_dly_tsk(NAV_ADVANCE_RUN_DELAY_MSEC);
+    /* Fit zero stop speed constants into int8_t wheel targets. */
     nav_drive_wheels(&p_ctx->mot_cmd,
                      (int8_t)NAV_STOP_SPEED,
                      (int8_t)NAV_STOP_SPEED);
 
-    p_ctx->nav.m_mode = (uint32_t)MODE_DECISION_MAKING_TURN;
+    /* Transition 4-bit Navigator mode to junction pivot execution. */
+    p_ctx->nav.mode = (uint32_t)MODE_DECISION_MAKING_TURN;
     nav_clear_mbf();
+    /* Allow chassis to settle for 30 ms before reading turn IR transitions. */
     (void)tk_dly_tsk(NAV_ADVANCE_POST_DELAY_MSEC);
 }
 
@@ -736,7 +1018,9 @@ static void nav_start_turn_decision (navigator_task_ctx_t * p_ctx,
     {
         case DIR_BACK:
             p_ctx->nav.num_rotations_raw =
-                robot_tasks_pack_signed(2, NAV_ROTATIONS_BIT_WIDTH);
+                robot_tasks_pack_signed(NAV_TURN_DOUBLE_ROT,
+                                        NAV_ROTATIONS_BIT_WIDTH);
+            /* Fit 180-deg left pivot speed constants into int8_t targets. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)(-NAV_LEFT_PIVOT_L),
                              (int8_t)(-NAV_RIGHT_PIVOT_R));
@@ -744,7 +1028,9 @@ static void nav_start_turn_decision (navigator_task_ctx_t * p_ctx,
 
         case DIR_LEFT:
             p_ctx->nav.num_rotations_raw =
-                robot_tasks_pack_signed(1, NAV_ROTATIONS_BIT_WIDTH);
+                robot_tasks_pack_signed(NAV_TURN_SINGLE_ROT,
+                                        NAV_ROTATIONS_BIT_WIDTH);
+            /* Fit 90-deg left pivot speed constants into int8_t targets. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)(-NAV_LEFT_PIVOT_L),
                              (int8_t)(-NAV_LEFT_PIVOT_R));
@@ -752,25 +1038,28 @@ static void nav_start_turn_decision (navigator_task_ctx_t * p_ctx,
 
         case DIR_RIGHT:
             p_ctx->nav.num_rotations_raw =
-                robot_tasks_pack_signed(1, NAV_ROTATIONS_BIT_WIDTH);
+                robot_tasks_pack_signed(NAV_TURN_SINGLE_ROT,
+                                        NAV_ROTATIONS_BIT_WIDTH);
+            /* Fit 90-deg right pivot speed constants into int8_t targets. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)NAV_RIGHT_PIVOT_L,
                              (int8_t)NAV_RIGHT_PIVOT_R);
         break;
 
         case DIR_STOP:
-            p_ctx->nav.num_rotations_raw = 0u;
-            /* FALLTHROUGH: preserve existing DIR_STOP handling as DIR_FRONT. */
-
+        case DIR_FRONT:
         default:
             p_ctx->nav.num_rotations_raw = 0u;
+            /* Fit straight forward speed constants into int8_t targets. */
             nav_drive_wheels(&p_ctx->mot_cmd,
                              (int8_t)NAV_FORWARD_SPEED,
                              (int8_t)(-NAV_FORWARD_SPEED));
-            p_ctx->nav.prev_ir_state = (uint32_t)IR_STATE_NULL;
-            p_ctx->nav.m_mode        = (uint32_t)MODE_LINE_FOLLOWING;
+            /* Reset 3-bit previous IR state to force fresh line tracking. */
+            p_ctx->nav.prev_ir_state     = (uint32_t)IR_STATE_NULL;
+            /* Return 4-bit Navigator mode to normal line following. */
+            p_ctx->nav.mode              = (uint32_t)MODE_LINE_FOLLOWING;
 
-            if (0u == p_ctx->nav.b_reentry)
+            if (0u == p_ctx->nav.b_is_reentry)
             {
                 p_ctx->nav.instruction_idx++;
 
@@ -780,7 +1069,7 @@ static void nav_start_turn_decision (navigator_task_ctx_t * p_ctx,
                 }
             }
 
-            p_ctx->nav.b_reentry = 0u;
+            p_ctx->nav.b_is_reentry = 0u;
         break;
     }
 }
@@ -795,28 +1084,22 @@ static void nav_step_turn_progress (navigator_task_ctx_t * p_ctx,
                                     navigator_task_ir_state_t curr_state,
                                     navigator_task_dir_t decision)
 {
-    int32_t num_rot = robot_tasks_sign_extend(p_ctx->nav.num_rotations_raw,
-                                              NAV_ROTATIONS_BIT_WIDTH);
-    bool b_left_cross =
+    int32_t num_rot        = robot_tasks_sign_extend(
+        p_ctx->nav.num_rotations_raw, NAV_ROTATIONS_BIT_WIDTH);
+    /* Detect left/back pivot crossing from W_W into B_W. */
+    bool    b_is_lft_cross =
         ((IR_STATE_B_W == curr_state) &&
          ((uint32_t)IR_STATE_W_W == p_ctx->nav.prev_ir_state) &&
          ((DIR_LEFT == decision) || (DIR_BACK == decision)));
-    bool b_right_cross =
+    /* Detect right pivot crossing from W_W into W_B. */
+    bool    b_is_rgt_cross =
         ((IR_STATE_W_B == curr_state) &&
          ((uint32_t)IR_STATE_W_W == p_ctx->nav.prev_ir_state) &&
          (DIR_RIGHT == decision));
 
-    if (b_left_cross)
+    if ((b_is_lft_cross) || (b_is_rgt_cross))
     {
         num_rot--;
-    }
-    else if (b_right_cross)
-    {
-        num_rot--;
-    }
-    else
-    {
-        /* No line crossing transition observed on this IR sample. */
     }
 
     p_ctx->nav.num_rotations_raw =
@@ -824,22 +1107,27 @@ static void nav_step_turn_progress (navigator_task_ctx_t * p_ctx,
 
     if (num_rot <= 0)
     {
+        /* Allow final line crossing to center under sensor before braking. */
         (void)tk_dly_tsk(NAV_TURN_SETTLE_DELAY_MSEC);
+        /* Fit zero stop speed constants into int8_t wheel targets. */
         nav_drive_wheels(&p_ctx->mot_cmd,
                          (int8_t)NAV_STOP_SPEED,
                          (int8_t)NAV_STOP_SPEED);
+        /* Pause briefly after pivot stop before resuming line following. */
         (void)tk_dly_tsk(NAV_TURN_STOP_DELAY_MSEC);
 
-        if ((0u == p_ctx->nav.b_reentry) &&
+        if ((0u == p_ctx->nav.b_is_reentry) &&
             ((p_ctx->nav.instruction_idx + 1u) < NAV_NUMBER_OF_COMMANDS))
         {
             p_ctx->nav.instruction_idx++;
         }
 
         p_ctx->nav.num_rotations_raw = 0u;
+        /* Reset 3-bit previous IR state to force fresh line tracking. */
         p_ctx->nav.prev_ir_state     = (uint32_t)IR_STATE_NULL;
-        p_ctx->nav.m_mode            = (uint32_t)MODE_LINE_FOLLOWING;
-        p_ctx->nav.b_reentry         = 0u;
+        /* Return 4-bit Navigator mode to normal line following. */
+        p_ctx->nav.mode              = (uint32_t)MODE_LINE_FOLLOWING;
+        p_ctx->nav.b_is_reentry      = 0u;
     }
 }
 
@@ -851,21 +1139,23 @@ static void nav_step_turn_progress (navigator_task_ctx_t * p_ctx,
 static void nav_handle_decision_turn (navigator_task_ctx_t * p_ctx,
                                       const navigator_task_msg_t * p_msg)
 {
+    /* Process only MSG_IR_UPDATE events while pivoting onto target line. */
     if ((uint32_t)MSG_IR_UPDATE == p_msg->type)
     {
+        /* Convert 8-bit IR payload byte to two-sensor IR state enum. */
         navigator_task_ir_state_t curr_state =
             (navigator_task_ir_state_t)p_msg->data.ir_state;
-        navigator_task_dir_t decision = DIR_INVALID;
-        int32_t num_rot = robot_tasks_sign_extend(p_ctx->nav.num_rotations_raw,
-                                                  NAV_ROTATIONS_BIT_WIDTH);
+        navigator_task_dir_t      decision   = DIR_INVALID;
+        int32_t                   num_rot    = robot_tasks_sign_extend(
+            p_ctx->nav.num_rotations_raw, NAV_ROTATIONS_BIT_WIDTH);
 
-        if ((DIR_INVALID == navigator_task_route_get(
+        if ((DIR_INVALID == navigator_task_get_route(
                  &p_ctx->instructions, p_ctx->nav.instruction_idx_barcode)) &&
             (p_ctx->nav.instruction_idx > 0u))
         {
             p_ctx->nav.instruction_idx--;
         }
-        else if ((DIR_INVALID == navigator_task_route_get(
+        else if ((DIR_INVALID == navigator_task_get_route(
                       &p_ctx->instructions, p_ctx->nav.instruction_idx)) &&
                  (0u == p_ctx->nav.instruction_idx))
         {
@@ -876,16 +1166,18 @@ static void nav_handle_decision_turn (navigator_task_ctx_t * p_ctx,
             /* Current route instruction index remains valid. */
         }
 
-        decision = navigator_task_route_get(&p_ctx->instructions,
+        decision = navigator_task_get_route(&p_ctx->instructions,
                                             p_ctx->nav.instruction_idx);
 
-        if (0u != p_ctx->nav.b_reentry)
+        if (0u != p_ctx->nav.b_is_reentry)
         {
+            /* Convert 3-bit stored re-entry direction field to enum. */
             decision = (navigator_task_dir_t)p_ctx->nav.reentry_dir;
         }
 
+        /* Launch turn when starting from junction B_B sentinel state. */
         if (((uint32_t)IR_STATE_B_B == p_ctx->nav.prev_ir_state) &&
-            (!((0u != p_ctx->nav.b_reentry) && (num_rot > 0))))
+            (!((0u != p_ctx->nav.b_is_reentry) && (num_rot > 0))))
         {
             nav_start_turn_decision(p_ctx, decision);
         }
@@ -894,8 +1186,10 @@ static void nav_handle_decision_turn (navigator_task_ctx_t * p_ctx,
             nav_step_turn_progress(p_ctx, curr_state, decision);
         }
 
+        /* Update 3-bit cached previous IR state when transition occurred. */
         if (p_ctx->nav.prev_ir_state != (uint32_t)curr_state)
         {
+            /* Store latest IR state enum in 3-bit unsigned field. */
             p_ctx->nav.prev_ir_state = (uint32_t)curr_state;
         }
     }
@@ -910,30 +1204,37 @@ static void nav_handle_assess_profile (
     navigator_task_ctx_t * p_ctx,
     const navigator_task_obs_profile_t * p_prof)
 {
-    if (0u != p_ctx->nav.b_scan_requested)
+    if (0u != p_ctx->nav.b_is_scan_req)
     {
-        bool b_front_valid = false;
+        bool b_is_front_valid = false;
 
-        p_ctx->nav.b_scan_requested   = 0u;
-        p_ctx->nav.last_closest_cm    = p_prof->closest_cm;
+        p_ctx->nav.b_is_scan_req        = 0u;
+        p_ctx->nav.last_closest_cm      = p_prof->closest_cm;
         p_ctx->nav.last_closest_ang_raw = p_prof->closest_ang_raw;
-        p_ctx->nav.live_sonar_status  =
-            (uint32_t)navigator_task_ray_status(p_prof, NAV_SONAR_CENTER_RAY);
-        b_front_valid =
+        /* Store center ray status enum in 3-bit live sonar status field. */
+        p_ctx->nav.live_sonar_status    =
+            (uint32_t)navigator_task_get_ray_status(p_prof,
+                                                    NAV_SONAR_CENTER_RAY);
+        /* Check center ray SONAR_OK status and 2..400 cm valid range. */
+        b_is_front_valid                =
             (((uint32_t)SONAR_OK == p_ctx->nav.live_sonar_status) &&
              (p_prof->front_cm >= NAV_SONAR_MIN_CM) &&
              (p_prof->front_cm <= NAV_SONAR_MAX_CM));
-        p_ctx->nav.b_live_sonar_valid = b_front_valid ? 1u : 0u;
-        p_ctx->nav.live_sonar_dist_cm = b_front_valid ? p_prof->front_cm : 0u;
+        p_ctx->nav.b_is_sonar_valid     = b_is_front_valid ? 1u : 0u;
+        p_ctx->nav.live_sonar_dist_cm   =
+            b_is_front_valid ? p_prof->front_cm : 0u;
 
+        /* Dispatch assessment step based on 5-bit bypass phase field. */
         switch ((navigator_task_bypass_phase_t)p_ctx->bypass.phase)
         {
             case BYPASS_IDLE:
                 p_ctx->measured_width =
                     bypass_helpers_estimate_width(p_prof, NULL);
 
+                /* Mark width as scanning until second profile arrives. */
                 if ((uint32_t)WIDTH_UNAVAILABLE == p_ctx->measured_width.status)
                 {
+                    /* Store WIDTH_SCANNING enum in 2-bit status field. */
                     p_ctx->measured_width.status = (uint32_t)WIDTH_SCANNING;
                 }
 
@@ -991,17 +1292,20 @@ static void nav_handle_assess_profile (
  */
 static void nav_handle_assess_move_done (navigator_task_ctx_t * p_ctx)
 {
-    if (0u != p_ctx->bypass.move_pending)
+    if (0u != p_ctx->bypass.b_has_move_pending)
     {
-        p_ctx->bypass.move_pending = 0u;
+        p_ctx->bypass.b_has_move_pending = 0u;
 
+        /* Advance two-scan sequence based on 5-bit bypass phase field. */
         switch ((navigator_task_bypass_phase_t)p_ctx->bypass.phase)
         {
             case BYPASS_SCAN_BACK:
-                p_ctx->bypass.phase = (uint32_t)BYPASS_SCAN_SECOND;
+                /* Store BYPASS_SCAN_SECOND enum in 5-bit phase field. */
+                p_ctx->bypass.phase         = (uint32_t)BYPASS_SCAN_SECOND;
                 p_ctx->bypass.deadline_usec =
-                    robot_tasks_time_usec() + (BYPASS_SCAN_MSEC * 1000u);
-                p_ctx->nav.b_scan_requested = 1u;
+                    robot_tasks_time_usec() +
+                    (BYPASS_SCAN_MSEC * NAV_USEC_PER_MSEC);
+                p_ctx->nav.b_is_scan_req    = 1u;
 
                 if (tk_set_flg(robot_tasks_get_ranger_flg(),
                                SONAR_SCAN_REQUEST) < E_OK)
@@ -1014,14 +1318,15 @@ static void nav_handle_assess_move_done (navigator_task_ctx_t * p_ctx)
 
             case BYPASS_SCAN_RETURN:
             {
-                int32_t side = navigator_task_bypass_side(&p_ctx->bypass);
+                int32_t side = navigator_task_get_side(&p_ctx->bypass);
 
                 bypass_helpers_track_side(&p_ctx->bypass, &p_ctx->mot_cmd);
                 bypass_helpers_pivot(&p_ctx->bypass,
                                      &p_ctx->mot_cmd,
                                      BYPASS_TURN_OUT,
                                      side);
-                p_ctx->nav.m_mode = (uint32_t)MODE_WALL_HUGGING;
+                /* Transition 4-bit Navigator mode to rectangular bypass. */
+                p_ctx->nav.mode = (uint32_t)MODE_WALL_HUGGING;
             }
             break;
 
@@ -1039,10 +1344,12 @@ static void nav_handle_assess_move_done (navigator_task_ctx_t * p_ctx)
 static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
                                         const navigator_task_msg_t * p_msg)
 {
+    /* Convert 4-bit message type field to enum for assessment dispatch. */
     switch ((navigator_task_msg_type_t)p_msg->type)
     {
         case MSG_MOTOR_STOPPED:
-            if ((0u == p_ctx->nav.b_scan_requested) &&
+            /* Trigger first sonar scan once initial stop is acknowledged. */
+            if ((0u == p_ctx->nav.b_is_scan_req) &&
                 ((uint32_t)BYPASS_IDLE == p_ctx->bypass.phase))
             {
                 if (tk_set_flg(robot_tasks_get_ranger_flg(),
@@ -1054,9 +1361,10 @@ static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
                 }
                 else
                 {
-                    p_ctx->nav.b_scan_requested = 1u;
+                    p_ctx->nav.b_is_scan_req    = 1u;
                     p_ctx->bypass.deadline_usec =
-                        robot_tasks_time_usec() + (BYPASS_SCAN_MSEC * 1000u);
+                        robot_tasks_time_usec() +
+                        (BYPASS_SCAN_MSEC * NAV_USEC_PER_MSEC);
                 }
             }
         break;
@@ -1073,6 +1381,7 @@ static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
         break;
     }
 
+    /* Begin 20 mm reverse once motor task clears MOTOR_FAULT_BIT_ESTOP. */
     if (((uint32_t)BYPASS_WAIT_RELEASE == p_ctx->bypass.phase) &&
         (0u == (motor_task_get_fault_word() & MOTOR_FAULT_BIT_ESTOP)))
     {
@@ -1085,7 +1394,7 @@ static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
     }
 
     /* Modular signed difference preserves 32-bit microsecond wraparound. */
-    if (((uint32_t)MODE_OBSTACLE_ASSESS == p_ctx->nav.m_mode) &&
+    if (((uint32_t)MODE_OBSTACLE_ASSESS == p_ctx->nav.mode) &&
         ((uint32_t)BYPASS_ABORT != p_ctx->bypass.phase) &&
         (0u != p_ctx->bypass.deadline_usec) &&
         (((int32_t)(robot_tasks_time_usec() -
@@ -1096,9 +1405,11 @@ static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
                              "stop acknowledgement or scan timeout");
     }
 
+    /* Latch MODE_SAFE_STOP if any assessment step aborted. */
     if ((uint32_t)BYPASS_ABORT == p_ctx->bypass.phase)
     {
-        p_ctx->nav.m_mode = (uint32_t)MODE_SAFE_STOP;
+        /* Store MODE_SAFE_STOP enum in 4-bit Navigator mode field. */
+        p_ctx->nav.mode = (uint32_t)MODE_SAFE_STOP;
     }
 }
 
@@ -1108,17 +1419,17 @@ static void nav_handle_obstacle_assess (navigator_task_ctx_t * p_ctx,
  */
 static void nav_wall_handle_turn_in (navigator_task_ctx_t * p_ctx)
 {
-    if (0u != p_ctx->bypass.depth_clr_pend)
+    if (0u != p_ctx->bypass.b_has_depth_clr_pend)
     {
-        p_ctx->bypass.depth_clr_pend = 0u;
-        p_ctx->bypass.black_cnt      = 0u;
+        p_ctx->bypass.b_has_depth_clr_pend = 0u;
+        p_ctx->bypass.black_cnt            = 0u;
         bypass_helpers_begin(&p_ctx->bypass,
                              &p_ctx->mot_cmd,
                              BYPASS_FIND_LINE,
                              BYPASS_API_POWER,
                              -BYPASS_API_POWER,
                              p_ctx->bypass.shift_mm +
-                             (SONAR_ROBOT_LENGTH_CM * 10u));
+                             (SONAR_ROBOT_LENGTH_CM * NAV_MM_PER_CM_U32));
     }
     else
     {
@@ -1129,13 +1440,63 @@ static void nav_wall_handle_turn_in (navigator_task_ctx_t * p_ctx)
 }
 
 /**
+ * @brief Dispatch outward width-verification legs during rectangular bypass.
+ * @param[in,out] p_ctx Navigator context.
+ * @param[in]     side  Active bypass side (+1 left, -1 right).
+ */
+static void nav_wall_dispatch_width_leg (navigator_task_ctx_t * p_ctx,
+                                         int32_t side)
+{
+    /* Convert 5-bit bypass phase field to enum for width-leg dispatch. */
+    switch ((navigator_task_bypass_phase_t)p_ctx->bypass.phase)
+    {
+        case BYPASS_WIDTH_ALIGN:
+            if (0u != p_ctx->bypass.b_has_width_clr_pend)
+            {
+                p_ctx->bypass.b_has_width_clr_pend = 0u;
+                bypass_helpers_follow_next(&p_ctx->bypass, &p_ctx->mot_cmd);
+            }
+            else
+            {
+                bypass_helpers_probe(&p_ctx->bypass,
+                                     &p_ctx->mot_cmd,
+                                     BYPASS_WIDTH_CHECK);
+            }
+        break;
+
+        case BYPASS_WIDTH_TURN_OUT:
+            bypass_helpers_begin(&p_ctx->bypass,
+                                 &p_ctx->mot_cmd,
+                                 BYPASS_WIDTH_EXTEND,
+                                 BYPASS_API_POWER,
+                                 -BYPASS_API_POWER,
+                                 (0u != p_ctx->bypass.b_has_width_clr_pend)
+                                     ? BYPASS_PIVOT_CLEAR_MM
+                                     : BYPASS_WIDTH_STEP_MM);
+        break;
+
+        case BYPASS_WIDTH_EXTEND:
+            p_ctx->bypass.shift_mm += p_ctx->bypass.leg_mm;
+            bypass_helpers_pivot(&p_ctx->bypass,
+                                 &p_ctx->mot_cmd,
+                                 BYPASS_WIDTH_ALIGN,
+                                 -side);
+        break;
+
+        default:
+        break;
+    }
+}
+
+/**
  * @brief Dispatch next rectangular bypass leg after one leg completes.
  * @param[in,out] p_ctx Navigator context.
  */
 static void nav_wall_dispatch_phase (navigator_task_ctx_t * p_ctx)
 {
-    int32_t side = navigator_task_bypass_side(&p_ctx->bypass);
+    int32_t side = navigator_task_get_side(&p_ctx->bypass);
 
+    /* Convert 5-bit bypass phase field to enum for next-leg dispatch. */
     switch ((navigator_task_bypass_phase_t)p_ctx->bypass.phase)
     {
         case BYPASS_TURN_OUT:
@@ -1162,36 +1523,9 @@ static void nav_wall_dispatch_phase (navigator_task_ctx_t * p_ctx)
         break;
 
         case BYPASS_WIDTH_ALIGN:
-            if (0u != p_ctx->bypass.width_clr_pend)
-            {
-                p_ctx->bypass.width_clr_pend = 0u;
-                bypass_helpers_follow_next(&p_ctx->bypass, &p_ctx->mot_cmd);
-            }
-            else
-            {
-                bypass_helpers_probe(&p_ctx->bypass,
-                                     &p_ctx->mot_cmd,
-                                     BYPASS_WIDTH_CHECK);
-            }
-        break;
-
         case BYPASS_WIDTH_TURN_OUT:
-            bypass_helpers_begin(&p_ctx->bypass,
-                                 &p_ctx->mot_cmd,
-                                 BYPASS_WIDTH_EXTEND,
-                                 BYPASS_API_POWER,
-                                 -BYPASS_API_POWER,
-                                 (0u != p_ctx->bypass.width_clr_pend)
-                                     ? BYPASS_PIVOT_CLEAR_MM
-                                     : BYPASS_WIDTH_STEP_MM);
-        break;
-
         case BYPASS_WIDTH_EXTEND:
-            p_ctx->bypass.shift_mm += p_ctx->bypass.leg_mm;
-            bypass_helpers_pivot(&p_ctx->bypass,
-                                 &p_ctx->mot_cmd,
-                                 BYPASS_WIDTH_ALIGN,
-                                 -side);
+            nav_wall_dispatch_width_leg(p_ctx, side);
         break;
 
         case BYPASS_ADVANCE:
@@ -1210,7 +1544,7 @@ static void nav_wall_dispatch_phase (navigator_task_ctx_t * p_ctx)
                                  BYPASS_ADVANCE,
                                  BYPASS_API_POWER,
                                  -BYPASS_API_POWER,
-                                 (0u != p_ctx->bypass.depth_clr_pend)
+                                 (0u != p_ctx->bypass.b_has_depth_clr_pend)
                                      ? BYPASS_DEPTH_CLEAR_MM
                                      : BYPASS_FORWARD_STEP_MM);
         break;
@@ -1232,9 +1566,9 @@ static void nav_wall_dispatch_phase (navigator_task_ctx_t * p_ctx)
  */
 static void nav_handle_wall_move_done (navigator_task_ctx_t * p_ctx)
 {
-    if (0u != p_ctx->bypass.move_pending)
+    if (0u != p_ctx->bypass.b_has_move_pending)
     {
-        p_ctx->bypass.move_pending = 0u;
+        p_ctx->bypass.b_has_move_pending = 0u;
 
         if (bypass_helpers_complete_leg(&p_ctx->bypass, &p_ctx->mot_cmd))
         {
@@ -1256,27 +1590,33 @@ static void nav_finish_line_reentry (navigator_task_ctx_t * p_ctx)
                          0,
                          0u);
 
+    /* Resume forward sonar if BYPASS_LINE_FOUND stop succeeded cleanly. */
     if (((uint32_t)BYPASS_ABORT != p_ctx->bypass.phase) &&
         (tk_set_flg(robot_tasks_get_ranger_flg(),
                     SONAR_RESUME_FLAG) >= E_OK))
     {
-        int32_t side = navigator_task_bypass_side(&p_ctx->bypass);
+        int32_t side = navigator_task_get_side(&p_ctx->bypass);
 
-        p_ctx->nav.b_scan_requested   = 0u;
+        p_ctx->nav.b_is_scan_req      = 0u;
+        /* Reset 3-bit previous IR state before re-entering line following. */
         p_ctx->nav.prev_ir_state      = (uint32_t)IR_STATE_NULL;
         p_ctx->nav.turning_rampup_cnt = 0u;
-        p_ctx->nav.m_mode             = (uint32_t)MODE_LINE_FOLLOWING;
+        /* Return 4-bit Navigator mode to MODE_LINE_FOLLOWING. */
+        p_ctx->nav.mode               = (uint32_t)MODE_LINE_FOLLOWING;
+        /* Store alignment turn direction in 3-bit re-entry field. */
         p_ctx->nav.reentry_dir        = (side > 0)
                                         ? (uint32_t)DIR_LEFT
                                         : (uint32_t)DIR_RIGHT;
-        p_ctx->nav.b_reentry          = 1u;
+        p_ctx->nav.b_is_reentry       = 1u;
 
+        /* Cast format literal and re-entry side to RTOS UB* and INT. */
         tm_printf((UB *)"[bypass] Line found; reentry side=%d, align=%s\n",
                   (INT)side,
                   ((uint32_t)DIR_LEFT == p_ctx->nav.reentry_dir)
                       ? "left"
                       : "right");
     }
+    /* Abort if SONAR_RESUME_FLAG delivery failed before aborting earlier. */
     else if ((uint32_t)BYPASS_ABORT != p_ctx->bypass.phase)
     {
         bypass_helpers_abort(&p_ctx->bypass,
@@ -1297,17 +1637,18 @@ static void nav_finish_line_reentry (navigator_task_ctx_t * p_ctx)
 static void nav_handle_wall_ir (navigator_task_ctx_t * p_ctx,
                                 navigator_task_ir_state_t curr_state)
 {
+    /* Check IR line re-entry only while advancing in BYPASS_FIND_LINE. */
     if ((uint32_t)BYPASS_FIND_LINE == p_ctx->bypass.phase)
     {
-        bool b_black = ((IR_STATE_B_W == curr_state) ||
-                        (IR_STATE_W_B == curr_state) ||
-                        (IR_STATE_B_B == curr_state));
+        bool b_is_black = ((IR_STATE_B_W == curr_state) ||
+                           (IR_STATE_W_B == curr_state) ||
+                           (IR_STATE_B_B == curr_state));
 
-        if (b_black && (p_ctx->bypass.black_cnt < NAV_REENTRY_BLACK_REQ))
+        if ((b_is_black) && (p_ctx->bypass.black_cnt < NAV_REENTRY_BLACK_REQ))
         {
             p_ctx->bypass.black_cnt++;
         }
-        else if (!b_black)
+        else if (!b_is_black)
         {
             p_ctx->bypass.black_cnt = 0u;
         }
@@ -1336,42 +1677,47 @@ static void nav_handle_wall_track (
     int32_t  probe_ang  = robot_tasks_sign_extend(p_probe->angle_deg_raw,
                                                   NAV_ANGLE_BIT_WIDTH);
     int32_t  expect_ang = (-NAV_TRACK_ANGLE_DEG) *
-                          navigator_task_bypass_side(&p_ctx->bypass);
+                          navigator_task_get_side(&p_ctx->bypass);
     /* Modular subtraction preserves 32-bit wraparound timestamp order. */
     int32_t  since_req  = (int32_t)(p_probe->sampled_at_usec -
                                     p_ctx->bypass.requested_usec);
+    /* Modular subtraction rejects duplicate or stale tracking samples. */
     int32_t  since_last = (int32_t)(p_probe->sampled_at_usec -
                                     p_ctx->bypass.last_sample_usec);
     uint32_t age_usec   = now_usec - p_probe->sampled_at_usec;
-    bool b_fresh = ((0u != p_ctx->bypass.tracking_active) &&
-                    (probe_ang == expect_ang) &&
-                    (since_req >= 0) &&
-                    (since_last > 0) &&
-                    (age_usec < (BYPASS_TRACK_STALE_MSEC * 1000u)));
+    bool     b_is_fresh = ((0u != p_ctx->bypass.b_is_tracking) &&
+                           (probe_ang == expect_ang) &&
+                           (since_req >= 0) &&
+                           (since_last > 0) &&
+                           (age_usec <
+                            (BYPASS_TRACK_STALE_MSEC * NAV_USEC_PER_MSEC)));
 
-    if (b_fresh)
+    if (b_is_fresh)
     {
-        bool b_hw_fault =
+        /* Check 3-bit probe status field for sonar or servo fault codes. */
+        bool b_has_hw_fault =
             (((uint32_t)SONAR_SENSOR_FAULT == p_probe->status) ||
              ((uint32_t)SONAR_SERVO_FAULT == p_probe->status));
-        bool b_known_st =
+        /* Check 3-bit probe status field for recognized non-fault codes. */
+        bool b_is_known_st  =
             (((uint32_t)SONAR_OK == p_probe->status) ||
              ((uint32_t)SONAR_NO_ECHO == p_probe->status) ||
              ((uint32_t)SONAR_TOO_CLOSE == p_probe->status) ||
              ((uint32_t)SONAR_UNSTABLE == p_probe->status));
-        bool b_bad_ok =
+        /* Reject SONAR_OK samples with invalid flag or out-of-range cm. */
+        bool b_is_bad_ok    =
             (((uint32_t)SONAR_OK == p_probe->status) &&
-             ((0u == p_probe->b_valid) ||
+             ((0u == p_probe->b_is_valid) ||
               (p_probe->dist_cm < NAV_SONAR_MIN_CM) ||
               (p_probe->dist_cm > NAV_SONAR_MAX_CM)));
 
-        if (b_hw_fault)
+        if (b_has_hw_fault)
         {
             bypass_helpers_abort(&p_ctx->bypass,
                                  &p_ctx->mot_cmd,
                                  "sonar hardware");
         }
-        else if (b_known_st && (!b_bad_ok))
+        else if ((b_is_known_st) && (!b_is_bad_ok))
         {
             p_ctx->bypass.last_sample_usec = p_probe->sampled_at_usec;
             p_ctx->bypass.last_track_usec  = p_probe->sampled_at_usec;
@@ -1391,6 +1737,7 @@ static void nav_handle_wall_track (
 static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
                                      const navigator_task_msg_t * p_msg)
 {
+    /* Convert 4-bit message type field to enum for wall-hugging dispatch. */
     switch ((navigator_task_msg_type_t)p_msg->type)
     {
         case MSG_MOTOR_MOVE_DONE:
@@ -1399,16 +1746,17 @@ static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
 
         case MSG_SONAR_PROBED:
         {
-            bool b_valid =
-                ((0u != p_msg->data.sonar_probe.b_valid) &&
+            /* Validate SONAR_OK probe status and 2..400 cm distance bounds. */
+            bool b_is_valid =
+                ((0u != p_msg->data.sonar_probe.b_is_valid) &&
                  ((uint32_t)SONAR_OK == p_msg->data.sonar_probe.status) &&
                  (p_msg->data.sonar_probe.dist_cm >= NAV_SONAR_MIN_CM) &&
                  (p_msg->data.sonar_probe.dist_cm <= NAV_SONAR_MAX_CM));
 
             p_ctx->nav.live_sonar_status  = p_msg->data.sonar_probe.status;
-            p_ctx->nav.b_live_sonar_valid = b_valid ? 1u : 0u;
+            p_ctx->nav.b_is_sonar_valid   = b_is_valid ? 1u : 0u;
             p_ctx->nav.live_sonar_dist_cm =
-                b_valid ? p_msg->data.sonar_probe.dist_cm : 0u;
+                b_is_valid ? p_msg->data.sonar_probe.dist_cm : 0u;
             bypass_helpers_probe_result(&p_ctx->bypass,
                                         &p_ctx->mot_cmd,
                                         &p_msg->data.sonar_probe);
@@ -1416,6 +1764,7 @@ static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
         break;
 
         case MSG_IR_UPDATE:
+            /* Convert 8-bit IR payload byte to two-sensor IR state enum. */
             nav_handle_wall_ir(p_ctx,
                                (navigator_task_ir_state_t)p_msg->data.ir_state);
         break;
@@ -1432,20 +1781,23 @@ static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
         break;
     }
 
-    if ((uint32_t)MODE_WALL_HUGGING == p_ctx->nav.m_mode)
+    /* Check bypass watchdogs if still in MODE_WALL_HUGGING after event. */
+    if ((uint32_t)MODE_WALL_HUGGING == p_ctx->nav.mode)
     {
         uint32_t now_usec = robot_tasks_time_usec();
 
+        /* Abort if side-tracking telemetry stalls beyond 1000 ms. */
         if (((uint32_t)BYPASS_ABORT != p_ctx->bypass.phase) &&
-            (0u != p_ctx->bypass.tracking_active) &&
+            (0u != p_ctx->bypass.b_is_tracking) &&
             ((now_usec - p_ctx->bypass.last_track_usec) >=
-             (BYPASS_TRACK_STALE_MSEC * 1000u)))
+             (BYPASS_TRACK_STALE_MSEC * NAV_USEC_PER_MSEC)))
         {
             bypass_helpers_abort(&p_ctx->bypass,
                                  &p_ctx->mot_cmd,
                                  "side tracking messages stopped");
         }
 
+        /* Modular signed difference checks active leg timeout wrap-safely. */
         if (((uint32_t)BYPASS_ABORT != p_ctx->bypass.phase) &&
             (0u != p_ctx->bypass.deadline_usec) &&
             (((int32_t)(now_usec - p_ctx->bypass.deadline_usec)) >= 0))
@@ -1455,9 +1807,11 @@ static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
                                  "motor movement timeout");
         }
 
+        /* Latch MODE_SAFE_STOP if bypass aborted on event or watchdog. */
         if ((uint32_t)BYPASS_ABORT == p_ctx->bypass.phase)
         {
-            p_ctx->nav.m_mode = (uint32_t)MODE_SAFE_STOP;
+            /* Store MODE_SAFE_STOP enum in 4-bit Navigator mode field. */
+            p_ctx->nav.mode = (uint32_t)MODE_SAFE_STOP;
         }
     }
 }
@@ -1470,7 +1824,8 @@ static void nav_handle_wall_hugging (navigator_task_ctx_t * p_ctx,
 static void nav_dispatch_mode (navigator_task_ctx_t * p_ctx,
                                const navigator_task_msg_t * p_msg)
 {
-    switch ((navigator_task_mode_t)p_ctx->nav.m_mode)
+    /* Convert 4-bit Navigator mode field to enum for handler dispatch. */
+    switch ((navigator_task_mode_t)p_ctx->nav.mode)
     {
         case MODE_WIFI_SEND_COMMS:
             nav_handle_wifi_comms(p_ctx, p_msg);
@@ -1509,48 +1864,58 @@ static void nav_dispatch_mode (navigator_task_ctx_t * p_ctx,
 
 /**
  * @brief Process global priority messages or dispatch to the active FSM mode.
- * @param[in,out] p_ctx           Navigator context.
- * @param[in]     p_msg           Received message.
- * @param[in]     b_bypass_active True if currently assessing or bypassing.
+ * @param[in,out] p_ctx              Navigator context.
+ * @param[in]     p_msg              Received message.
+ * @param[in]     b_is_bypass_active True if currently assessing or bypassing.
  */
 static void nav_process_message (navigator_task_ctx_t * p_ctx,
                                  const navigator_task_msg_t * p_msg,
-                                 bool b_bypass_active)
+                                 bool b_is_bypass_active)
 {
-    if (((uint32_t)MSG_REMOTE_CMD == p_msg->type) && (!b_bypass_active))
+    /* Handle remote MQTT drive commands outside obstacle bypass modes. */
+    if (((uint32_t)MSG_REMOTE_CMD == p_msg->type) && (!b_is_bypass_active))
     {
+        /* Forward remote commands only when not stopped or wall-hugging. */
         if ((!motor_task_is_estop()) &&
-            ((uint32_t)MODE_WALL_HUGGING != p_ctx->nav.m_mode) &&
-            ((uint32_t)MODE_SAFE_STOP != p_ctx->nav.m_mode))
+            ((uint32_t)MODE_WALL_HUGGING != p_ctx->nav.mode) &&
+            ((uint32_t)MODE_SAFE_STOP != p_ctx->nav.mode))
         {
             p_ctx->mot_cmd = p_msg->data.remote_cmd;
+            /* Cast 4-byte motor command size to RTOS INT message size. */
             (void)tk_snd_mbf(robot_tasks_get_motor_mbf(),
-                             (void *)&p_ctx->mot_cmd,
+                             &p_ctx->mot_cmd,
                              (INT)sizeof(motor_task_cmd_t),
                              TMO_FEVR);
         }
     }
-    else if ((!b_bypass_active) &&
+    /* Latch safe stop immediately on IMU lifted/overturned event. */
+    else if ((!b_is_bypass_active) &&
              ((uint32_t)MSG_IMU_UPDATE == p_msg->type) &&
              ((uint32_t)IMU_MSG_LIFTED_OVERTURNED == p_msg->data.imu_msg.event))
     {
         robot_tasks_flag_assign(ROBOT_ESTOP_REQUEST, true);
-        p_ctx->nav.m_mode = (uint32_t)MODE_SAFE_STOP;
+        /* Store MODE_SAFE_STOP enum in 4-bit Navigator mode field. */
+        p_ctx->nav.mode                          = (uint32_t)MODE_SAFE_STOP;
+        /* Fit zero stop speed constants into int8_t wheel targets. */
         p_ctx->mot_cmd.fields.target_speed_left  = (int8_t)NAV_STOP_SPEED;
+        /* Fit zero right stop speed constant into int8_t wheel target. */
         p_ctx->mot_cmd.fields.target_speed_right = (int8_t)NAV_STOP_SPEED;
+        /* Non-blocking send; cast 4-byte command size to RTOS INT. */
         (void)tk_snd_mbf(robot_tasks_get_motor_mbf(),
-                         (void *)&p_ctx->mot_cmd,
+                         &p_ctx->mot_cmd,
                          (INT)sizeof(motor_task_cmd_t),
                          TMO_POL);
+        /* Cast ASCII literal to uT-Kernel UB pointer for console output. */
         tm_printf((UB *)"[nav] STOP: robot lifted/overturned\n");
     }
-    else if ((!b_bypass_active) &&
+    /* Update live forward sonar telemetry outside bypass modes. */
+    else if ((!b_is_bypass_active) &&
              ((uint32_t)MSG_SONAR_DISTANCE == p_msg->type))
     {
-        p_ctx->nav.b_live_sonar_valid = p_msg->data.sonar_dist.b_valid;
-        p_ctx->nav.live_sonar_status  = p_msg->data.sonar_dist.status;
+        p_ctx->nav.b_is_sonar_valid  = p_msg->data.sonar_dist.b_is_valid;
+        p_ctx->nav.live_sonar_status = p_msg->data.sonar_dist.status;
 
-        if (0u != p_ctx->nav.b_live_sonar_valid)
+        if (0u != p_ctx->nav.b_is_sonar_valid)
         {
             p_ctx->nav.live_sonar_dist_cm = p_msg->data.sonar_dist.dist_cm;
         }
@@ -1560,57 +1925,64 @@ static void nav_process_message (navigator_task_ctx_t * p_ctx,
         nav_dispatch_mode(p_ctx, p_msg);
     }
 
-    if (((uint32_t)MODE_OBSTACLE_ASSESS != p_ctx->nav.m_mode) &&
+    /* Clear transient WIDTH_SCANNING status if assessment exited early. */
+    if (((uint32_t)MODE_OBSTACLE_ASSESS != p_ctx->nav.mode) &&
         ((uint32_t)WIDTH_SCANNING == p_ctx->measured_width.status))
     {
+        /* Store WIDTH_UNAVAILABLE enum in 2-bit width status field. */
         p_ctx->measured_width.status = (uint32_t)WIDTH_UNAVAILABLE;
     }
 }
 
 /**
  * @brief Atomically copy Navigator state into the shared telemetry snapshot.
- * @param[in] p_ctx           Navigator context.
- * @param[in] b_bypass_active True if currently assessing or bypassing.
+ * @param[in] p_ctx              Navigator context.
+ * @param[in] b_is_bypass_active True if currently assessing or bypassing.
  */
 static void nav_publish_telemetry (const navigator_task_ctx_t * p_ctx,
-                                   bool b_bypass_active)
+                                   bool b_is_bypass_active)
 {
     UINT saved_state = robot_tasks_data_lock();
 
-    g_telemetry_snapshot.speed_left =
+    g_telemetry_snapshot.speed_left    =
         p_ctx->mot_cmd.fields.target_speed_left;
-    g_telemetry_snapshot.speed_right =
+    g_telemetry_snapshot.speed_right   =
         p_ctx->mot_cmd.fields.target_speed_right;
-    g_telemetry_snapshot.ir_state         = p_ctx->nav.prev_ir_state;
-    g_telemetry_snapshot.movement_mode    = p_ctx->nav.m_mode;
-    g_telemetry_snapshot.bypass_phase     = p_ctx->bypass.phase;
-    g_telemetry_snapshot.last_barcode     = p_ctx->nav.last_decoded_char;
-    g_telemetry_snapshot.inst_idx         = p_ctx->nav.instruction_idx;
-    g_telemetry_snapshot.enc_left         = motor_task_get_enc_left();
-    g_telemetry_snapshot.enc_right        = motor_task_get_enc_right();
-    g_telemetry_snapshot.dist_cm          = motor_task_get_avg_dist_cm();
-    g_telemetry_snapshot.closest_cm =
+    g_telemetry_snapshot.ir_state      = p_ctx->nav.prev_ir_state;
+    g_telemetry_snapshot.movement_mode = p_ctx->nav.mode;
+    g_telemetry_snapshot.bypass_phase  = p_ctx->bypass.phase;
+    g_telemetry_snapshot.last_barcode  = p_ctx->nav.last_decoded_char;
+    g_telemetry_snapshot.inst_idx      = p_ctx->nav.instruction_idx;
+    g_telemetry_snapshot.enc_left      = motor_task_get_enc_left();
+    g_telemetry_snapshot.enc_right     = motor_task_get_enc_right();
+    g_telemetry_snapshot.dist_cm       = motor_task_get_avg_dist_cm();
+    /* Narrow 9-bit closest distance into uint16_t telemetry bit-field. */
+    g_telemetry_snapshot.closest_cm    =
         (uint16_t)p_ctx->nav.last_closest_cm;
-    g_telemetry_snapshot.closest_ang_raw  =
+    /* Narrow 7-bit packed closest angle into uint16_t telemetry bit-field. */
+    g_telemetry_snapshot.closest_ang_raw    =
         (uint16_t)p_ctx->nav.last_closest_ang_raw;
-    g_telemetry_snapshot.est_width_cm     =
+    /* Narrow 10-bit estimated width into uint16_t telemetry bit-field. */
+    g_telemetry_snapshot.est_width_cm       =
         (uint16_t)p_ctx->measured_width.width_cm;
-    g_telemetry_snapshot.obs_width_status = p_ctx->measured_width.status;
+    g_telemetry_snapshot.obs_width_status   = p_ctx->measured_width.status;
     g_telemetry_snapshot.seq_num++;
-    g_telemetry_snapshot.obs_dist_valid   = p_ctx->nav.b_live_sonar_valid;
-    g_telemetry_snapshot.obs_status       = p_ctx->nav.live_sonar_status;
+    g_telemetry_snapshot.b_is_obs_dist_valid = p_ctx->nav.b_is_sonar_valid;
+    g_telemetry_snapshot.obs_status          = p_ctx->nav.live_sonar_status;
 
-    if (0u != p_ctx->nav.b_live_sonar_valid)
+    if (0u != p_ctx->nav.b_is_sonar_valid)
     {
+        /* Narrow 9-bit live sonar distance into uint16_t bit-field. */
         g_telemetry_snapshot.obs_dist_cm =
             (uint16_t)p_ctx->nav.live_sonar_dist_cm;
     }
-    else if (b_bypass_active)
+    else if (b_is_bypass_active)
     {
         g_telemetry_snapshot.obs_dist_cm = 0u;
     }
     else
     {
+        /* Narrow 9-bit cached obstacle distance into uint16_t bit-field. */
         g_telemetry_snapshot.obs_dist_cm =
             (uint16_t)p_ctx->nav.last_obstacle_dist_cm;
     }

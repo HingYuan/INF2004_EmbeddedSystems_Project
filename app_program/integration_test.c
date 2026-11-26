@@ -1,18 +1,12 @@
-/** @file integration_test.c
- *
+/**
+ * @file integration_test.c
  * @brief Automated cross-subsystem integration and system readiness tests.
- *
- * @par
- * COPYRIGHT NOTICE: (c) 2026 INF2004 Project Team. All rights reserved.
  */
-
-#define PROHIBIT_DEF_SIZE_T
-
-#include <stddef.h>
 
 #include "integration_test.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -30,9 +24,19 @@
 #include "util/code39.h"
 
 #define INT_TEST_BAR_WIN                (10u)
+#define INT_TEST_FIRST_ELEM_IDX         (1u)
 #define INT_TEST_CODE39_ELEMS           (9u)
+#define INT_TEST_IR_STATE_COUNT         (4u)
+#define INT_TEST_MAP_PKT_BYTES          (9u)
+#define INT_TEST_MAP_DATA_IDX           (2u)
+#define INT_TEST_ASCII_PRINT_MIN        (33u)
+#define INT_TEST_ASCII_PRINT_MAX        (126u)
+#define INT_TEST_JSON_BUF_LEN           (512u)
+#define INT_TEST_HDR_TELEM              (0x11u)
 #define INT_TEST_HDR_CMD                (0x12u)
 #define INT_TEST_HDR_MAP                (0x13u)
+#define INT_TEST_ALL_FLAGS_MASK         (0xFFFFFFFFu)
+#define INT_TEST_EXPECTED_PRIOR_CHECKS  (49u)
 
 static void integration_test_cleanup(void);
 static void integration_test_push_pattern(ID h_bar_mbf, uint16_t pat_bits);
@@ -111,8 +115,9 @@ static void integration_test_cleanup (void)
         /* Drain motor queue. */
     }
 
+    /* Reset all event flag bits in shared ultrasonic ranger flag group. */
     (void)tk_clr_flg(robot_tasks_get_ranger_flg(), 0u);
-    robot_tasks_flags_update(0u, 0xFFFFFFFFu);
+    robot_tasks_flags_update(0u, INT_TEST_ALL_FLAGS_MASK);
     navigator_task_set_sonar_telem(false, 0u, 0u);
     navigator_task_set_imu_pose(0, 0, 0, true, 0u);
     navigator_task_set_imu_height(0);
@@ -128,15 +133,19 @@ static void integration_test_push_pattern (ID h_bar_mbf, uint16_t pat_bits)
 {
     ir_task_bar_record_t lead_rec = { 0u, 400u };
 
+    /* Cast 4-byte bar record struct size to RTOS INT message size. */
     (void)tk_snd_mbf(h_bar_mbf, &lead_rec, (INT)sizeof(lead_rec), TMO_POL);
 
-    for (uint32_t idx = 1u; idx < INT_TEST_BAR_WIN; idx++)
+    for (uint32_t idx = INT_TEST_FIRST_ELEM_IDX;
+         idx < INT_TEST_BAR_WIN;
+         idx++)
     {
         uint32_t             mask = 1u << ((INT_TEST_BAR_WIN - 1u) - idx);
         ir_task_bar_record_t rec  = { 0u, 0u };
 
         rec.b_is_high = idx & 1u;
         rec.duration  = (0u != (pat_bits & mask)) ? 90u : 30u;
+        /* Cast 4-byte bar record struct size to RTOS INT message size. */
         (void)tk_snd_mbf(h_bar_mbf, &rec, (INT)sizeof(rec), TMO_POL);
     }
 }
@@ -153,41 +162,51 @@ static bool integration_test_decode_one (ID h_bar_mbf, ID h_nav_mbf)
     uint32_t             sum_dur                = 0u;
     uint32_t             avg_dur                = 0u;
     uint16_t             pat_bits               = 0u;
+    /* Initialize decoded byte to '?' sentinel ASCII value. */
     uint8_t              ch_val                 = (uint8_t)'?';
     bool                 b_is_ok                = true;
 
-    for (uint32_t idx = 0u; (idx < INT_TEST_BAR_WIN) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < INT_TEST_BAR_WIN) && (b_is_ok); idx++)
     {
         INT rx_sz = tk_rcv_mbf(h_bar_mbf, &bars[idx], TMO_POL);
 
+        /* Verify received INT byte count matches 4-byte bar record size. */
         b_is_ok = ((INT)sizeof(ir_task_bar_record_t) == rx_sz);
     }
 
     if (b_is_ok)
     {
-        for (uint32_t idx = 1u; idx < INT_TEST_BAR_WIN; idx++)
+        for (uint32_t idx = INT_TEST_FIRST_ELEM_IDX;
+             idx < INT_TEST_BAR_WIN;
+             idx++)
         {
             sum_dur += bars[idx].duration;
         }
 
         avg_dur = sum_dur / INT_TEST_CODE39_ELEMS;
 
-        for (uint32_t idx = 1u; idx < INT_TEST_BAR_WIN; idx++)
+        for (uint32_t idx = INT_TEST_FIRST_ELEM_IDX;
+             idx < INT_TEST_BAR_WIN;
+             idx++)
         {
             if (bars[idx].duration > avg_dur)
             {
+                /* Range-safe: shift 0..8 fits in 9-bit uint16_t mask. */
                 pat_bits |= (uint16_t)(1u << ((INT_TEST_BAR_WIN - 1u) - idx));
             }
         }
 
         ch_val = code39_decode_pattern(pat_bits);
 
+        /* Filter '*' start/stop delimiter and '?' invalid sentinel bytes. */
         if (((uint8_t)'*' != ch_val) && ((uint8_t)'?' != ch_val))
         {
             navigator_task_msg_t nav_msg = { 0 };
 
+            /* Store MSG_BARCODE_DECODED enum in 4-bit message field. */
             nav_msg.type              = (uint32_t)MSG_BARCODE_DECODED;
             nav_msg.data.decoded_char = ch_val;
+            /* Cast Navigator message size to RTOS INT parameter. */
             b_is_ok = (E_OK == tk_snd_mbf(h_nav_mbf,
                                           &nav_msg,
                                           (INT)sizeof(nav_msg),
@@ -213,9 +232,10 @@ static bool integration_test_int01_barcode_nav (void)
     integration_test_push_pattern(h_bar, 0x094u);
     integration_test_push_pattern(h_bar, 0x058u);
 
-    b_is_ok = (integration_test_decode_one(h_bar, h_nav) &&
+    /* Verify '*' is filtered and 'F' arrives with full INT message size. */
+    b_is_ok = ((integration_test_decode_one(h_bar, h_nav)) &&
                (E_TMOUT == tk_rcv_mbf(h_nav, &rx_msg, TMO_POL)) &&
-               integration_test_decode_one(h_bar, h_nav) &&
+               (integration_test_decode_one(h_bar, h_nav)) &&
                ((INT)sizeof(rx_msg) == tk_rcv_mbf(h_nav, &rx_msg, TMO_POL)) &&
                ((uint32_t)MSG_BARCODE_DECODED == rx_msg.type) &&
                ((uint8_t)'F' == rx_msg.data.decoded_char));
@@ -229,18 +249,20 @@ static bool integration_test_int01_barcode_nav (void)
  */
 static bool integration_test_int02_ir_nav_motor (void)
 {
-    static const navigator_task_ir_state_t states[4] =
+    static const navigator_task_ir_state_t states[INT_TEST_IR_STATE_COUNT] =
     {
         IR_STATE_W_W, IR_STATE_W_B, IR_STATE_B_W, IR_STATE_B_B
     };
-    static const int8_t exp_l[4] =
+    /* Cast nominal Navigator left speed constants to int8_t table entries. */
+    static const int8_t exp_l[INT_TEST_IR_STATE_COUNT] =
     {
         (int8_t)NAV_FORWARD_SPEED,
         (int8_t)NAV_RIGHT_TURN_L_BASE,
         (int8_t)NAV_LEFT_TURN_L_BASE,
         (int8_t)NAV_STOP_SPEED
     };
-    static const int8_t exp_r[4] =
+    /* Cast nominal Navigator right speed constants to int8_t table entries. */
+    static const int8_t exp_r[INT_TEST_IR_STATE_COUNT] =
     {
         (int8_t)(-NAV_FORWARD_SPEED),
         (int8_t)(-NAV_RIGHT_TURN_R_BASE),
@@ -251,16 +273,19 @@ static bool integration_test_int02_ir_nav_motor (void)
     ID   h_mot   = robot_tasks_get_motor_mbf();
     bool b_is_ok = true;
 
-    for (uint32_t idx = 0u; (idx < 4u) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < INT_TEST_IR_STATE_COUNT) && (b_is_ok); idx++)
     {
-        navigator_task_msg_t tx_ir   = { 0 };
-        navigator_task_msg_t rx_ir   = { 0 };
-        motor_task_cmd_t     tx_mot  = { 0u };
-        motor_task_cmd_t     rx_mot  = { 0u };
+        navigator_task_msg_t tx_ir  = { 0 };
+        navigator_task_msg_t rx_ir  = { 0 };
+        motor_task_cmd_t     tx_mot = { 0u };
+        motor_task_cmd_t     rx_mot = { 0u };
 
+        /* Store MSG_IR_UPDATE enum and 8-bit IR state in message payload. */
         tx_ir.type          = (uint32_t)MSG_IR_UPDATE;
+        /* Fit 3-bit IR state enum into uint8_t payload byte. */
         tx_ir.data.ir_state = (uint8_t)states[idx];
 
+        /* Verify Navigator MBF round-trip with INT message size casts. */
         b_is_ok = ((E_OK == tk_snd_mbf(h_nav,
                                        &tx_ir,
                                        (INT)sizeof(tx_ir),
@@ -273,6 +298,7 @@ static bool integration_test_int02_ir_nav_motor (void)
         {
             tx_mot.fields.target_speed_left  = exp_l[rx_ir.data.ir_state];
             tx_mot.fields.target_speed_right = exp_r[rx_ir.data.ir_state];
+            /* Verify Motor MBF round-trip with INT message size casts. */
             b_is_ok = ((E_OK == tk_snd_mbf(h_mot,
                                            &tx_mot,
                                            (INT)sizeof(tx_mot),
@@ -294,7 +320,8 @@ static bool integration_test_int02_ir_nav_motor (void)
  */
 static bool integration_test_int03_mqtt_map_nav (void)
 {
-    static const uint8_t keys[NAV_NUMBER_OF_COMMANDS] =
+    /* Cast ASCII 'A'..'E' barcode keys to uint8_t test array elements. */
+    static const uint8_t              keys[NAV_NUMBER_OF_COMMANDS] =
     {
         (uint8_t)'A', (uint8_t)'B', (uint8_t)'C', (uint8_t)'D', (uint8_t)'E'
     };
@@ -302,32 +329,47 @@ static bool integration_test_int03_mqtt_map_nav (void)
     {
         DIR_FRONT, DIR_LEFT, DIR_RIGHT, DIR_BACK, DIR_STOP
     };
-    uint8_t                pkt[9]                  = { INT_TEST_HDR_MAP, 5u };
-    uint8_t                map_tbl[MQTT_MAP_BYTES] = { 0u };
-    navigator_task_route_t route                   = { { 0u } };
-    ID                     h_nav                   = robot_tasks_get_nav_mbf();
-    uint32_t               rx_cnt                  = 0u;
-    bool                   b_is_ok                 = true;
+    uint8_t                pkt[INT_TEST_MAP_PKT_BYTES] =
+    {
+        INT_TEST_HDR_MAP, 5u
+    };
+    uint8_t                map_tbl[MQTT_MAP_BYTES]     = { 0u };
+    navigator_task_route_t route                       = { { 0u } };
+    ID                     h_nav                       =
+        robot_tasks_get_nav_mbf();
+    uint32_t               rx_cnt                      = 0u;
+    bool                   b_is_ok                     = true;
 
     for (uint32_t idx = 0u; idx < NAV_NUMBER_OF_COMMANDS; idx++)
     {
+        /* Pack 3-bit direction << 7 | 7-bit ASCII key into 10-bit wire slot. */
         uint32_t entry = (((uint32_t)dirs[idx]) << 7u) | (uint32_t)keys[idx];
 
-        robot_tasks_bits_set(&pkt[2], idx * 10u, 10u, entry);
+        robot_tasks_bits_set(&pkt[INT_TEST_MAP_DATA_IDX],
+                             idx * 10u,
+                             10u,
+                             entry);
     }
 
+    /* Cast 9-byte packet sizeof to uint32_t length argument. */
     b_is_ok = mqtt_client_decode_map(pkt, (uint32_t)sizeof(pkt), map_tbl);
 
-    for (uint32_t code = 33u; (code <= 126u) && b_is_ok; code++)
+    for (uint32_t code = INT_TEST_ASCII_PRINT_MIN;
+         (code <= INT_TEST_ASCII_PRINT_MAX) && (b_is_ok);
+         code++)
     {
         uint32_t dir_val = robot_tasks_bits_get(map_tbl, code * 3u, 3u);
 
+        /* Forward only populated ASCII entries (not DIR_INVALID). */
         if ((uint32_t)DIR_INVALID != dir_val)
         {
             navigator_task_msg_t msg = { 0 };
 
+            /* Store MSG_WIFI_BARCODE_MAPPING enum in 4-bit message field. */
             msg.type                = (uint32_t)MSG_WIFI_BARCODE_MAPPING;
+            /* Range-safe: 3-bit dir << 7 | 7-bit ASCII fits in uint16_t. */
             msg.data.packed_mapping = (uint16_t)((dir_val << 7u) | code);
+            /* Cast Navigator message size to RTOS INT parameter. */
             b_is_ok = (E_OK == tk_snd_mbf(h_nav,
                                           &msg,
                                           (INT)sizeof(msg),
@@ -335,21 +377,26 @@ static bool integration_test_int03_mqtt_map_nav (void)
         }
     }
 
-    while (b_is_ok && (rx_cnt < NAV_NUMBER_OF_COMMANDS))
+    while ((b_is_ok) && (rx_cnt < NAV_NUMBER_OF_COMMANDS))
     {
         navigator_task_msg_t rx = { 0 };
 
+        /* Verify full Navigator message size on MBF dequeue. */
         if ((INT)sizeof(rx) != tk_rcv_mbf(h_nav, &rx, TMO_POL))
         {
             b_is_ok = false;
         }
         else
         {
+            /* Extract 3-bit direction enum from upper packed mapping bits. */
             navigator_task_dir_t rx_dir =
                 (navigator_task_dir_t)(rx.data.packed_mapping >> 7u);
-            uint8_t rx_ch = (uint8_t)(rx.data.packed_mapping & 0x7Fu);
+            /* Extract 7-bit ASCII key from lower packed mapping bits. */
+            uint8_t              rx_ch  =
+                (uint8_t)(rx.data.packed_mapping & 0x7Fu);
 
             navigator_task_set_route(&route, rx_cnt, rx_dir);
+            /* Verify message type enum, ASCII key, and stored route entry. */
             b_is_ok = (((uint32_t)MSG_WIFI_BARCODE_MAPPING == rx.type) &&
                        (keys[rx_cnt] == rx_ch) &&
                        (dirs[rx_cnt] ==
@@ -358,7 +405,7 @@ static bool integration_test_int03_mqtt_map_nav (void)
         }
     }
 
-    return (b_is_ok && (NAV_NUMBER_OF_COMMANDS == rx_cnt));
+    return ((b_is_ok) && (NAV_NUMBER_OF_COMMANDS == rx_cnt));
 }
 
 /**
@@ -367,7 +414,8 @@ static bool integration_test_int03_mqtt_map_nav (void)
  */
 static bool integration_test_int04_mqtt_cmd_motor (void)
 {
-    const uint8_t pkt[MQTT_COMMAND_BYTES] =
+    /* Encode -35 right speed as two's-complement uint8_t wire byte (221u). */
+    const uint8_t        pkt[MQTT_COMMAND_BYTES] =
     {
         INT_TEST_HDR_CMD, 35u, (uint8_t)(-35), 120u, 120u
     };
@@ -381,10 +429,15 @@ static bool integration_test_int04_mqtt_cmd_motor (void)
 
     if (mqtt_client_decode_cmd(pkt, MQTT_COMMAND_BYTES, &decoded))
     {
+        /* Store MSG_REMOTE_CMD enum in 4-bit Navigator message field. */
         nav_tx.type            = (uint32_t)MSG_REMOTE_CMD;
         nav_tx.data.remote_cmd = decoded;
 
-        if ((E_OK == tk_snd_mbf(h_nav, &nav_tx, (INT)sizeof(nav_tx), TMO_POL)) &&
+        /* Verify end-to-end Navigator -> Motor MBF delivery with INT sizes. */
+        if ((E_OK == tk_snd_mbf(h_nav,
+                                &nav_tx,
+                                (INT)sizeof(nav_tx),
+                                TMO_POL)) &&
             ((INT)sizeof(nav_rx) == tk_rcv_mbf(h_nav, &nav_rx, TMO_POL)) &&
             ((uint32_t)MSG_REMOTE_CMD == nav_rx.type) &&
             (E_OK == tk_snd_mbf(h_mot,
@@ -409,18 +462,21 @@ static bool integration_test_int04_mqtt_cmd_motor (void)
  */
 static bool integration_test_int05_sonar_estop_scan (void)
 {
-    ID                   h_nav   = robot_tasks_get_nav_mbf();
-    ID                   h_flg   = robot_tasks_get_ranger_flg();
-    navigator_task_msg_t tx_msg  = { 0 };
-    navigator_task_msg_t rx_msg  = { 0 };
-    UINT                 flg_ptn = 0u;
-    bool                 b_is_ok = false;
+    ID                   h_nav     = robot_tasks_get_nav_mbf();
+    ID                   h_flg     = robot_tasks_get_ranger_flg();
+    navigator_task_msg_t tx_msg    = { 0 };
+    navigator_task_msg_t empty_msg = { 0 };
+    navigator_task_msg_t rx_msg    = { 0 };
+    UINT                 flg_ptn   = 0u;
+    bool                 b_is_ok   = false;
 
     /* Step 1: Ultrasonic latches E-stop and sends MSG_OBSTACLE_DETECTED. */
     robot_tasks_flag_assign(ROBOT_ESTOP_REQUEST, true);
+    /* Store MSG_OBSTACLE_DETECTED enum in 4-bit message field. */
     tx_msg.type             = (uint32_t)MSG_OBSTACLE_DETECTED;
     tx_msg.data.obs_dist_cm = 18u;
-    b_is_ok = (motor_task_is_estop() &&
+    /* Verify E-stop latch and MBF delivery with INT message sizes. */
+    b_is_ok = ((motor_task_is_estop()) &&
                (E_OK == tk_snd_mbf(h_nav,
                                    &tx_msg,
                                    (INT)sizeof(tx_msg),
@@ -430,11 +486,13 @@ static bool integration_test_int05_sonar_estop_scan (void)
 
     /* Step 2: Navigator requests stop ack; Motor replies MSG_MOTOR_STOPPED. */
     robot_tasks_flag_assign(ROBOT_STOP_ACK_REQUEST, true);
-    b_is_ok = (b_is_ok && motor_task_is_stop_ack_req());
+    b_is_ok = ((b_is_ok) && (motor_task_is_stop_ack_req()));
     robot_tasks_flag_assign(ROBOT_STOP_ACK_REQUEST, false);
-    tx_msg      = (navigator_task_msg_t){ 0 };
+    tx_msg      = empty_msg;
+    /* Store MSG_MOTOR_STOPPED enum in 4-bit message field. */
     tx_msg.type = (uint32_t)MSG_MOTOR_STOPPED;
-    b_is_ok = (b_is_ok &&
+    /* Verify MSG_MOTOR_STOPPED delivery with INT message sizes. */
+    b_is_ok = ((b_is_ok) &&
                (E_OK == tk_snd_mbf(h_nav,
                                    &tx_msg,
                                    (INT)sizeof(tx_msg),
@@ -443,7 +501,7 @@ static bool integration_test_int05_sonar_estop_scan (void)
                ((uint32_t)MSG_MOTOR_STOPPED == rx_msg.type));
 
     /* Step 3: Navigator sets SONAR_SCAN_REQUEST; Ultrasonic wakes + clears. */
-    b_is_ok = (b_is_ok &&
+    b_is_ok = ((b_is_ok) &&
                (E_OK == tk_set_flg(h_flg, SONAR_SCAN_REQUEST)) &&
                (E_OK == tk_wai_flg(h_flg,
                                    SONAR_SCAN_REQUEST,
@@ -458,20 +516,23 @@ static bool integration_test_int05_sonar_estop_scan (void)
                                       TMO_POL)));
 
     /* Step 4: Ultrasonic returns 33-byte MSG_OBSTACLE_PROFILED to Navigator. */
-    tx_msg                                    = (navigator_task_msg_t){ 0 };
-    tx_msg.type                               = (uint32_t)MSG_OBSTACLE_PROFILED;
-    tx_msg.data.obs_profile.front_cm          = 18u;
+    tx_msg                                     = empty_msg;
+    /* Store MSG_OBSTACLE_PROFILED enum in 4-bit message field. */
+    tx_msg.type = (uint32_t)MSG_OBSTACLE_PROFILED;
+    tx_msg.data.obs_profile.front_cm           = 18u;
     tx_msg.data.obs_profile.b_is_profile_valid = 1u;
     navigator_task_set_ray(&tx_msg.data.obs_profile, 3u, 18u, SONAR_OK);
 
-    b_is_ok = (b_is_ok &&
+    /* Verify MSG_OBSTACLE_PROFILED delivery and center ray distance. */
+    b_is_ok = ((b_is_ok) &&
                (E_OK == tk_snd_mbf(h_nav,
                                    &tx_msg,
                                    (INT)sizeof(tx_msg),
                                    TMO_POL)) &&
                ((INT)sizeof(rx_msg) == tk_rcv_mbf(h_nav, &rx_msg, TMO_POL)) &&
                ((uint32_t)MSG_OBSTACLE_PROFILED == rx_msg.type) &&
-               (18u == navigator_task_get_ray_cm(&rx_msg.data.obs_profile, 3u)));
+               (18u ==
+                navigator_task_get_ray_cm(&rx_msg.data.obs_profile, 3u)));
 
     return b_is_ok;
 }
@@ -504,15 +565,16 @@ static bool integration_test_int06_bypass_motor_probe (void)
                          -BYPASS_API_POWER,
                          bypass.planned_shift_mm);
 
+    /* Verify 4-byte motor command dequeued from MBF matches bypass shift. */
     b_is_ok = (((INT)sizeof(rx_mot) ==
                 tk_rcv_mbf(robot_tasks_get_motor_mbf(), &rx_mot, TMO_POL)) &&
                (BYPASS_API_POWER == rx_mot.fields.target_speed_left) &&
                ((-BYPASS_API_POWER) == rx_mot.fields.target_speed_right) &&
                (rx_mot.fields.turn_ticks_left > 0u));
 
-    /* Stationary width probe requires 2 consecutive clear probes -> turn out. */
+    /* Stationary width probe needs 2 consecutive clear probes -> turn out. */
     bypass_helpers_probe(&bypass, &mot_cmd, BYPASS_WIDTH_CHECK);
-    b_is_ok = (b_is_ok &&
+    b_is_ok = ((b_is_ok) &&
                (E_OK == tk_wai_flg(robot_tasks_get_ranger_flg(),
                                    SONAR_PROBE_FRONT_FLAG,
                                    TWF_ORW | TWF_BITCLR,
@@ -522,16 +584,19 @@ static bool integration_test_int06_bypass_motor_probe (void)
     robot_tasks_delay_usec(10u);
     probe.sampled_at_usec = robot_tasks_time_usec();
     probe.angle_deg_raw   = 0u;
+    /* Store SONAR_NO_ECHO enum in 3-bit probe status field. */
     probe.status          = (uint32_t)SONAR_NO_ECHO;
     bypass_helpers_probe_result(&bypass, &mot_cmd, &probe);
-    b_is_ok = (b_is_ok &&
+    /* Verify first clear probe stays in BYPASS_WIDTH_CHECK with count 1. */
+    b_is_ok = ((b_is_ok) &&
                ((uint32_t)BYPASS_WIDTH_CHECK == bypass.phase) &&
                (1u == bypass.probe_clear_cnt));
 
     robot_tasks_delay_usec(10u);
     probe.sampled_at_usec = robot_tasks_time_usec();
     bypass_helpers_probe_result(&bypass, &mot_cmd, &probe);
-    b_is_ok = (b_is_ok &&
+    /* Verify second clear probe transitions to BYPASS_WIDTH_TURN_OUT. */
+    b_is_ok = ((b_is_ok) &&
                ((uint32_t)BYPASS_WIDTH_TURN_OUT == bypass.phase) &&
                (1u == bypass.b_has_width_clr_pend));
 
@@ -552,13 +617,18 @@ static bool integration_test_int07_imu_nav_estop (void)
 
     /* Phase 1: Hump detected -> height_dmm=220, MSG_IMU_UPDATE delivered. */
     navigator_task_set_imu_height(220);
+    /* Fit 2-bit IMU_MSG_HUMP_DETECTED enum into uint8_t setter argument. */
     navigator_task_set_imu_event((uint8_t)IMU_MSG_HUMP_DETECTED);
+    /* Store MSG_IMU_UPDATE and IMU_MSG_HUMP_DETECTED enums in message. */
     tx_msg.type                        = (uint32_t)MSG_IMU_UPDATE;
+    /* Store 2-bit hump detected enum in IMU payload field. */
     tx_msg.data.imu_msg.event          = (uint32_t)IMU_MSG_HUMP_DETECTED;
+    /* Narrow 12-bit packed signed pitch (+85) into uint16_t bit-field. */
     tx_msg.data.imu_msg.pitch_ddeg_raw =
         (uint16_t)robot_tasks_pack_signed(85, NAV_TILT_BIT_WIDTH);
     tx_msg.data.imu_msg.height_dmm     = 220u;
 
+    /* Verify MBF round-trip with INT message sizes and no E-stop latch. */
     b_is_ok = ((E_OK == tk_snd_mbf(h_nav,
                                    &tx_msg,
                                    (INT)sizeof(tx_msg),
@@ -569,14 +639,16 @@ static bool integration_test_int07_imu_nav_estop (void)
 
     /* Phase 2: Lift/overturn -> latches E-stop, IMU_TILT, zeroes height. */
     robot_tasks_flags_update(ROBOT_FAULT_IMU_TILT | ROBOT_ESTOP_REQUEST, 0u);
+    /* Fit 2-bit lifted/overturned state and event enums into uint8_t args. */
     navigator_task_set_imu_stop(-320,
                                 15,
                                 (uint8_t)IMU_STATE_LIFTED_OVERTURNED,
                                 (uint8_t)IMU_MSG_LIFTED_OVERTURNED);
     navigator_task_read_telem(&snap);
 
-    return (b_is_ok &&
-            motor_task_is_estop() &&
+    /* Verify E-stop latch and lifted/overturned state/event in snapshot. */
+    return ((b_is_ok) &&
+            (motor_task_is_estop()) &&
             (0u == snap.height_dmm) &&
             ((uint32_t)IMU_STATE_LIFTED_OVERTURNED == snap.imu_state) &&
             ((uint32_t)IMU_MSG_LIFTED_OVERTURNED == snap.imu_event));
@@ -588,28 +660,32 @@ static bool integration_test_int07_imu_nav_estop (void)
  */
 static bool integration_test_int08_telem_network (void)
 {
-    navigator_task_telemetry_t snap                     = { 0u };
+    navigator_task_telemetry_t snap                       = { 0u };
     uint8_t                    wire[MQTT_TELEMETRY_BYTES] = { 0u };
-    char                       json_buf[512]            = { '\0' };
-    uint32_t                   flags                    = 0u;
-    uint32_t                   json_len                 = 0u;
+    char                       json_buf[INT_TEST_JSON_BUF_LEN] = { '\0' };
+    uint32_t                   flags                      = 0u;
+    uint32_t                   json_len                   = 0u;
 
+    /* Fit 3-bit SONAR_OK enum into uint8_t telemetry setter argument. */
     navigator_task_set_sonar_telem(true, (uint8_t)SONAR_OK, 77u);
+    /* Fit 2-bit IMU_STATE_MONITORING enum into uint8_t pose setter arg. */
     navigator_task_set_imu_pose(-110,
                                 45,
                                 90,
                                 true,
                                 (uint8_t)IMU_STATE_MONITORING);
     navigator_task_set_imu_height(195);
+    /* Fit 2-bit IMU_MSG_HUMP_DETECTED enum into uint8_t event setter arg. */
     navigator_task_set_imu_event((uint8_t)IMU_MSG_HUMP_DETECTED);
     robot_tasks_flags_update(ROBOT_FAULT_WIFI | ROBOT_STATUS_NO_ECHO, 0u);
 
     navigator_task_read_telem(&snap);
-    flags = robot_tasks_flags_get();
+    flags    = robot_tasks_flags_get();
     mqtt_client_encode_telem(wire, &snap, flags);
+    /* Cast 512-byte JSON buffer sizeof to uint32_t capacity parameter. */
     json_len = mqtt_client_telemetry_json(json_buf, (uint32_t)sizeof(json_buf));
 
-    return ((0x11u == wire[0]) &&
+    return ((INT_TEST_HDR_TELEM == wire[0]) &&
             (77u == robot_tasks_bits_get(wire, 152u, 9u)) &&
             (90u == robot_tasks_bits_get(wire, 213u, 9u)) &&
             (195u == robot_tasks_bits_get(wire, 222u, 10u)) &&
@@ -649,7 +725,7 @@ static bool integration_test_sys02_ipc_and_gate (void)
             (robot_tasks_get_nav_mbf() > 0) &&
             (robot_tasks_get_motor_mbf() > 0) &&
             (robot_tasks_get_ranger_flg() > 0) &&
-            (49u == test_report_get_total()) &&
+            (INT_TEST_EXPECTED_PRIOR_CHECKS == test_report_get_total()) &&
             (0u == test_report_get_failed()));
 }
 

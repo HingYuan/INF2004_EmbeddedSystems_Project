@@ -131,7 +131,7 @@ void ir_task_zeroing_task (INT stacd, void * p_exinf)
             uint32_t barcode_mv =
                 (((uint32_t)barcode_raw) * IR_ADC_REF_MV) / IR_ADC_MAX_RAW;
 
-            /* Range-safe: ASCII literals and 0..3300 mV fit const UB */UINT. */
+            /* Range-safe: ASCII literal bytes map identically to const UB *. */
             tm_printf((const UB *)"[IR left] %u\t", left_val);
             /* Range-safe: ASCII literal bytes map identically to const UB *. */
             tm_printf((const UB *)"[IR right] %u\n", right_val);

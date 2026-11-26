@@ -18,6 +18,8 @@
 #ifndef IMU_TASK_H
 #define IMU_TASK_H
 
+#include <stddef.h>
+
 #include <tk/tkernel.h>
 
 #include "../robot_tasks.h"

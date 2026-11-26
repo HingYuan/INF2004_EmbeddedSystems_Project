@@ -237,26 +237,27 @@ ER robot_tasks_start (void)
         (((uint32_t)SONAR_TRIG_PIN) << 16u) |
         (((uint32_t)SONAR_ECHO_PIN) << 8u);
     /* Range-safe: packed GPIO pin bitmasks <= 0x1CFF00 fit positive INT. */
+    /* Range-safe: 24-bit/12-bit/5-bit GPIO pin masks fit positive INT. */
     const robot_tasks_cfg_t task_table[] =
     {
         {
             ultrasonic_task_run_task,
             ROBOT_SENSOR_TASK_PRIO,
-            (INT)packed_sonar_raw,
+            (INT)packed_sonar_raw, /* 24-bit pin triplet fits positive INT */
             TP_PRC1,
             "Ultrasonic"
         },
         {
             ir_task_sensor_task,
             ROBOT_SENSOR_TASK_PRIO,
-            (INT)packed_ir_raw,
+            (INT)packed_ir_raw, /* 12-bit ADC pin pair fits positive INT */
             TP_PRC1,
             "IR line sensors"
         },
         {
             ir_task_barcode_task,
             ROBOT_SENSOR_TASK_PRIO,
-            (INT)IR_LEFT_PIN,
+            (INT)IR_LEFT_PIN, /* GPIO pin 26 fits positive INT */
             TP_PRC1,
             "IR barcode sensor"
         },

@@ -1,9 +1,10 @@
-/** @file ir_test.c
- *
+/**
+ * @file ir_test.c
  * @brief Subsystem 2 (IR Sensors, Code 39 Barcode & Navigator) unit tests.
  *
- * @par
- * COPYRIGHT NOTICE: (c) 2026 INF2004 Project Team. All rights reserved.
+ * BARR-C Deviation (Rule 5.2.a):
+ *   Approver: Maxwell Menendez (Project Manager, INF2004).
+ *   Rationale: uT-Kernel message-buffer APIs require native ID and INT types.
  */
 
 #include "ir_test.h"
@@ -22,9 +23,15 @@
 #define IR_TEST_ADC_REF_MV              (3300u)
 #define IR_TEST_ADC_MAX_RAW             (4095u)
 #define IR_TEST_BARS_PER_CHAR           (10u)
+#define IR_TEST_FIRST_ELEM_IDX          (1u)
 #define IR_TEST_CODE39_ELEMENTS         (9u)
 #define IR_TEST_BAR_QUEUE_CAP           (20u)
+#define IR_TEST_BAR_REC_BYTES           (4u)
 #define IR_TEST_MAX_DURATION_26BIT      (0x03FFFFFFu)
+#define IR_TEST_ALPHA_COUNT             (26u)
+#define IR_TEST_SYM_COUNT               (18u)
+#define IR_TEST_BIT_BUF_BYTES           (8u)
+#define IR_TEST_TELEM_BYTES             (32u)
 
 typedef struct
 {
@@ -34,8 +41,7 @@ typedef struct
 
 static navigator_task_ir_state_t ir_test_eval_adc_pair(uint32_t raw_left,
                                                        uint32_t raw_right);
-static uint8_t ir_test_decode_bars(
-    const ir_task_bar_record_t bars[IR_TEST_BARS_PER_CHAR]);
+static uint8_t ir_test_decode_bars(const ir_task_bar_record_t * p_bars);
 static bool ir_test_check_adc_threshold(void);
 static bool ir_test_check_code39_alpha(void);
 static bool ir_test_check_code39_digits_sym(void);
@@ -69,23 +75,27 @@ void ir_test_run (void)
 static navigator_task_ir_state_t ir_test_eval_adc_pair (uint32_t raw_left,
                                                         uint32_t raw_right)
 {
-    uint16_t left_mv      =
+    /* Range-safe: scaled 12-bit ADC millivolt value lies in [0, 3300]. */
+    uint16_t                  left_mv          =
         (uint16_t)((raw_left * IR_TEST_ADC_REF_MV) / IR_TEST_ADC_MAX_RAW);
-    uint16_t right_mv     =
+    /* Range-safe: scaled right ADC millivolt value lies in [0, 3300]. */
+    uint16_t                  right_mv         =
         (uint16_t)((raw_right * IR_TEST_ADC_REF_MV) / IR_TEST_ADC_MAX_RAW);
-    bool     b_left_black = (left_mv >= IR_ADC_THRESHOLD_MV);
-    bool     b_right_black = (right_mv >= IR_ADC_THRESHOLD_MV);
-    navigator_task_ir_state_t state = IR_STATE_W_B;
+    bool                      b_is_left_black  =
+        (left_mv >= IR_ADC_THRESHOLD_MV);
+    bool                      b_is_right_black =
+        (right_mv >= IR_ADC_THRESHOLD_MV);
+    navigator_task_ir_state_t state            = IR_STATE_W_B;
 
-    if (b_left_black && b_right_black)
+    if ((b_is_left_black) && (b_is_right_black))
     {
         state = IR_STATE_B_B;
     }
-    else if ((!b_left_black) && (!b_right_black))
+    else if ((!b_is_left_black) && (!b_is_right_black))
     {
         state = IR_STATE_W_W;
     }
-    else if (b_left_black)
+    else if (b_is_left_black)
     {
         state = IR_STATE_B_W;
     }
@@ -99,29 +109,33 @@ static navigator_task_ir_state_t ir_test_eval_adc_pair (uint32_t raw_left,
 
 /**
  * @brief Apply 9-element mean duration thresholding and Code 39 lookup.
- * @param[in] bars 10-element bar array (index 0 is leading quiet-zone space).
+ * @param[in] p_bars 10-element bar array (index 0 is leading quiet space).
  * @return Decoded ASCII character or '?'.
  */
-static uint8_t ir_test_decode_bars (
-    const ir_task_bar_record_t bars[IR_TEST_BARS_PER_CHAR])
+static uint8_t ir_test_decode_bars (const ir_task_bar_record_t * p_bars)
 {
     uint32_t sum_dur      = 0u;
     uint32_t avg_dur      = 0u;
     uint16_t pattern_bits = 0u;
 
-    for (uint32_t idx = 1u; idx < IR_TEST_BARS_PER_CHAR; idx++)
+    for (uint32_t idx = IR_TEST_FIRST_ELEM_IDX;
+         idx < IR_TEST_BARS_PER_CHAR;
+         idx++)
     {
-        sum_dur += bars[idx].duration;
+        sum_dur += p_bars[idx].duration;
     }
 
     avg_dur = sum_dur / IR_TEST_CODE39_ELEMENTS;
 
-    for (uint32_t idx = 1u; idx < IR_TEST_BARS_PER_CHAR; idx++)
+    for (uint32_t idx = IR_TEST_FIRST_ELEM_IDX;
+         idx < IR_TEST_BARS_PER_CHAR;
+         idx++)
     {
-        if (bars[idx].duration > avg_dur)
+        if (p_bars[idx].duration > avg_dur)
         {
             uint32_t shift_pos = (IR_TEST_BARS_PER_CHAR - 1u) - idx;
 
+            /* Range-safe: shift_pos is 0..8, fitting in 9-bit uint16_t mask. */
             pattern_bits |= (uint16_t)(1u << shift_pos);
         }
     }
@@ -135,7 +149,7 @@ static uint8_t ir_test_decode_bars (
  */
 static bool ir_test_check_adc_threshold (void)
 {
-    /* 620 * 3300 / 4095 = 499 mV (White); 621 * 3300 / 4095 = 500 mV (Black). */
+    /* 620 * 3300 / 4095 = 499 mV (W); 621 * 3300 / 4095 = 500 mV (B). */
     return ((500u == IR_ADC_THRESHOLD_MV) &&
             (IR_STATE_W_W == ir_test_eval_adc_pair(0u, 0u)) &&
             (IR_STATE_W_W == ir_test_eval_adc_pair(620u, 620u)) &&
@@ -151,7 +165,8 @@ static bool ir_test_check_adc_threshold (void)
  */
 static bool ir_test_check_code39_alpha (void)
 {
-    static const ir_test_code39_pair_t alpha_tbl[26] =
+    /* Cast ASCII uppercase character literals to uint8_t table entries. */
+    static const ir_test_code39_pair_t alpha_tbl[IR_TEST_ALPHA_COUNT] =
     {
         { 0x109u, (uint8_t)'A' }, { 0x049u, (uint8_t)'B' },
         { 0x148u, (uint8_t)'C' }, { 0x019u, (uint8_t)'D' },
@@ -169,7 +184,7 @@ static bool ir_test_check_code39_alpha (void)
     };
     bool b_is_ok = true;
 
-    for (uint32_t idx = 0u; (idx < 26u) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < IR_TEST_ALPHA_COUNT) && (b_is_ok); idx++)
     {
         b_is_ok = (alpha_tbl[idx].expected ==
                    code39_decode_pattern(alpha_tbl[idx].pattern));
@@ -184,7 +199,8 @@ static bool ir_test_check_code39_alpha (void)
  */
 static bool ir_test_check_code39_digits_sym (void)
 {
-    static const ir_test_code39_pair_t sym_tbl[18] =
+    /* Cast ASCII digit and symbol literals to uint8_t table entries. */
+    static const ir_test_code39_pair_t sym_tbl[IR_TEST_SYM_COUNT] =
     {
         { 0x034u, (uint8_t)'0' }, { 0x121u, (uint8_t)'1' },
         { 0x061u, (uint8_t)'2' }, { 0x160u, (uint8_t)'3' },
@@ -198,13 +214,14 @@ static bool ir_test_check_code39_digits_sym (void)
     };
     bool b_is_ok = true;
 
-    for (uint32_t idx = 0u; (idx < 18u) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < IR_TEST_SYM_COUNT) && (b_is_ok); idx++)
     {
         b_is_ok = (sym_tbl[idx].expected ==
                    code39_decode_pattern(sym_tbl[idx].pattern));
     }
 
-    b_is_ok = (b_is_ok &&
+    /* Verify invalid 9-bit and >=10-bit patterns return '?' sentinel byte. */
+    b_is_ok = ((b_is_ok) &&
                ((uint8_t)'?' == code39_decode_pattern(0x000u)) &&
                ((uint8_t)'?' == code39_decode_pattern(0x1FFu)) &&
                ((uint8_t)'?' == code39_decode_pattern(0x001u)) &&
@@ -220,14 +237,16 @@ static bool ir_test_check_code39_digits_sym (void)
 static bool ir_test_check_adaptive_window (void)
 {
     /* Pattern 0x058 = 'F' (0b001011000); bar[0] is arbitrarily long space. */
-    const uint16_t f_pat = 0x058u;
-    const uint16_t s_pat = 0x094u;
+    const uint16_t       f_pat                            = 0x058u;
+    const uint16_t       s_pat                            = 0x094u;
     ir_task_bar_record_t fast_bars[IR_TEST_BARS_PER_CHAR] = { { 0u, 9999u } };
     ir_task_bar_record_t slow_bars[IR_TEST_BARS_PER_CHAR] = { { 0u, 15u } };
     ir_task_bar_record_t star_bars[IR_TEST_BARS_PER_CHAR] = { { 0u, 500u } };
     ir_task_bar_record_t flat_bars[IR_TEST_BARS_PER_CHAR] = { { 0u, 100u } };
 
-    for (uint32_t idx = 1u; idx < IR_TEST_BARS_PER_CHAR; idx++)
+    for (uint32_t idx = IR_TEST_FIRST_ELEM_IDX;
+         idx < IR_TEST_BARS_PER_CHAR;
+         idx++)
     {
         uint32_t mask = 1u << ((IR_TEST_BARS_PER_CHAR - 1u) - idx);
 
@@ -244,6 +263,7 @@ static bool ir_test_check_adaptive_window (void)
         flat_bars[idx].duration  = 50u;
     }
 
+    /* Compare decoded ASCII uint8_t results against 'F', '*', and '?'. */
     return (((uint8_t)'F' == ir_test_decode_bars(fast_bars)) &&
             ((uint8_t)'F' == ir_test_decode_bars(slow_bars)) &&
             ((uint8_t)'*' == ir_test_decode_bars(star_bars)) &&
@@ -258,14 +278,15 @@ static bool ir_test_check_bar_mbf_fifo (void)
 {
     ID                   h_mbf   = robot_tasks_get_barcode_mbf();
     ir_task_bar_record_t rec     = { 0u, 0u };
-    bool                 b_is_ok = (4u == sizeof(ir_task_bar_record_t));
+    bool                 b_is_ok =
+        (IR_TEST_BAR_REC_BYTES == sizeof(ir_task_bar_record_t));
 
     while (tk_rcv_mbf(h_mbf, &rec, TMO_POL) >= E_OK)
     {
         /* Ensure queue starts empty. */
     }
 
-    for (uint32_t idx = 0u; (idx < IR_TEST_BAR_QUEUE_CAP) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < IR_TEST_BAR_QUEUE_CAP) && (b_is_ok); idx++)
     {
         ir_task_bar_record_t tx_rec = { 0u, 0u };
 
@@ -273,13 +294,14 @@ static bool ir_test_check_bar_mbf_fifo (void)
         tx_rec.duration  = (idx == (IR_TEST_BAR_QUEUE_CAP - 1u))
                            ? IR_TEST_MAX_DURATION_26BIT
                            : ((idx + 1u) * 125u);
+        /* Cast 4-byte bar record struct size to RTOS INT parameter. */
         b_is_ok = (E_OK == tk_snd_mbf(h_mbf,
                                       &tx_rec,
                                       (INT)sizeof(tx_rec),
                                       TMO_POL));
     }
 
-    for (uint32_t idx = 0u; (idx < IR_TEST_BAR_QUEUE_CAP) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < IR_TEST_BAR_QUEUE_CAP) && (b_is_ok); idx++)
     {
         ir_task_bar_record_t rx_rec  = { 0u, 0u };
         uint32_t             exp_dur = (idx == (IR_TEST_BAR_QUEUE_CAP - 1u))
@@ -287,6 +309,7 @@ static bool ir_test_check_bar_mbf_fifo (void)
                                        : ((idx + 1u) * 125u);
         INT                  rx_sz   = tk_rcv_mbf(h_mbf, &rx_rec, TMO_POL);
 
+        /* Verify received INT byte count matches 4-byte bar record size. */
         b_is_ok = (((INT)sizeof(rx_rec) == rx_sz) &&
                    ((idx & 1u) == rx_rec.b_is_high) &&
                    (exp_dur == rx_rec.duration));
@@ -321,14 +344,14 @@ static bool ir_test_check_route_table (void)
     navigator_task_set_route(&route, NAV_NUMBER_OF_COMMANDS, DIR_LEFT);
     navigator_task_set_route(&route, 99u, DIR_RIGHT);
 
-    for (uint32_t idx = 0u; (idx < NAV_NUMBER_OF_COMMANDS) && b_is_ok; idx++)
+    for (uint32_t idx = 0u; (idx < NAV_NUMBER_OF_COMMANDS) && (b_is_ok); idx++)
     {
         b_is_ok = (dirs[idx] == navigator_task_get_route(&route, idx));
     }
 
     /* Overwrite middle slot and verify neighbours remain untouched. */
     navigator_task_set_route(&route, 2u, DIR_INVALID);
-    b_is_ok = (b_is_ok &&
+    b_is_ok = ((b_is_ok) &&
                (DIR_LEFT == navigator_task_get_route(&route, 1u)) &&
                (DIR_INVALID == navigator_task_get_route(&route, 2u)) &&
                (DIR_BACK == navigator_task_get_route(&route, 3u)) &&
@@ -344,14 +367,15 @@ static bool ir_test_check_route_table (void)
  */
 static bool ir_test_check_bit_helpers (void)
 {
-    uint8_t                     buf[8] = { 0u };
-    navigator_task_bypass_ctx_t bypass = { 0u };
-    uint32_t                    ang_p  =
+    uint8_t                     buf[IR_TEST_BIT_BUF_BYTES] = { 0u };
+    navigator_task_bypass_ctx_t bypass                     = { 0u };
+    uint32_t                    ang_p                      =
         robot_tasks_pack_signed(-45, NAV_ANGLE_BIT_WIDTH);
-    uint32_t                    tilt_p =
+    uint32_t                    tilt_p                     =
         robot_tasks_pack_signed(-1800, NAV_TILT_BIT_WIDTH);
-    uint32_t                    rot_p  = robot_tasks_pack_signed(2, 3u);
-    bool                        b_is_ok = false;
+    uint32_t                    rot_p                      =
+        robot_tasks_pack_signed(2, 3u);
+    bool                        b_is_ok                    = false;
 
     robot_tasks_bits_set(buf, 5u, 12u, 0xABCu);
     robot_tasks_bits_set(buf, 17u, 32u, 0xDEADBEEFu);
@@ -359,10 +383,10 @@ static bool ir_test_check_bit_helpers (void)
     navigator_task_set_side(&bypass, -1);
     b_is_ok = (-1 == navigator_task_get_side(&bypass));
     navigator_task_set_side(&bypass, 1);
-    b_is_ok = (b_is_ok && (1 == navigator_task_get_side(&bypass)));
+    b_is_ok = ((b_is_ok) && (1 == navigator_task_get_side(&bypass)));
     navigator_task_set_side(&bypass, 0);
 
-    return (b_is_ok &&
+    return ((b_is_ok) &&
             (0 == navigator_task_get_side(&bypass)) &&
             (0xABCu == robot_tasks_bits_get(buf, 5u, 12u)) &&
             (0xDEADBEEFu == robot_tasks_bits_get(buf, 17u, 32u)) &&
@@ -379,9 +403,11 @@ static bool ir_test_check_telem_snapshot (void)
 {
     navigator_task_telemetry_t snap = { 0u };
 
+    /* Fit 3-bit SONAR_OK enum into uint8_t telemetry setter argument. */
     navigator_task_set_sonar_telem(true, (uint8_t)SONAR_OK, 142u);
     navigator_task_set_imu_pose(-125, 84, 270, true, 2u);
     navigator_task_set_imu_height(245);
+    /* Fit 2-bit IMU_MSG_HUMP_DETECTED enum into uint8_t setter argument. */
     navigator_task_set_imu_event((uint8_t)IMU_MSG_HUMP_DETECTED);
     navigator_task_read_telem(&snap);
 
@@ -391,7 +417,8 @@ static bool ir_test_check_telem_snapshot (void)
     navigator_task_set_imu_height(0);
     navigator_task_set_imu_event(0u);
 
-    return ((32u == sizeof(navigator_task_telemetry_t)) &&
+    /* Verify snapshot size and unsigned status/event bit-fields. */
+    return ((IR_TEST_TELEM_BYTES == sizeof(navigator_task_telemetry_t)) &&
             (1u == snap.b_is_obs_dist_valid) &&
             ((uint32_t)SONAR_OK == snap.obs_status) &&
             (142u == snap.obs_dist_cm) &&

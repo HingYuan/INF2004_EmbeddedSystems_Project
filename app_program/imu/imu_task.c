@@ -467,7 +467,8 @@ static float32_t imu_atan2_f32 (float32_t y_val, float32_t x_val)
     float32_t abs_y   = imu_abs_f32(y_val);
     bool      b_is_ok = (0 != isfinite(x_val)) && (0 != isfinite(y_val));
 
-    if ((b_is_ok) && ((abs_x >= IMU_ZERO_EPSILON) || (abs_y >= IMU_ZERO_EPSILON)))
+    if ((b_is_ok) &&
+        ((abs_x >= IMU_ZERO_EPSILON) || (abs_y >= IMU_ZERO_EPSILON)))
     {
         float32_t ratio = (abs_x > abs_y) ? (abs_y / abs_x) : (abs_x / abs_y);
         float32_t angle = (ratio * (IMU_PI_F32 / 4.0f)) +
@@ -1373,7 +1374,7 @@ static void imu_handle_tilted_hump (imu_task_ctx_t * p_ctx,
  * @param[in]     now_usec          Current microsecond timestamp.
  * @param[in]     b_is_quasi_static True when acceleration is near 1 g.
  * @param[out]    p_height_mm       Live computed hump height in mm.
- * @param[out]    pb_is_tilted      True if filtered tilt exceeds hump threshold.
+ * @param[out]    pb_is_tilted      True if filtered tilt exceeds threshold.
  */
 static void imu_update_hump (imu_task_ctx_t * p_ctx,
                              uint32_t now_usec,
