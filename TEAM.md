@@ -146,7 +146,14 @@ The implemented stop/scan exchange is ultrasonic E-stop request and obstacle eve
 
 The normal startup mode is `MODE_WIFI_SEND_COMMS`, not immediate line following. Navigator also calls `clear_navigator_mbf()` after its initial two-second delay. These are actual source behaviours, even where older design notes describe a different startup sequence.
 
-No `testing/integration/TEST_LOG.md` is present in this checkout. Integration-test results and personal agreement records are therefore not fabricated here.
+Integration records: [testing/integration/TEST_LOG.md](testing/integration/TEST_LOG.md).
+System records: [testing/system/TEST_LOG.md](testing/system/TEST_LOG.md).
+All seven registers were formatted and extended on 26 November 2026. Saved automated
+results identify `2f19d6b`; the implementation inventory above retains its older snapshot.
+Physical execution is team-reported; no case-specific measured results were supplied.
+Additional test cases specify planned inputs and expected outcomes, not completed runs.
+The test register's nine interface IDs differ from the thirteen IDs here; match interfaces
+by endpoints and payloads, not by number alone.
 
 ## 6. Kernel object budget
 
